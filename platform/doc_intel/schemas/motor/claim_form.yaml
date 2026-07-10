@@ -1,0 +1,13 @@
+doc_type: claim_form
+handwritten: true
+fields:
+  policy_no: {type: string, required: false, validator: not_applicable, pii_class: none, target_path: policy.number, description: Policy number, example: POL-123}
+  insured_contacts: {type: object, required: false, validator: not_applicable, pii_class: personal, description: Insured contact details, example: phone and email}
+  driver_name: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Driver name, example: Jane Wanjiku}
+  driver_dob: {type: date, required: false, validator: date_past, pii_class: personal, description: Driver date of birth, example: '1988-04-12'}
+  driver_licence_no: {type: string, required: false, validator: licence_no, pii_class: personal, description: Driver licence number, example: DL 1234567}
+  years_driving: {type: integer, required: false, validator: not_applicable, pii_class: none, description: Years driving, example: 8}
+  loss_description: {type: string, required: false, validator: not_applicable, pii_class: none, target_path: loss.description, description: Description of loss, example: Rear impact}
+  third_party_present: {type: bool, required: false, validator: not_applicable, pii_class: none, description: Third party present, example: true}
+  injuries: {type: bool, required: false, validator: not_applicable, pii_class: sensitive, description: Whether injuries occurred, example: false}
+  diagram: {type: string, required: false, validator: not_applicable, pii_class: personal-low, target_path: loss.diagram_description, always_review: true, description: Vision narrative of diagram, example: Two cars at junction}

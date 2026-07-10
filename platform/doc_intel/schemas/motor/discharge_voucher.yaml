@@ -1,0 +1,6 @@
+doc_type: discharge_voucher
+fields:
+  amount: {type: money, required: false, validator: money_kes, pii_class: none, description: Voucher amount, example: 'KES 75,000'}
+  payee: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Payee name, example: Jane Wanjiku}
+  signed: {type: bool, required: false, validator: not_applicable, pii_class: sensitive, description: Signature present, example: true}
+  date: {type: date, required: false, validator: date_past, pii_class: none, description: Voucher date, example: '2026-07-01'}

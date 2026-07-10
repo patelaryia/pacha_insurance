@@ -1,0 +1,7 @@
+doc_type: police_abstract
+fields:
+  ob_number: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Occurrence book number, example: OB 12/01/07/2026}
+  station: {type: string, required: false, validator: not_applicable, pii_class: none, description: Reporting police station, example: Langata}
+  report_date: {type: date, required: false, validator: date_past, pii_class: none, description: Report date, example: '2026-07-01'}
+  parties: {type: array, required: false, validator: not_applicable, pii_class: personal, description: Named parties, example: '[Jane Wanjiku]'}
+  remarks: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Remarks verbatim, example: Collision reported}

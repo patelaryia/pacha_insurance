@@ -1,0 +1,4 @@
+doc_type: photo_damage
+fields:
+  damage_description: {type: string, required: false, validator: not_applicable, pii_class: none, description: Vision damage description, example: Rear bumper dented}
+  quality_ok: {type: bool, required: false, validator: not_applicable, pii_class: none, description: Image quality adequate, example: true}

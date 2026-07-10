@@ -1,0 +1,12 @@
+model_wrapper:
+  max_attempts: 6
+  max_elapsed_seconds: 600
+  initial_backoff_seconds: 1
+  max_backoff_seconds: 60
+  fallback_after_attempt: 3
+confidence_thresholds:
+  money: '0.90'
+  date: '0.90'
+  registration: '0.90'
+  other: '0.85'
+classification_confidence_threshold: 0.80

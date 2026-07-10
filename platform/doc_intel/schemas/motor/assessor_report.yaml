@@ -1,0 +1,11 @@
+doc_type: assessor_report
+fields:
+  assessor_firm: {type: string, required: false, validator: not_applicable, pii_class: none, description: Assessor firm, example: Expert Assessors}
+  agreed_quote: {type: money, required: false, validator: money_kes, pii_class: none, target_path: assessment.agreed_quote, description: Agreed repair quote, example: 'KES 75,000'}
+  pav: {type: money, required: false, validator: money_kes, pii_class: none, target_path: assessment.pav, description: Pre-accident value, example: 'KES 1,500,000'}
+  repair_pct_pav: {type: number, required: false, validator: not_applicable, pii_class: none, description: Repair percentage of PAV, example: 5.0}
+  supplier_lines: {type: array, required: false, validator: not_applicable, pii_class: none, description: Part supplier and prices, example: '[{part: bumper, supplier: ABC, supplier_price: 40000, garage_price: 45000}]'}
+  assessor_fee: {type: money, required: false, validator: money_kes, pii_class: none, description: Assessor fee, example: 'KES 10,000'}
+  salvage_value: {type: money, required: false, validator: money_kes, pii_class: none, description: Optional salvage value, example: 'KES 200,000'}
+  flags: {type: array, required: false, validator: not_applicable, pii_class: none, description: Assessor flags, example: '[repairable]'}
+  recommendation: {type: string, required: false, validator: not_applicable, pii_class: none, description: Assessor recommendation, example: Repair}
