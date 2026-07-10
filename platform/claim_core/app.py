@@ -1,0 +1,96 @@
+"""FastAPI application factory for the Packet-1 claim substrate."""
+
+from __future__ import annotations
+
+import re
+
+from fastapi import FastAPI, Header, Request
+from fastapi.responses import JSONResponse
+
+from claim_core.database import (
+    ClaimLocks,
+    build_engine,
+    build_session_factory,
+    initialise_database,
+)
+from claim_core.errors import ClaimCoreError
+from claim_core.schemas import (
+    ClaimCreate,
+    ClaimResponse,
+    ErrorResponse,
+    FieldWriteBatch,
+    FieldWriteResponse,
+    HydratedClaim,
+    HydratedField,
+    TimelineEvent,
+    TimelineResponse,
+)
+from claim_core.service import ClaimService
+
+ACTOR_PATTERN = re.compile(r"^(?:system|agent:[A-Za-z0-9._-]+|user:[A-Za-z0-9]{26})$")
+
+
+def actor_header(x_actor: str = Header(alias="X-Actor")) -> str:
+    """Validate the temporary Packet-1 actor transport."""
+
+    if not ACTOR_PATTERN.fullmatch(x_actor):
+        raise ClaimCoreError(422, "VALUE_TYPE_MISMATCH", "X-Actor has an invalid format")
+    return x_actor
+
+
+def create_app(database_url: str) -> FastAPI:
+    """Create a Packet-1 app and initialise its schema."""
+
+    engine = build_engine(database_url)
+    initialise_database(engine)
+    service = ClaimService(
+        build_session_factory(engine),
+        ClaimLocks(enabled=engine.dialect.name == "sqlite"),
+    )
+    app = FastAPI(title="Pacha Claim Core", version="0.1.0")
+    app.state.engine = engine
+    app.state.claim_service = service
+
+    @app.exception_handler(ClaimCoreError)
+    async def claim_core_error_handler(_request: Request, exc: ClaimCoreError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorResponse(code=exc.code, detail=exc.detail).model_dump(),
+        )
+
+    @app.post("/claims", status_code=201, response_model=ClaimResponse)
+    def create_claim(body: ClaimCreate, x_actor: str = Header(alias="X-Actor")) -> ClaimResponse:
+        actor = actor_header(x_actor)
+        return ClaimResponse.model_validate(service.create_claim(body, actor), from_attributes=True)
+
+    @app.patch("/claims/{claim_id}/fields", response_model=FieldWriteResponse)
+    def patch_fields(
+        claim_id: str, body: FieldWriteBatch, x_actor: str = Header(alias="X-Actor")
+    ) -> FieldWriteResponse:
+        actor = actor_header(x_actor)
+        return FieldWriteResponse(results=service.write_fields(claim_id, body.writes, actor))
+
+    @app.get("/claims/{claim_id}", response_model=HydratedClaim)
+    def get_claim(claim_id: str, x_actor: str = Header(alias="X-Actor")) -> HydratedClaim:
+        actor_header(x_actor)
+        claim, current = service.hydrate_claim(claim_id)
+        base = ClaimResponse.model_validate(claim, from_attributes=True).model_dump()
+        fields = {
+            path: HydratedField.model_validate(field, from_attributes=True)
+            for path, field in current.items()
+        }
+        return HydratedClaim(**base, fields=fields)
+
+    @app.get("/claims/{claim_id}/timeline", response_model=TimelineResponse)
+    def get_timeline(
+        claim_id: str, x_actor: str = Header(alias="X-Actor")
+    ) -> TimelineResponse:
+        actor_header(x_actor)
+        return TimelineResponse(
+            events=[
+                TimelineEvent.model_validate(event, from_attributes=True)
+                for event in service.timeline(claim_id)
+            ]
+        )
+
+    return app
