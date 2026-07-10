@@ -26,5 +26,3 @@ gh api -X POST repos/patelaryia/pacha_insurance/rulesets \
 `.github/CODEOWNERS` is already in place and activates the moment the ruleset is
 enabled. `bypass_actors` grants the Admin role an always-bypass so you can
 bootstrap without deadlocking on the first CI run.
-
-<!-- ruleset bypass probe -->
