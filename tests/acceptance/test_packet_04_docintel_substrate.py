@@ -400,7 +400,7 @@ def test_prompt_generated_from_schema(harness):
     assert "garage_name" in prompt
     assert "anchor_text" in prompt  # §1.4 anchor requirement embedded
     assert "page" in prompt
-    with pytest.raises(Exception):
+    with pytest.raises(LookupError):
         engine.registry.prompt_for("medical_invoice_v9")  # unknown → never guess
 
 
