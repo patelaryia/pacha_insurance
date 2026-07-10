@@ -26,3 +26,13 @@ PRD-10 weeks 12–15 (one engineer; reuses PRD-07 dispatch + PRD-06 patterns hea
 **v1.1 priority note on item 5:** three captures are prioritised above all template verbatims, in one CM + Gilbert sitting this week: (a) **C-08 payable formula** (feeds T-01, T-13, routing amount); (b) **R-06 threshold** (`assessment.mode_confirm` cannot leave L2 until it lands); (c) **C-07 verbatim, both variants** (write-off claims progress to SALVAGE_BIDDING but not SETTLEMENT until captured).
 
 **v1.1 process rule (ED-11, binding on coding agents):** anything found underdetermined during implementation is routed to **this register** — implement the narrowest safe behaviour (`blocked_on_inputs` / `EXCEPTION` / refuse-to-render) and log the gap here. The register, not the codebase, is where ambiguity goes to die.
+
+## Build-time register additions (ED-11 entries appended during implementation)
+
+| # | Item | Safe behaviour implemented | Raised by |
+| --- | --- | --- | --- |
+| 18 | ED-1 names the directory `/platform`, which shadows Python's stdlib `platform` module if made an import package | Packages live at `platform/<import_name>/` with pytest `pythonpath`; PRD-00 package import name = `claim_core` (PACKET-01 D-1) | CTO, PACKET-01 |
+| 19 | PRD-00 §0.2 defines core-dictionary *coverage* (`policy.*`, `loss.*`, …) but never enumerates the exact path list, types, or PII classes | Packet-1 subset defined in PACKET-01 §5; writes outside it 422 `FIELD_NOT_IN_DICTIONARY`; full dictionary needs a capture session | CTO, PACKET-01 |
+| 20 | AuthZ roles are PRD-04 scope but PRD-00 APIs need an actor identity now | Interim `X-Actor` header (`agent:*`/`user:*`/`system`), mandatory; replaced by PRD-04 SSO/RBAC (PACKET-01 D-3) | CTO, PACKET-01 |
+| 21 | ED-3 mandates PostgreSQL 16 but no PG instance exists in CI yet | Acceptance tests run SQLAlchemy-on-SQLite by default with `DATABASE_URL` override; PG-only mechanics (`pg_advisory_xact_lock`, `JSONB`) implemented per-dialect; PG-backed CI lands with the infra packet (PACKET-01 D-4) | CTO, PACKET-01 |
+| 22 | PRD-00 §0.2 forbids *agents* superseding `human_verified` fields but is silent on a human writing a non-`human_verified` value (e.g. `extracted`) over one | Blocked with the same `409 HUMAN_OVERRIDE_PROTECTED` + review item; a human must re-verify (`human_verified` write) to change it — narrowest safe reading of never-guess | CTO review of PACKET-01 build |
