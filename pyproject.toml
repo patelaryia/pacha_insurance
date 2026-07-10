@@ -14,6 +14,8 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# D-1 (register #18): package dirs, not import roots — `platform` must not shadow stdlib.
+pythonpath = ["platform", "agents", "packs"]
 
 # ED-7a coverage boundaries (enforced per-PRD as engine code lands):
 #   in scope >= 80%: platform/*, agents/*
