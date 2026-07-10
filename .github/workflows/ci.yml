@@ -40,6 +40,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install system dependencies (Tesseract OCR, PRD-01)
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
+
       - name: Install tooling
         run: pip install ruff pytest pytest-cov
 
