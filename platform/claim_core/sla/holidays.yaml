@@ -1,0 +1,10 @@
+# Fixed-date Kenya statutory holidays only. Movable feasts remain pending_capture (#29).
+fixed_dates:
+  - "01-01"
+  - "05-01"
+  - "06-01"
+  - "10-10"
+  - "10-20"
+  - "12-12"
+  - "12-25"
+  - "12-26"
