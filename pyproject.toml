@@ -1,0 +1,24 @@
+[project]
+name = "pacha"
+version = "0.0.0"
+description = "Pacha claims platform (modular monolith, ED-1)."
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["platform", "agents", "packs", "console", "tools", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# ED-7a coverage boundaries (enforced per-PRD as engine code lands):
+#   in scope >= 80%: platform/*, agents/*
+#   in scope 100% (separate rule): packs/*/calcs.py
+#   out of scope: infra/, Alembic migrations
+[tool.coverage.run]
+branch = true
+source = ["platform", "agents", "packs"]

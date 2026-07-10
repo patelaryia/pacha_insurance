@@ -1,0 +1,22 @@
+# Protected paths. Branch protection requires code-owner review on any PR that
+# touches these, so acceptance tests and the invariant machinery cannot change
+# without @patelaryia's explicit approval. Acceptance tests are golden — they
+# encode the PRD scenarios verbatim and must never be weakened silently.
+
+# Default owner for everything.
+*                                                       @patelaryia
+
+# Acceptance suite (the exit test — implement verbatim, never edit to pass).
+/tests/acceptance/                                      @patelaryia
+
+# CI pipeline and the invariant guards themselves.
+/.github/                                               @patelaryia
+/tools/ci/                                              @patelaryia
+/pyproject.toml                                         @patelaryia
+
+# Highest-authority specs and the agent/reviewer briefs.
+/docs/Section_0_Shared_Engineering_Decisions_v1.1.md    @patelaryia
+/docs/Section_0.5_Shared_Agent_Runtime_v1.1.md          @patelaryia
+/docs/AGENT_BUILD_GUIDE.md                              @patelaryia
+/AGENTS.md                                              @patelaryia
+/CLAUDE.md                                              @patelaryia
