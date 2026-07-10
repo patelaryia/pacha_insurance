@@ -257,3 +257,72 @@ class EventDelivery(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     attempts: Mapped[int | None] = mapped_column(Integer, default=0, server_default=text("0"))
     last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class AuditLedgerRow(Base):
+    """One immutable row in the single-writer audit hash chain."""
+
+    __tablename__ = "audit_ledger"
+    __table_args__ = {"comment": "Append-only, never-purged audit hash chain."}
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
+    seq: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=False, unique=True
+    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    claim_id: Mapped[str | None] = mapped_column(Text)
+    object_ref: Mapped[str | None] = mapped_column(Text)
+    before_hash: Mapped[str | None] = mapped_column(Text)
+    after_hash: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    row_hash: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SlaClock(Base):
+    """A never-purged SLA outcome clock."""
+
+    __tablename__ = "sla_clocks"
+    __table_args__ = {"comment": "Outcome-pricing baseline; rows are never deleted."}
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
+    claim_id: Mapped[str] = mapped_column(Text, ForeignKey("claims.id"), nullable=False)
+    definition_id: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    warn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    breach_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        comment="running|warned|breached|stopped",
+    )
+    started_by_event: Mapped[str] = mapped_column(Text, nullable=False)
+    stopped_by_event: Mapped[str | None] = mapped_column(Text)
+
+
+class SlaDefinitionRow(Base):
+    """Persisted copy of the active, data-defined SLA registry."""
+
+    __tablename__ = "sla_definitions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    start_event: Mapped[str] = mapped_column(Text, nullable=False)
+    stop_event: Mapped[str | None] = mapped_column(Text)
+    warn_after: Mapped[str | None] = mapped_column(Text)
+    breach_after: Mapped[str | None] = mapped_column(Text)
+    escalate_to_role: Mapped[str] = mapped_column(Text, nullable=False)
+    calendar: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class PlatformState(Base):
+    """Small durable platform-wide state registry."""
+
+    __tablename__ = "platform_state"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON_VALUE, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from ulid import ULID
 
+from claim_core.crypto import KeyProvider, decrypt_value, encrypt_value, normalise_blind_index
 from claim_core.database import ClaimLocks, acquire_database_claim_lock
 from claim_core.dictionary import CORE_FIELD_DICTIONARY, FieldDefinition, value_matches
 from claim_core.errors import ClaimCoreError, HumanOverrideProtected
-from claim_core.models import Claim, ClaimField, Event
+from claim_core.fsm import ClaimState, ClaimStateMachine, TransitionResult
+from claim_core.models import Claim, ClaimField, Document, Event, SlaClock
 from claim_core.schemas import ClaimCreate, FieldWrite, FieldWriteResult
+from claim_core.storage import BlobStore
+
+if TYPE_CHECKING:
+    from claim_core.ledger import LedgerWriter
 
 MAX_WRITE_RETRIES = 3
 SOURCE_TYPES = frozenset(
@@ -45,10 +53,27 @@ class ClaimService:
         session_factory: sessionmaker,
         claim_locks: ClaimLocks,
         clock: Callable[[], datetime] = utc_now,
+        *,
+        key_provider: KeyProvider | None = None,
+        blob_store: BlobStore | None = None,
     ) -> None:
         self._sessions = session_factory
         self._claim_locks = claim_locks
         self._clock = clock
+        self._key_provider = key_provider
+        self._blob_store = blob_store
+        self._ledger: LedgerWriter | None = None
+        self.fsm = ClaimStateMachine(
+            session_factory,
+            claim_locks,
+            clock,
+            self.record_event,
+        )
+
+    def set_ledger(self, ledger: LedgerWriter) -> None:
+        """Complete application wiring after the single writer is constructed."""
+
+        self._ledger = ledger
 
     @staticmethod
     def _claim_or_error(session: Session, claim_id: str) -> Claim:
@@ -61,7 +86,7 @@ class ClaimService:
     def _next_event_seq(session: Session) -> int:
         return int(session.scalar(select(func.coalesce(func.max(Event.seq), 0))) or 0) + 1
 
-    def _event(
+    def record_event(
         self,
         session: Session,
         *,
@@ -106,7 +131,7 @@ class ClaimService:
         with self._claim_locks.acquire(claim.id):
             with self._sessions.begin() as session:
                 session.add(claim)
-                self._event(
+                self.record_event(
                     session,
                     claim_id=claim.id,
                     event_type="claim.created",
@@ -141,6 +166,16 @@ class ClaimService:
                 422,
                 "VALUE_TYPE_MISMATCH",
                 f"Source type {write.source_type!r} is not registered",
+            )
+        if (
+            definition.allowed_source_types is not None
+            and write.source_type not in definition.allowed_source_types
+        ):
+            raise ClaimCoreError(
+                422,
+                "SOURCE_TYPE_NOT_ALLOWED",
+                f"Field {write.path!r} cannot be written by source type "
+                f"{write.source_type!r}",
             )
         if write.verification_state not in VERIFICATION_STATES:
             raise ClaimCoreError(
@@ -206,7 +241,7 @@ class ClaimService:
         with self._sessions.begin() as session:
             acquire_database_claim_lock(session, claim_id)
             self._claim_or_error(session, claim_id)
-            self._event(
+            self.record_event(
                 session,
                 claim_id=claim_id,
                 event_type="review.created",
@@ -252,18 +287,33 @@ class ClaimService:
                 prior = current.get(write.path)
                 field_id = new_ulid()
                 version = 1 if prior is None else prior.version + 1
+                stored_value = write.value
+                value_search = None
+                if definition.pii_class != "none":
+                    if self._key_provider is None:
+                        raise RuntimeError("PII key provider is not configured")
+                    if claim.dek_wrapped is None:
+                        dek = self._key_provider.generate_dek()
+                        claim.dek_wrapped = self._key_provider.wrap(dek)
+                    else:
+                        dek = self._key_provider.unwrap(bytes(claim.dek_wrapped))
+                    stored_value = encrypt_value(write.value, dek)
+                    if definition.blind_index:
+                        value_search = self._key_provider.index_hmac(
+                            normalise_blind_index(write.path, write.value)
+                        )
                 row = ClaimField(
                     id=field_id,
                     claim_id=claim_id,
                     path=write.path,
-                    value=write.value,
+                    value=stored_value,
                     value_type=write.value_type,
                     source_type=write.source_type,
                     source_ref=write.source_ref,
                     confidence=write.confidence,
                     verification_state=write.verification_state,
                     pii_class=definition.pii_class,
-                    value_search=None,
+                    value_search=value_search,
                     version=version,
                     superseded_by=None,
                     created_by=actor,
@@ -273,7 +323,7 @@ class ClaimService:
                 session.flush()
                 if prior is not None:
                     prior.superseded_by = field_id
-                self._event(
+                self.record_event(
                     session,
                     claim_id=claim_id,
                     event_type="field.updated",
@@ -309,14 +359,77 @@ class ClaimService:
                         raise
         raise RuntimeError("unreachable write retry state")
 
-    def hydrate_claim(self, claim_id: str) -> tuple[Claim, dict[str, ClaimField]]:
+    def transition_claim(
+        self, claim_id: str, to: str, payload: dict | None, actor: str
+    ) -> TransitionResult:
+        """Delegate a primary state change to the package's sole FSM gate."""
+
+        return self.fsm.transition(
+            claim_id,
+            actor=actor,
+            correlation_id=new_ulid(),
+            to=to,
+            payload=payload,
+        )
+
+    def decline_claim(self, claim_id: str, reason: str, actor: str) -> TransitionResult:
+        """Delegate the decline action to the package's sole FSM gate."""
+
+        return self.fsm.decline(
+            claim_id, reason=reason, actor=actor, correlation_id=new_ulid()
+        )
+
+    def set_claim_substatus(
+        self, claim_id: str, substatus: str | None, actor: str
+    ) -> TransitionResult:
+        """Delegate a substatus action to the package's sole FSM gate."""
+
+        return self.fsm.set_substatus(
+            claim_id,
+            substatus=substatus,
+            actor=actor,
+            correlation_id=new_ulid(),
+        )
+
+    @staticmethod
+    def _blocked_reasons(session: Session, claim_id: str) -> list[str]:
+        review_events = session.scalars(
+            select(Event).where(
+                Event.claim_id == claim_id,
+                Event.type == "review.created",
+            )
+        )
+        if any(
+            event.payload.get("subtype") == "decline_approval_required"
+            for event in review_events
+        ):
+            return ["decline pending claims_manager approval"]
+        return []
+
+    def hydrate_claim(
+        self, claim_id: str, actor: str
+    ) -> tuple[Claim, dict[str, ClaimField], list[str]]:
         with self._sessions() as session:
             claim = self._claim_or_error(session, claim_id)
             fields = self._current_fields(session, claim_id)
+            blocked_reasons = self._blocked_reasons(session, claim_id)
+            wrapped_dek = claim.dek_wrapped
             session.expunge(claim)
             for field in fields.values():
                 session.expunge(field)
-            return claim, fields
+        encrypted_paths = [
+            path for path, field in fields.items() if field.pii_class != "none"
+        ]
+        if encrypted_paths:
+            if self._key_provider is None or wrapped_dek is None or self._ledger is None:
+                raise RuntimeError("PII read services are not configured")
+            dek = self._key_provider.unwrap(bytes(wrapped_dek))
+            for path in encrypted_paths:
+                fields[path].value = decrypt_value(fields[path].value, dek)
+                self._ledger.append_pii_decrypt(
+                    claim_id=claim_id, path=path, actor=actor
+                )
+        return claim, fields, blocked_reasons
 
     def timeline(self, claim_id: str) -> list[Event]:
         with self._sessions() as session:
@@ -331,3 +444,130 @@ class ClaimService:
             for row in events:
                 session.expunge(row)
             return events
+
+    def replay(self, after_seq: int) -> list[Event]:
+        """Read the stable external replay window in transport order."""
+
+        watermark = self._clock() - timedelta(seconds=5)
+        with self._sessions() as session:
+            events = list(
+                session.scalars(
+                    select(Event)
+                    .where(Event.seq > after_seq, Event.occurred_at <= watermark)
+                    .order_by(Event.seq)
+                    .limit(500)
+                )
+            )
+            for event in events:
+                session.expunge(event)
+            return events
+
+    def add_document(
+        self,
+        claim_id: str,
+        *,
+        filename: str,
+        mime: str,
+        content: bytes,
+        source_channel: str,
+        source_ref: str,
+        actor: str,
+    ) -> Document:
+        """Store one immutable original and commit its row + event atomically."""
+
+        if self._blob_store is None:
+            raise RuntimeError("blob store is not configured")
+        digest = hashlib.sha256(content).hexdigest()
+        document_id = new_ulid()
+        with self._sessions() as session:
+            self._claim_or_error(session, claim_id)
+            duplicate = session.scalar(
+                select(Document.id)
+                .where(Document.claim_id == claim_id, Document.sha256 == digest)
+                .limit(1)
+            )
+        if duplicate is not None:
+            raise ClaimCoreError(
+                409,
+                "DUPLICATE_DOCUMENT",
+                "An identical document already exists on this claim",
+            )
+        key = f"documents/{claim_id}/{document_id}"
+        self._blob_store.put(key, content)
+        with self._sessions.begin() as session:
+            self._claim_or_error(session, claim_id)
+            row = Document(
+                id=document_id,
+                claim_id=claim_id,
+                doc_type=None,
+                status="received",
+                filename=filename,
+                mime=mime,
+                s3_key=key,
+                sha256=digest,
+                page_count=None,
+                source={"channel": source_channel, "source_ref": source_ref},
+                received_at=self._clock(),
+            )
+            session.add(row)
+            self.record_event(
+                session,
+                claim_id=claim_id,
+                event_type="document.received",
+                payload={"document_id": document_id, "sha256": digest},
+                actor=actor,
+                correlation_id=new_ulid(),
+            )
+            session.flush()
+            session.expunge(row)
+            return row
+
+    def documents(self, claim_id: str) -> list[Document]:
+        with self._sessions() as session:
+            self._claim_or_error(session, claim_id)
+            rows = list(
+                session.scalars(
+                    select(Document)
+                    .where(Document.claim_id == claim_id)
+                    .order_by(Document.received_at, Document.id)
+                )
+            )
+            for row in rows:
+                session.expunge(row)
+            return rows
+
+    def list_claims(
+        self,
+        *,
+        status: str | None,
+        lob: str | None,
+        sla_breached: bool | None,
+    ) -> list[Claim]:
+        if status is not None:
+            try:
+                ClaimState(status)
+            except ValueError as error:
+                raise ClaimCoreError(
+                    422, "UNKNOWN_STATE", f"Claim state {status!r} is not registered"
+                ) from error
+        query = select(Claim)
+        if status is not None:
+            query = query.where(Claim.status == status)
+        if lob is not None:
+            query = query.where(Claim.lob == lob)
+        if sla_breached is True:
+            breached_claims = select(SlaClock.claim_id).where(
+                SlaClock.state == "breached", SlaClock.stopped_at.is_(None)
+            )
+            query = query.where(Claim.id.in_(breached_claims))
+        elif sla_breached is False:
+            breached_claims = select(SlaClock.claim_id).where(
+                SlaClock.state == "breached", SlaClock.stopped_at.is_(None)
+            )
+            query = query.where(Claim.id.not_in(breached_claims))
+        query = query.order_by(Claim.created_at, Claim.id)
+        with self._sessions() as session:
+            rows = list(session.scalars(query))
+            for row in rows:
+                session.expunge(row)
+            return rows

@@ -14,6 +14,8 @@ class FieldDefinition:
     value_type: str
     pii_class: str
     enum_values: frozenset[str] | None = None
+    allowed_source_types: frozenset[str] | None = None
+    blind_index: bool = False
 
 
 CORE_FIELD_DICTIONARY = {
@@ -26,9 +28,26 @@ CORE_FIELD_DICTIONARY = {
     ),
     "intimation.received_at": FieldDefinition("datetime", "none"),
     "parties.insured.name": FieldDefinition("string", "personal-low"),
-    "parties.insured.phone": FieldDefinition("string", "personal"),
+    "parties.insured.phone": FieldDefinition("string", "personal", blind_index=True),
+    "parties.insured.national_id": FieldDefinition(
+        "string", "sensitive", blind_index=True
+    ),
+    "parties.insured.kra_pin": FieldDefinition("string", "sensitive", blind_index=True),
+    "parties.insured.dl_number": FieldDefinition("string", "personal", blind_index=True),
+    "parties.insured.bank_account": FieldDefinition(
+        "string", "sensitive", blind_index=True
+    ),
     "reserve.total": FieldDefinition("money", "none"),
     "settlement.amount": FieldDefinition("money", "none"),
+    "external.icon.claim_no": FieldDefinition(
+        "string", "none", allowed_source_types=frozenset({"projection_readback", "human"})
+    ),
+    "external.icon.salvage_no": FieldDefinition(
+        "string", "none", allowed_source_types=frozenset({"projection_readback", "human"})
+    ),
+    "external.edms.folder_ref": FieldDefinition(
+        "string", "none", allowed_source_types=frozenset({"projection_readback", "human"})
+    ),
 }
 
 

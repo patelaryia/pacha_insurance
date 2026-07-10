@@ -72,6 +72,36 @@ class HydratedField(BaseModel):
 
 class HydratedClaim(ClaimResponse):
     fields: dict[str, HydratedField]
+    blocked_reasons: list[str]
+
+
+class TransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(min_length=1)
+    payload: dict[str, Any] | None = None
+
+
+class DeclineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1)
+
+
+class SubstatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    substatus: str | None
+
+
+class ClaimStateSummary(BaseModel):
+    id: str
+    status: str
+    substatus: str | None
+
+
+class ApprovalRequiredResponse(BaseModel):
+    code: str
 
 
 class TimelineEvent(BaseModel):
@@ -85,6 +115,48 @@ class TimelineEvent(BaseModel):
 
 class TimelineResponse(BaseModel):
     events: list[TimelineEvent]
+
+
+class ReplayEvent(TimelineEvent):
+    seq: int
+    claim_id: str | None
+
+
+class ReplayResponse(BaseModel):
+    events: list[ReplayEvent]
+
+
+class DocumentCreated(BaseModel):
+    id: str
+    sha256: str
+    status: str
+    filename: str
+    mime: str
+
+
+class DocumentMetadata(DocumentCreated):
+    doc_type: str | None
+    page_count: int | None
+    source: dict[str, Any]
+    received_at: datetime
+
+
+class DocumentListResponse(BaseModel):
+    documents: list[DocumentMetadata]
+
+
+class ClaimListItem(BaseModel):
+    id: str
+    lob: str
+    status: str
+    substatus: str | None
+    assigned_to: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClaimListResponse(BaseModel):
+    claims: list[ClaimListItem]
 
 
 class ErrorResponse(BaseModel):

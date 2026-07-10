@@ -1,0 +1,56 @@
+# Temporary claim-core location; PRD-13 moves this registry into the motor pack.
+definitions:
+  - id: acknowledge
+    name: Acknowledge claim
+    start_event: claim.created
+    stop_event: null
+    warn_after: 30m
+    breach_after: 2h
+    escalate_to_role: pending_capture
+    calendar: 24x7
+    status: pending_capture
+  - id: doc_item_age
+    name: Document item age
+    start_event: pending_capture
+    stop_event: null
+    warn_after: 3d
+    breach_after: 7d
+    escalate_to_role: pending_capture
+    calendar: send_window
+    status: pending_capture
+  - id: assessor_turnaround
+    name: Assessor turnaround
+    start_event: pending_capture
+    stop_event: null
+    warn_after: 3d
+    breach_after: 5d
+    escalate_to_role: pending_capture
+    calendar: business
+    status: pending_capture
+  - id: approval_dwell
+    name: Approval dwell
+    start_event: pending_capture
+    stop_event: null
+    warn_after: 24h
+    breach_after: 72h
+    escalate_to_role: pending_capture
+    calendar: business
+    status: blocked_on_inputs
+  - id: repair_duration
+    name: Repair duration
+    start_event: pending_capture
+    stop_event: null
+    warn_after: 14d
+    breach_after: null
+    escalate_to_role: pending_capture
+    calendar: send_window
+    status: pending_capture
+  - id: bid_window
+    name: Bid window
+    start_event: pending_capture
+    stop_event: null
+    warn_after: null
+    breach_after: 4d
+    escalate_to_role: pending_capture
+    calendar: send_window
+    status: pending_capture
