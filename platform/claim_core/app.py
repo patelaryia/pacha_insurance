@@ -103,6 +103,8 @@ def create_app(
     app = FastAPI(title="Pacha Claim Core", version="0.1.0")
     app.state.engine = engine
     app.state.claim_service = service
+    app.state.blob_store = effective_blobs
+    app.state.record_event = service.record_event
     app.state.dispatcher = dispatcher
     app.state.sla_engine = sla_engine
     app.state.ledger = ledger
