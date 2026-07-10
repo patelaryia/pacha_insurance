@@ -117,6 +117,48 @@ class TimelineResponse(BaseModel):
     events: list[TimelineEvent]
 
 
+class ReplayEvent(TimelineEvent):
+    seq: int
+    claim_id: str | None
+
+
+class ReplayResponse(BaseModel):
+    events: list[ReplayEvent]
+
+
+class DocumentCreated(BaseModel):
+    id: str
+    sha256: str
+    status: str
+    filename: str
+    mime: str
+
+
+class DocumentMetadata(DocumentCreated):
+    doc_type: str | None
+    page_count: int | None
+    source: dict[str, Any]
+    received_at: datetime
+
+
+class DocumentListResponse(BaseModel):
+    documents: list[DocumentMetadata]
+
+
+class ClaimListItem(BaseModel):
+    id: str
+    lob: str
+    status: str
+    substatus: str | None
+    assigned_to: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClaimListResponse(BaseModel):
+    claims: list[ClaimListItem]
+
+
 class ErrorResponse(BaseModel):
     code: str
     detail: str

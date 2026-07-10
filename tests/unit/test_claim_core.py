@@ -71,6 +71,7 @@ def test_value_matches_registered_types(definition, value, expected):
 def test_schema_contains_every_binding_table_and_openapi_renders(client: TestClient):
     tables = set(inspect(client.app.state.engine).get_table_names())
     assert tables == {
+        "audit_ledger",
         "claims",
         "claim_fields",
         "documents",
@@ -78,8 +79,14 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
         "parties",
         "events",
         "event_deliveries",
+        "platform_state",
+        "sla_clocks",
+        "sla_definitions",
     }
-    assert "/claims/{claim_id}/fields" in client.app.openapi()["paths"]
+    paths = client.app.openapi()["paths"]
+    assert "/claims/{claim_id}/fields" in paths
+    assert "/claims/{claim_id}/documents" in paths
+    assert "/events" in paths
 
 
 def test_alembic_upgrade_and_downgrade(tmp_path: Path):
