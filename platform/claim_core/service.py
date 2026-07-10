@@ -13,6 +13,7 @@ from ulid import ULID
 from claim_core.database import ClaimLocks, acquire_database_claim_lock
 from claim_core.dictionary import CORE_FIELD_DICTIONARY, FieldDefinition, value_matches
 from claim_core.errors import ClaimCoreError, HumanOverrideProtected
+from claim_core.fsm import ClaimStateMachine, TransitionResult
 from claim_core.models import Claim, ClaimField, Event
 from claim_core.schemas import ClaimCreate, FieldWrite, FieldWriteResult
 
@@ -49,6 +50,12 @@ class ClaimService:
         self._sessions = session_factory
         self._claim_locks = claim_locks
         self._clock = clock
+        self.fsm = ClaimStateMachine(
+            session_factory,
+            claim_locks,
+            clock,
+            self._event,
+        )
 
     @staticmethod
     def _claim_or_error(session: Session, claim_id: str) -> Claim:
@@ -141,6 +148,16 @@ class ClaimService:
                 422,
                 "VALUE_TYPE_MISMATCH",
                 f"Source type {write.source_type!r} is not registered",
+            )
+        if (
+            definition.allowed_source_types is not None
+            and write.source_type not in definition.allowed_source_types
+        ):
+            raise ClaimCoreError(
+                422,
+                "SOURCE_TYPE_NOT_ALLOWED",
+                f"Field {write.path!r} cannot be written by source type "
+                f"{write.source_type!r}",
             )
         if write.verification_state not in VERIFICATION_STATES:
             raise ClaimCoreError(
@@ -309,14 +326,64 @@ class ClaimService:
                         raise
         raise RuntimeError("unreachable write retry state")
 
-    def hydrate_claim(self, claim_id: str) -> tuple[Claim, dict[str, ClaimField]]:
+    def transition_claim(
+        self, claim_id: str, to: str, payload: dict | None, actor: str
+    ) -> TransitionResult:
+        """Delegate a primary state change to the package's sole FSM gate."""
+
+        return self.fsm.transition(
+            claim_id,
+            actor=actor,
+            correlation_id=new_ulid(),
+            to=to,
+            payload=payload,
+        )
+
+    def decline_claim(self, claim_id: str, reason: str, actor: str) -> TransitionResult:
+        """Delegate the decline action to the package's sole FSM gate."""
+
+        return self.fsm.decline(
+            claim_id, reason=reason, actor=actor, correlation_id=new_ulid()
+        )
+
+    def set_claim_substatus(
+        self, claim_id: str, substatus: str | None, actor: str
+    ) -> TransitionResult:
+        """Delegate a substatus action to the package's sole FSM gate."""
+
+        return self.fsm.set_substatus(
+            claim_id,
+            substatus=substatus,
+            actor=actor,
+            correlation_id=new_ulid(),
+        )
+
+    @staticmethod
+    def _blocked_reasons(session: Session, claim_id: str) -> list[str]:
+        review_events = session.scalars(
+            select(Event).where(
+                Event.claim_id == claim_id,
+                Event.type == "review.created",
+            )
+        )
+        if any(
+            event.payload.get("subtype") == "decline_approval_required"
+            for event in review_events
+        ):
+            return ["decline pending claims_manager approval"]
+        return []
+
+    def hydrate_claim(
+        self, claim_id: str
+    ) -> tuple[Claim, dict[str, ClaimField], list[str]]:
         with self._sessions() as session:
             claim = self._claim_or_error(session, claim_id)
             fields = self._current_fields(session, claim_id)
+            blocked_reasons = self._blocked_reasons(session, claim_id)
             session.expunge(claim)
             for field in fields.values():
                 session.expunge(field)
-            return claim, fields
+            return claim, fields, blocked_reasons
 
     def timeline(self, claim_id: str) -> list[Event]:
         with self._sessions() as session:

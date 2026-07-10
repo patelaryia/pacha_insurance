@@ -72,6 +72,36 @@ class HydratedField(BaseModel):
 
 class HydratedClaim(ClaimResponse):
     fields: dict[str, HydratedField]
+    blocked_reasons: list[str]
+
+
+class TransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(min_length=1)
+    payload: dict[str, Any] | None = None
+
+
+class DeclineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1)
+
+
+class SubstatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    substatus: str | None
+
+
+class ClaimStateSummary(BaseModel):
+    id: str
+    status: str
+    substatus: str | None
+
+
+class ApprovalRequiredResponse(BaseModel):
+    code: str
 
 
 class TimelineEvent(BaseModel):

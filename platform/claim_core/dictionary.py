@@ -14,6 +14,7 @@ class FieldDefinition:
     value_type: str
     pii_class: str
     enum_values: frozenset[str] | None = None
+    allowed_source_types: frozenset[str] | None = None
 
 
 CORE_FIELD_DICTIONARY = {
@@ -29,6 +30,15 @@ CORE_FIELD_DICTIONARY = {
     "parties.insured.phone": FieldDefinition("string", "personal"),
     "reserve.total": FieldDefinition("money", "none"),
     "settlement.amount": FieldDefinition("money", "none"),
+    "external.icon.claim_no": FieldDefinition(
+        "string", "none", allowed_source_types=frozenset({"projection_readback", "human"})
+    ),
+    "external.icon.salvage_no": FieldDefinition(
+        "string", "none", allowed_source_types=frozenset({"projection_readback", "human"})
+    ),
+    "external.edms.folder_ref": FieldDefinition(
+        "string", "none", allowed_source_types=frozenset({"projection_readback", "human"})
+    ),
 }
 
 

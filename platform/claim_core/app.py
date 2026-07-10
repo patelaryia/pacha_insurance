@@ -15,15 +15,20 @@ from claim_core.database import (
 )
 from claim_core.errors import ClaimCoreError
 from claim_core.schemas import (
+    ApprovalRequiredResponse,
     ClaimCreate,
     ClaimResponse,
+    ClaimStateSummary,
+    DeclineRequest,
     ErrorResponse,
     FieldWriteBatch,
     FieldWriteResponse,
     HydratedClaim,
     HydratedField,
+    SubstatusRequest,
     TimelineEvent,
     TimelineResponse,
+    TransitionRequest,
 )
 from claim_core.service import ClaimService
 
@@ -53,9 +58,11 @@ def create_app(database_url: str) -> FastAPI:
 
     @app.exception_handler(ClaimCoreError)
     async def claim_core_error_handler(_request: Request, exc: ClaimCoreError) -> JSONResponse:
+        content = ErrorResponse(code=exc.code, detail=exc.detail).model_dump()
+        content.update(exc.extra)
         return JSONResponse(
             status_code=exc.status_code,
-            content=ErrorResponse(code=exc.code, detail=exc.detail).model_dump(),
+            content=content,
         )
 
     @app.post("/claims", status_code=201, response_model=ClaimResponse)
@@ -73,13 +80,54 @@ def create_app(database_url: str) -> FastAPI:
     @app.get("/claims/{claim_id}", response_model=HydratedClaim)
     def get_claim(claim_id: str, x_actor: str = Header(alias="X-Actor")) -> HydratedClaim:
         actor_header(x_actor)
-        claim, current = service.hydrate_claim(claim_id)
+        claim, current, blocked_reasons = service.hydrate_claim(claim_id)
         base = ClaimResponse.model_validate(claim, from_attributes=True).model_dump()
         fields = {
             path: HydratedField.model_validate(field, from_attributes=True)
             for path, field in current.items()
         }
-        return HydratedClaim(**base, fields=fields)
+        return HydratedClaim(**base, fields=fields, blocked_reasons=blocked_reasons)
+
+    @app.post("/claims/{claim_id}/transition", response_model=ClaimStateSummary)
+    def transition_claim(
+        claim_id: str, body: TransitionRequest, x_actor: str = Header(alias="X-Actor")
+    ) -> ClaimStateSummary:
+        actor = actor_header(x_actor)
+        result = service.transition_claim(claim_id, body.to, body.payload, actor)
+        return ClaimStateSummary(
+            id=result.claim_id,
+            status=result.status.value,
+            substatus=result.substatus,
+        )
+
+    @app.post(
+        "/claims/{claim_id}/decline",
+        response_model=ClaimStateSummary | ApprovalRequiredResponse,
+    )
+    def decline_claim(
+        claim_id: str, body: DeclineRequest, x_actor: str = Header(alias="X-Actor")
+    ) -> ClaimStateSummary | JSONResponse:
+        actor = actor_header(x_actor)
+        result = service.decline_claim(claim_id, body.reason, actor)
+        if result.approval_required:
+            return JSONResponse(status_code=202, content={"code": "APPROVAL_REQUIRED"})
+        return ClaimStateSummary(
+            id=result.claim_id,
+            status=result.status.value,
+            substatus=result.substatus,
+        )
+
+    @app.post("/claims/{claim_id}/substatus", response_model=ClaimStateSummary)
+    def set_claim_substatus(
+        claim_id: str, body: SubstatusRequest, x_actor: str = Header(alias="X-Actor")
+    ) -> ClaimStateSummary:
+        actor = actor_header(x_actor)
+        result = service.set_claim_substatus(claim_id, body.substatus, actor)
+        return ClaimStateSummary(
+            id=result.claim_id,
+            status=result.status.value,
+            substatus=result.substatus,
+        )
 
     @app.get("/claims/{claim_id}/timeline", response_model=TimelineResponse)
     def get_timeline(
