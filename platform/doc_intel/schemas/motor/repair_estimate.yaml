@@ -1,0 +1,7 @@
+doc_type: repair_estimate
+fields:
+  garage_name: {type: string, required: false, validator: not_applicable, pii_class: none, description: Garage name, example: Kamau Motors Garage}
+  line_items: {type: array, required: false, validator: not_applicable, pii_class: none, description: Description qty unit_price and amount rows, example: '[{description: Bumper, qty: 1, unit_price: 45000, amount: 45000}]'}
+  subtotal: {type: money, required: false, validator: money_kes, pii_class: none, description: Subtotal in KES, example: 'KES 75,000'}
+  vat: {type: money, required: false, validator: money_kes, pii_class: none, description: VAT in KES, example: 'KES 12,000'}
+  total: {type: money, required: true, validator: money_kes, pii_class: none, target_path: assessment.estimate_total, description: Grand total in KES, example: 'KES 75,000'}

@@ -14,7 +14,12 @@ from ulid import ULID
 
 from claim_core.crypto import KeyProvider, decrypt_value, encrypt_value, normalise_blind_index
 from claim_core.database import ClaimLocks, acquire_database_claim_lock
-from claim_core.dictionary import CORE_FIELD_DICTIONARY, FieldDefinition, value_matches
+from claim_core.dictionary import (
+    FIELD_DICTIONARY,
+    FieldDefinition,
+    requires_encryption,
+    value_matches,
+)
 from claim_core.errors import ClaimCoreError, HumanOverrideProtected
 from claim_core.fsm import ClaimState, ClaimStateMachine, TransitionResult
 from claim_core.models import Claim, ClaimField, Document, Event, SlaClock
@@ -148,7 +153,7 @@ class ClaimService:
 
     @staticmethod
     def _validate_write(write: FieldWrite, actor: str) -> FieldDefinition:
-        definition = CORE_FIELD_DICTIONARY.get(write.path)
+        definition = FIELD_DICTIONARY.get(write.path)
         if definition is None:
             raise ClaimCoreError(
                 422,
@@ -289,7 +294,7 @@ class ClaimService:
                 version = 1 if prior is None else prior.version + 1
                 stored_value = write.value
                 value_search = None
-                if definition.pii_class != "none":
+                if requires_encryption(write.path, definition):
                     if self._key_provider is None:
                         raise RuntimeError("PII key provider is not configured")
                     if claim.dek_wrapped is None:
@@ -359,6 +364,53 @@ class ClaimService:
                         raise
         raise RuntimeError("unreachable write retry state")
 
+    def write_document_extractions(
+        self,
+        claim_id: str,
+        document_id: str,
+        writes: list[FieldWrite],
+        actor: str,
+    ) -> list[FieldWriteResult]:
+        """Write extraction results once per document/path through the public gate."""
+
+        with self._sessions() as session:
+            self._claim_or_error(session, claim_id)
+            document = session.get(Document, document_id)
+            if document is None or document.claim_id != claim_id:
+                raise ClaimCoreError(
+                    422,
+                    "VALUE_TYPE_MISMATCH",
+                    "Extraction document must belong to the target claim",
+                )
+            already_written = {
+                field.path
+                for field in session.scalars(
+                    select(ClaimField).where(
+                        ClaimField.claim_id == claim_id,
+                        ClaimField.source_type == "extraction",
+                    )
+                )
+                if isinstance(field.source_ref, dict)
+                and field.source_ref.get("document_id") == document_id
+            }
+        pending = []
+        for write in writes:
+            if write.source_type != "extraction":
+                raise ClaimCoreError(
+                    422,
+                    "SOURCE_TYPE_NOT_ALLOWED",
+                    "write_document_extractions accepts extraction writes only",
+                )
+            if write.source_ref is None or write.source_ref.get("document_id") != document_id:
+                raise ClaimCoreError(
+                    422,
+                    "VALUE_TYPE_MISMATCH",
+                    "Extraction source_ref must identify the source document",
+                )
+            if write.path not in already_written:
+                pending.append(write)
+        return self.write_fields(claim_id, pending, actor) if pending else []
+
     def transition_claim(
         self, claim_id: str, to: str, payload: dict | None, actor: str
     ) -> TransitionResult:
@@ -418,7 +470,9 @@ class ClaimService:
             for field in fields.values():
                 session.expunge(field)
         encrypted_paths = [
-            path for path, field in fields.items() if field.pii_class != "none"
+            path
+            for path, field in fields.items()
+            if requires_encryption(path, FIELD_DICTIONARY[path])
         ]
         if encrypted_paths:
             if self._key_provider is None or wrapped_dek is None or self._ledger is None:
@@ -535,6 +589,62 @@ class ClaimService:
             for row in rows:
                 session.expunge(row)
             return rows
+
+    def get_document(self, document_id: str) -> Document:
+        """Return detached document metadata through the claim_core boundary."""
+
+        with self._sessions() as session:
+            row = session.get(Document, document_id)
+            if row is None:
+                raise ClaimCoreError(
+                    404,
+                    "DOCUMENT_NOT_FOUND",
+                    f"Document {document_id} was not found",
+                )
+            session.expunge(row)
+            return row
+
+    def set_document_status(
+        self,
+        document_id: str,
+        *,
+        status: str | None = None,
+        doc_type: str | None = None,
+        page_count: int | None = None,
+    ) -> Document:
+        """Update mutable pipeline metadata without exposing the documents table."""
+
+        if status is None and doc_type is None and page_count is None:
+            raise ValueError("at least one document metadata value is required")
+        if status is not None and status not in {
+            "received",
+            "classified",
+            "extracted",
+            "verified",
+            "rejected",
+        }:
+            raise ValueError(f"unknown document status {status!r}")
+        if doc_type is not None and not doc_type:
+            raise ValueError("doc_type must not be empty")
+        if page_count is not None and page_count < 1:
+            raise ValueError("page_count must be positive")
+        with self._sessions.begin() as session:
+            row = session.get(Document, document_id)
+            if row is None:
+                raise ClaimCoreError(
+                    404,
+                    "DOCUMENT_NOT_FOUND",
+                    f"Document {document_id} was not found",
+                )
+            if status is not None:
+                row.status = status
+            if doc_type is not None:
+                row.doc_type = doc_type
+            if page_count is not None:
+                row.page_count = page_count
+            session.flush()
+            session.expunge(row)
+            return row
 
     def list_claims(
         self,

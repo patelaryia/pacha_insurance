@@ -24,6 +24,8 @@ ACTION_MAP = {
     "review.created": "review.action",
     "claim.created": "claim.created",
     "document.received": "document.received",
+    "document.extracted": "document.extracted",
+    "document.rejected": "document.rejected",
 }
 
 EventRecorder = Callable[..., Event]

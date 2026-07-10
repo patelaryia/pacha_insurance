@@ -1,0 +1,8 @@
+doc_type: driving_licence
+fields:
+  name: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Licence holder name, example: Jane Wanjiku}
+  dob: {type: date, required: false, validator: date_past, pii_class: personal, description: Date of birth, example: '1988-04-12'}
+  licence_no: {type: string, required: false, validator: licence_no, pii_class: personal, description: Licence number, example: DL 1234567}
+  first_issue_date: {type: date, required: false, validator: date_past, pii_class: personal, description: First issue date, example: '2010-01-01'}
+  classes: {type: array, required: false, validator: not_applicable, pii_class: none, description: Permitted vehicle classes, example: '[B, C]'}
+  expiry: {type: date, required: false, validator: date_past, pii_class: personal, description: Licence expiry date, example: '2027-01-01'}

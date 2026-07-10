@@ -1,0 +1,10 @@
+doc_type: intimation_email
+fields:
+  insured_name: {type: string, required: false, validator: not_applicable, pii_class: personal-low, target_path: parties.insured.name, description: Insured name, example: Jane Wanjiku}
+  reg: {type: string, required: false, validator: kenya_reg, pii_class: personal-low, target_path: vehicle.reg, description: Vehicle registration, example: KBX 123A}
+  loss_date: {type: date, required: false, validator: date_past, pii_class: none, target_path: loss.date, description: Date of loss, example: '2026-07-01'}
+  loss_time: {type: string, required: false, validator: not_applicable, pii_class: none, target_path: loss.time, description: Time of loss, example: '14:30'}
+  location: {type: string, required: false, validator: not_applicable, pii_class: none, target_path: loss.location, description: Loss location, example: Mombasa Road}
+  narrative: {type: string, required: false, validator: not_applicable, pii_class: personal-low, target_path: loss.narrative, description: Loss narrative, example: Vehicle collided at junction}
+  reporter_role: {type: enum, required: false, validator: not_applicable, pii_class: none, target_path: intimation.channel, description: broker agent or client, example: broker}
+  broker_name: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Broker name, example: ABC Brokers}

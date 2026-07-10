@@ -10,6 +10,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 
+import doc_intel.stages  # noqa: F401 - registers Packet-04 table metadata
 from claim_core.app import create_app
 from claim_core.dictionary import FieldDefinition, value_matches
 
@@ -75,6 +76,7 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
         "claims",
         "claim_fields",
         "documents",
+        "document_stages",
         "communications",
         "parties",
         "events",

@@ -1,0 +1,6 @@
+doc_type: bank_discharge_letter
+fields:
+  bank: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Bank name, example: Example Bank}
+  reg: {type: string, required: false, validator: kenya_reg, pii_class: personal-low, target_path: vehicle.reg, description: Vehicle registration, example: KBX 123A}
+  discharge_confirmed: {type: bool, required: false, validator: not_applicable, pii_class: none, description: Discharge confirmed, example: true}
+  payee_instructions: {type: string, required: false, validator: not_applicable, pii_class: sensitive, description: Payee instructions, example: Pay insured}

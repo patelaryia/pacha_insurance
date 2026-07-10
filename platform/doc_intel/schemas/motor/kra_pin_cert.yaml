@@ -1,0 +1,4 @@
+doc_type: kra_pin_cert
+fields:
+  pin: {type: string, required: false, validator: kra_pin, pii_class: sensitive, description: KRA PIN, example: A012345678Z}
+  name: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Taxpayer name, example: Jane Wanjiku}

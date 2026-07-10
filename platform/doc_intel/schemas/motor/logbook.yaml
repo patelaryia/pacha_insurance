@@ -1,0 +1,8 @@
+doc_type: logbook
+fields:
+  reg: {type: string, required: false, validator: kenya_reg, pii_class: personal-low, target_path: vehicle.reg, description: Vehicle registration, example: KBX 123A}
+  owner_name: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Registered owner, example: Jane Wanjiku}
+  chassis_no: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Chassis number, example: ABC123456}
+  engine_no: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Engine number, example: ENG123456}
+  bank_interest: {type: object, required: false, validator: not_applicable, pii_class: personal-low, description: Present flag and bank name, example: '{present: true, bank_name: Example Bank}'}
+  logbook_no: {type: string, required: false, validator: not_applicable, pii_class: personal-low, description: Logbook number, example: LB123456}

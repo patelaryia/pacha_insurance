@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from claim_core.models import Base
+from doc_intel.stages import DocumentStage  # noqa: F401 - registers Packet-04 metadata
 
 config = context.config
 if config.config_file_name is not None:

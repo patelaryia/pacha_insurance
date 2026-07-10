@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,82 @@ CORE_FIELD_DICTIONARY = {
         "string", "none", allowed_source_types=frozenset({"projection_readback", "human"})
     ),
 }
+
+FIELD_DICTIONARY = dict(CORE_FIELD_DICTIONARY)
+VALUE_TYPES = frozenset({"string", "money", "date", "datetime", "bool", "enum", "object"})
+PII_CLASSES = frozenset({"none", "personal-low", "personal", "sensitive"})
+EXTENSION_KEYS = frozenset(
+    {"value_type", "pii_class", "enum_values", "allowed_source_types", "blind_index"}
+)
+PLAINTEXT_PII_PATHS = frozenset({"vehicle.reg"})
+
+
+def requires_encryption(path: str, definition: FieldDefinition) -> bool:
+    """Apply ED-6a's sole PII-at-rest plaintext exception for registration plates."""
+
+    return definition.pii_class != "none" and path not in PLAINTEXT_PII_PATHS
+
+
+def register_dictionary_extensions(path: str | Path) -> dict[str, FieldDefinition]:
+    """Load a pack-owned field dictionary without permitting core overrides."""
+
+    payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    raw_fields = payload.get("fields")
+    if not isinstance(raw_fields, dict):
+        raise ValueError("dictionary extension must contain a 'fields' mapping")
+    loaded: dict[str, FieldDefinition] = {}
+    for field_path, raw in raw_fields.items():
+        if not isinstance(field_path, str) or not isinstance(raw, dict):
+            raise ValueError("dictionary extension entries must be path mappings")
+        existing = FIELD_DICTIONARY.get(field_path)
+        enum_extensions = raw.get("extend_enum_values")
+        if enum_extensions is not None:
+            if (
+                existing is None
+                or existing.value_type != "enum"
+                or set(raw) != {"extend_enum_values"}
+                or not isinstance(enum_extensions, list)
+            ):
+                raise ValueError(
+                    f"enum extension for {field_path!r} requires an existing enum"
+                )
+            definition = FieldDefinition(
+                value_type=existing.value_type,
+                pii_class=existing.pii_class,
+                enum_values=(existing.enum_values or frozenset())
+                | frozenset(map(str, enum_extensions)),
+                allowed_source_types=existing.allowed_source_types,
+                blind_index=existing.blind_index,
+            )
+            FIELD_DICTIONARY[field_path] = definition
+            loaded[field_path] = definition
+            continue
+        if set(raw) - EXTENSION_KEYS or not {"value_type", "pii_class"} <= set(raw):
+            raise ValueError(f"dictionary extension for {field_path!r} has invalid keys")
+        allowed = raw.get("allowed_source_types")
+        enum_values = raw.get("enum_values")
+        if raw["value_type"] not in VALUE_TYPES or raw["pii_class"] not in PII_CLASSES:
+            raise ValueError(f"dictionary extension for {field_path!r} has invalid values")
+        definition = FieldDefinition(
+            value_type=str(raw["value_type"]),
+            pii_class=str(raw["pii_class"]),
+            enum_values=frozenset(map(str, enum_values)) if enum_values is not None else None,
+            allowed_source_types=(
+                frozenset(map(str, allowed)) if allowed is not None else None
+            ),
+            blind_index=bool(raw.get("blind_index", False)),
+        )
+        if existing is not None and existing != definition:
+            raise ValueError(f"dictionary extension may not override {field_path!r}")
+        FIELD_DICTIONARY[field_path] = definition
+        loaded[field_path] = definition
+    return loaded
+
+
+def field_dictionary() -> dict[str, FieldDefinition]:
+    """Return a snapshot of the active core-plus-pack dictionary."""
+
+    return dict(FIELD_DICTIONARY)
 
 
 def value_matches(definition: FieldDefinition, value: Any) -> bool:
