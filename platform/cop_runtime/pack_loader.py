@@ -15,7 +15,11 @@ from jsonschema import Draft202012Validator
 
 from claim_core import FieldDefinition, field_dictionary, register_dictionary_extensions
 from cop_runtime.calcs import CalcDefinition, CalcRegistry, collect_calcs
+from cop_runtime.contracts import OUTCOME_ACTIONS, REVIEW_ITEM_TYPES
+from cop_runtime.errors import PackLoadError
+from cop_runtime.routing import AuthorityMatrix, load_authority_matrix
 from cop_runtime.rules import InputBinding, RuleDefinition, RuleRegistry
+from cop_runtime.templates import TemplateRegistry, load_template_registry
 
 SEMVER_PATTERN = r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$"
 RUNTIME_PATHS = frozenset({"runtime.routing_amount"})
@@ -176,10 +180,6 @@ RULE_SCHEMA = {
 }
 
 
-class PackLoadError(RuntimeError):
-    """A pack failed validation and was not registered."""
-
-
 @dataclass(frozen=True)
 class LoadedPack:
     """Fully validated runtime data for one side-by-side pack version."""
@@ -191,6 +191,8 @@ class LoadedPack:
     config: dict[str, Any]
     rule_registry: RuleRegistry
     calc_registry: CalcRegistry
+    template_registry: TemplateRegistry
+    authority_matrix: AuthorityMatrix
     path: Path
 
 
@@ -389,6 +391,11 @@ def load_pack(path: str | Path) -> LoadedPack:
                     f"Rule {rule_id} has unresolvable input path {binding.path!r}"
                 )
         _validate_logic(raw["when"], set(inputs), f"Rule {rule_id}")
+        action = raw["outcome"].get("action")
+        if action not in OUTCOME_ACTIONS:
+            raise PackLoadError(
+                f"Rule {rule_id} has unsupported outcome action {action!r}"
+            )
         pending = tuple(
             path
             for path in _context_fields(raw["outcome"])
@@ -429,6 +436,29 @@ def load_pack(path: str | Path) -> LoadedPack:
                 )
         calcs[definition.calc_id] = definition
 
+    review_routes = config.get("review_routes")
+    if not isinstance(review_routes, dict) or not all(
+        isinstance(route, str)
+        and route.strip()
+        and isinstance(item_type, str)
+        and item_type in REVIEW_ITEM_TYPES
+        for route, item_type in review_routes.items()
+    ):
+        raise PackLoadError("Pack config review_routes must map routes to closed review types")
+
+    templates_file = pack_path / "templates" / "registry.yaml"
+    routing_file = pack_path / "routing" / "authority_matrix.yaml"
+    if templates_file not in yaml_payloads or routing_file not in yaml_payloads:
+        raise PackLoadError(
+            "Pack requires templates/registry.yaml and routing/authority_matrix.yaml"
+        )
+    template_registry = load_template_registry(
+        templates_file,
+        calc_ids=set(calcs),
+        known_fields=known_fields,
+    )
+    authority_matrix = load_authority_matrix(routing_file)
+
     try:
         register_dictionary_extensions(fields_file)
     except ValueError as error:
@@ -441,6 +471,8 @@ def load_pack(path: str | Path) -> LoadedPack:
         config=config,
         rule_registry=RuleRegistry(rules),
         calc_registry=CalcRegistry(calcs),
+        template_registry=template_registry,
+        authority_matrix=authority_matrix,
         path=pack_path,
     )
 

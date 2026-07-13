@@ -16,3 +16,5 @@ config:
     status: blocked_on_inputs
   routing_amount_calc: C-08
   routing_amount_fallback: reserve.total
+  review_routes:
+    EX_GRATIA_REVIEW: EX_GRATIA
