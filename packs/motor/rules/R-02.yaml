@@ -1,0 +1,15 @@
+id: R-02
+name: below_excess_decline
+applies_to: motor
+status: live
+inputs: {estimate: assessment.estimate_total, excess: policy.excess_amount}
+when: {"<=": [{var: estimate}, {var: excess}]}
+outcome:
+  action: propose_decline
+  draft_template: T-07
+  exception:
+    route: EX_GRATIA_REVIEW
+    role: claims_manager
+    context_fields: [client.loss_ratio, client.premium_history]
+version: 1.0.0
+effective_from: 2026-08-01

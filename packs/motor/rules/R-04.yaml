@@ -1,0 +1,9 @@
+id: R-04
+name: pending_rule_04
+applies_to: motor
+status: blocked_on_inputs
+blocked_on: [rule_definition.R-04]
+inputs: {}
+when: false
+outcome: {action: block}
+version: 1.0.0

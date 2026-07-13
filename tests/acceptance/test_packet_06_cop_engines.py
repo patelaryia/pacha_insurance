@@ -32,10 +32,10 @@ BLOCKED_CALCS = {"C-04", "C-07", "C-08"}
 
 @pytest.fixture()
 def harness(tmp_path):
-    from cop_runtime import build_cop_runtime
     from fastapi.testclient import TestClient
 
     from claim_core.app import create_app
+    from cop_runtime import build_cop_runtime
 
     url = os.environ.get("DATABASE_URL", f"sqlite:///{tmp_path}/pacha_acc6.db")
     app = create_app(url)

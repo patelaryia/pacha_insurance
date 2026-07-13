@@ -1,0 +1,14 @@
+id: R-05
+name: write_off
+applies_to: motor
+status: live
+inputs:
+  quote: assessment.agreed_quote
+  pav: assessment.pav
+  sum_insured: policy.sum_insured
+when: {">": [{"*": [{var: quote}, 2]}, {"min": [{var: pav}, {var: sum_insured}]}]}
+outcome:
+  action: set_field
+  path: assessment.write_off_indicated
+  value: true
+version: 1.0.0

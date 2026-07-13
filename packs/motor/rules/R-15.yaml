@@ -1,0 +1,14 @@
+id: R-15
+name: retain_surrender_variant
+applies_to: motor
+status: live
+inputs: {election: salvage.election}
+when: {"in": [{var: election}, [retain, surrender]]}
+outcome:
+  action: set_field
+  path: settlement.c07_variant
+  value_from: election
+  value_map:
+    retain: retained
+    surrender: surrendered
+version: 1.0.0

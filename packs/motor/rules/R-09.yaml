@@ -1,0 +1,10 @@
+id: R-09
+name: validation_assessor_distinct
+applies_to: motor
+status: live
+inputs:
+  validation_assessor: assessment.validation_assessor_id
+  initial_assessor: assessment.initial_assessor_id
+when: {"==": [{var: validation_assessor}, {var: initial_assessor}]}
+outcome: {action: block}
+version: 1.0.0

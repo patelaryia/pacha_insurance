@@ -1,0 +1,9 @@
+id: R-06
+name: desk_vs_physical
+applies_to: motor
+status: blocked_on_inputs
+blocked_on: [pack.desk_physical_threshold]
+inputs: {threshold: pack.desk_physical_threshold}
+when: false
+outcome: {action: block}
+version: 1.0.0

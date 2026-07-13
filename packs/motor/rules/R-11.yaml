@@ -1,0 +1,9 @@
+id: R-11
+name: abstract_waiver
+applies_to: motor
+status: blocked_on_inputs
+blocked_on: [pack.abstract_waiver_conditions]
+inputs: {conditions: pack.abstract_waiver_conditions}
+when: false
+outcome: {action: block}
+version: 1.0.0
