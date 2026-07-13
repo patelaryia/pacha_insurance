@@ -168,16 +168,30 @@ class AutonomyController:
             return selected
 
     @staticmethod
-    def _pass_percent(outcomes: list[ResolutionOutcome]) -> int:
+    def _pass_percent(outcomes: list[ResolutionOutcome]) -> float | int:
         if not outcomes:
             return 100
-        return sum(outcome.passed for outcome in outcomes) * 100 // len(outcomes)
+        return sum(outcome.passed for outcome in outcomes) * 100 / len(outcomes)
 
     @staticmethod
-    def _grader_pass_percent(runs: list[GraderRun]) -> int:
+    def _grader_pass_percent(runs: list[GraderRun]) -> float | int:
         if not runs:
             return 100
-        return sum(run.result == "pass" for run in runs) * 100 // len(runs)
+        return sum(run.result == "pass" for run in runs) * 100 / len(runs)
+
+    @staticmethod
+    def _outcomes_meet(outcomes: list[ResolutionOutcome], threshold: int) -> bool:
+        if not outcomes:
+            return True
+        return sum(outcome.passed for outcome in outcomes) * 100 >= threshold * len(
+            outcomes
+        )
+
+    @staticmethod
+    def _graders_meet(runs: list[GraderRun], threshold: int) -> bool:
+        if not runs:
+            return True
+        return sum(run.result == "pass" for run in runs) * 100 >= threshold * len(runs)
 
     def evidence(
         self,
@@ -280,16 +294,18 @@ class AutonomyController:
             graders = self._grader_window(capability.id, int(policy["l1_l2_items"]))
             return (
                 evidence["consecutive_approvals"] >= int(policy["l1_l2_items"])
-                and self._grader_pass_percent(graders)
-                >= int(policy["l1_l2_grader_pass_percent"])
+                and self._graders_meet(
+                    graders, int(policy["l1_l2_grader_pass_percent"])
+                )
             )
         if current == "L2":
             size = int(policy["l2_l3_items"])
             graders = self._grader_window(capability.id, size)
+            outcomes = self._resolutions(capability.id)[-size:]
             return (
                 evidence["rolling_50_count"] >= size
-                and evidence["rolling_50_pass_percent"] >= int(policy["l2_l3_pass_percent"])
-                and self._grader_pass_percent(graders) >= int(policy["l2_l3_pass_percent"])
+                and self._outcomes_meet(outcomes, int(policy["l2_l3_pass_percent"]))
+                and self._graders_meet(graders, int(policy["l2_l3_pass_percent"]))
                 and not any(
                     run.result == "fail" and run.severity == "critical" for run in graders
                 )
@@ -298,10 +314,11 @@ class AutonomyController:
             size = int(policy["l3_l4_items"])
             since = self.clock() - timedelta(days=int(policy["l3_l4_zero_critical_days"]))
             recent = self._grader_window(capability.id, size, since=since)
+            outcomes = self._resolutions(capability.id)[-size:]
             return (
                 evidence["rolling_100_count"] >= size
-                and evidence["rolling_100_pass_percent"] >= int(policy["l3_l4_pass_percent"])
-                and self._grader_pass_percent(recent) >= int(policy["l3_l4_pass_percent"])
+                and self._outcomes_meet(outcomes, int(policy["l3_l4_pass_percent"]))
+                and self._graders_meet(recent, int(policy["l3_l4_pass_percent"]))
                 and not any(
                     run.result == "fail" and run.severity == "critical" for run in recent
                 )
@@ -491,7 +508,9 @@ class AutonomyController:
         outcomes = self._resolutions(capability_id, through_seq=event.seq)[-window_size:]
         if (
             len(outcomes) == window_size
-            and self._pass_percent(outcomes) < int(policy["demotion_pass_percent"])
+            and not self._outcomes_meet(
+                outcomes, int(policy["demotion_pass_percent"])
+            )
         ):
             self._demote(capability_id, event, "rolling_resolution_pass_rate")
 
