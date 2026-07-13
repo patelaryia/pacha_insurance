@@ -1,0 +1,9 @@
+id: R-14
+name: bank_interest_discharge
+applies_to: motor
+status: blocked_on_inputs
+blocked_on: [documents.bank_discharge_letter.received, settlement.payee_party_id]
+inputs: {}
+when: false
+outcome: {action: block}
+version: 1.0.0

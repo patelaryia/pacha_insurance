@@ -1,0 +1,9 @@
+id: R-01
+name: coverage_validity_composite
+applies_to: motor
+status: blocked_on_inputs
+blocked_on: [rule_definition.R-01]
+inputs: {}
+when: false
+outcome: {action: block}
+version: 1.0.0

@@ -1,0 +1,10 @@
+id: R-12
+name: four_million_alert
+applies_to: motor
+status: live
+inputs: {amount: runtime.routing_amount}
+when: {">": [{var: amount}, 4_000_000_00]}
+outcome:
+  action: emit_event
+  draft_template: T-03
+version: 1.0.0

@@ -1,0 +1,9 @@
+id: R-07
+name: multi_assessor_lowest
+applies_to: motor
+status: blocked_on_inputs
+blocked_on: [assessment.assessor_quotes]
+inputs: {}
+when: false
+outcome: {action: block}
+version: 1.0.0

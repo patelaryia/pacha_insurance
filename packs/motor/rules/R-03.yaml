@@ -1,0 +1,11 @@
+id: R-03
+name: ex_gratia_escalation
+applies_to: motor
+status: live
+inputs: {}
+when: true
+outcome:
+  action: route_review
+  route: EX_GRATIA_REVIEW
+  role: claims_manager
+version: 1.0.0

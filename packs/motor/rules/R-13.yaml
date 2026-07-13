@@ -1,0 +1,10 @@
+id: R-13
+name: settlement_salvage_block
+applies_to: motor
+status: live
+inputs:
+  logbook_held: salvage.logbook_held
+  keys_held: salvage.keys_held
+when: {"!": {"and": [{var: logbook_held}, {var: keys_held}]}}
+outcome: {action: block}
+version: 1.0.0

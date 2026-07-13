@@ -17,3 +17,4 @@ openpyxl>=3.1
 extract-msg>=0.48
 pytesseract>=0.3.13
 jsonschema>=4.22
+json-logic-qubit>=0.9.1,<1
