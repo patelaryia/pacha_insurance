@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from types import SimpleNamespace
@@ -22,6 +23,10 @@ class _AlertSink:
 
 def _alert_factory():
     return _AlertSink()
+
+
+def _database_url(tmp_path, name: str) -> str:
+    return os.environ.get("DATABASE_URL", f"sqlite:///{tmp_path}/{name}.db")
 
 
 def _claim_and_document(app, content=b"source"):
@@ -119,7 +124,7 @@ def test_model_audit_is_event_first_then_single_writer_ledger(tmp_path):
     from claim_core.models import AuditLedgerRow, Event
     from doc_intel.anthropic_client import AnthropicModelClient
 
-    app = create_app(f"sqlite:///{tmp_path}/audit.db")
+    app = create_app(_database_url(tmp_path, "audit"))
     claim, _document = _claim_and_document(app)
 
     class Messages:
@@ -176,7 +181,7 @@ def test_stage_acquisition_is_atomic_and_crash_recovery_is_explicit(tmp_path, mo
     from doc_intel.llm import FakeModelClient
     from doc_intel.stages import StageResult
 
-    app = create_app(f"sqlite:///{tmp_path}/stage.db")
+    app = create_app(_database_url(tmp_path, "stage"))
     model = FakeModelClient(
         [{"data": {"ok": True}, "cost_usd": 0.0, "model_id": "fake"}]
     )
@@ -199,7 +204,7 @@ def test_stage_acquisition_is_atomic_and_crash_recovery_is_explicit(tmp_path, mo
 
     engine._finish_stage(document.id, "CLASSIFY", StageResult(status="running"))
     assert engine.recover_stage(document.id, "CLASSIFY", actor="system") is True
-    assert engine._stage_rows(document.id)["CLASSIFY"].status == "failed"
+    assert engine._stage_rows(document.id)["CLASSIFY"].status == "pending"
     monkeypatch.setattr(
         engine, "_run_stage", lambda _document, _stage: StageResult(status="succeeded")
     )
@@ -211,7 +216,7 @@ def test_extraction_and_consistency_dedupe_inside_claim_transaction(tmp_path):
     from claim_core.models import ClaimField, ConsistencyResult, Event
     from claim_core.schemas import FieldWrite
 
-    app = create_app(f"sqlite:///{tmp_path}/claim-lock.db")
+    app = create_app(_database_url(tmp_path, "claim-lock"))
     claim, document = _claim_and_document(app)
     write = FieldWrite(
         path="policy.number",
@@ -274,6 +279,55 @@ def test_extraction_and_consistency_dedupe_inside_claim_transaction(tmp_path):
         ) == 1
 
 
+def test_migration_0005_preserves_pinned_columns_and_builds_active_dialect_index(
+    tmp_path,
+):
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect
+
+    url = _database_url(tmp_path, "migration")
+    config = Config()
+    config.set_main_option(
+        "script_location",
+        str(Path(__file__).resolve().parents[2] / "platform/claim_core/alembic"),
+    )
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    database = create_engine(url)
+    inspector = inspect(database)
+    assert "input_fingerprint" not in {
+        column["name"] for column in inspector.get_columns("consistency_results")
+    }
+    with database.connect() as connection:
+        if database.dialect.name == "postgresql":
+            index_names = set(
+                connection.exec_driver_sql(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE schemaname = current_schema() AND tablename = "
+                    "'consistency_results'"
+                ).scalars()
+            )
+        else:
+            index_names = set(
+                connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' "
+                    "AND tbl_name = 'consistency_results'"
+                ).scalars()
+            )
+    assert "uq_consistency_results_input" in index_names
+    stage_checks = " ".join(
+        str(check.get("sqltext", ""))
+        for check in inspector.get_check_constraints("document_stages")
+    )
+    assert "paused" in stage_checks
+    database.dispose()
+    command.downgrade(config, "0004_docintel_live_stages")
+    command.upgrade(config, "head")
+
+
 def test_exact_vision_eligibility_boundary_and_canonical_split_actor(tmp_path):
     import fitz
 
@@ -297,7 +351,7 @@ def test_exact_vision_eligibility_boundary_and_canonical_split_actor(tmp_path):
         def words(self, _png):
             return []
 
-    app = create_app(f"sqlite:///{tmp_path}/actor.db")
+    app = create_app(_database_url(tmp_path, "actor"))
     engine = build_engine(app, model_client=FakeModelClient([]), ocr_engine=Ocr())
     _claim, parent = _claim_and_document(app, content)
     app.state.claim_service.set_document_status(parent.id, page_count=2)
@@ -316,13 +370,33 @@ def test_exact_vision_eligibility_boundary_and_canonical_split_actor(tmp_path):
     assert second == first
 
 
+def test_native_text_coverage_is_only_word_bbox_area_divided_by_page_area():
+    import fitz
+
+    from doc_intel.normalize import _native_words
+
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.insert_text((72, 72), "Grand Total KES 75,000")
+    raw_words = page.get_text("words")
+    expected = sum(
+        max(0.0, word[2] - word[0]) * max(0.0, word[3] - word[1])
+        for word in raw_words
+    ) / (600 * 800)
+    words, coverage = _native_words(page)
+    pdf.close()
+    assert coverage == pytest.approx(expected)
+    assert coverage < 0.05
+    assert {word["source"] for word in words} == {"native"}
+
+
 def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, monkeypatch):
     from claim_core.app import create_app
     from doc_intel.engine import build_engine
     from doc_intel.llm import FakeModelClient, ModelUnavailable
     from doc_intel.stages import StageResult
 
-    app = create_app(f"sqlite:///{tmp_path}/worker.db")
+    app = create_app(_database_url(tmp_path, "worker"))
     with pytest.raises(RuntimeError, match="alert sink"):
         build_engine(app, model_client=FakeModelClient([]), runtime_mode="worker")
 
@@ -353,12 +427,86 @@ def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, m
 
     second = _claim_and_document(app, b"second")[1]
 
+    fail_calls = 0
+
     def fail(_document, _stage):
+        nonlocal fail_calls
+        fail_calls += 1
         raise ModelUnavailable("paused")
 
     monkeypatch.setattr(engine, "_run_stage", fail)
-    engine.process_stage(second.id, "NORMALIZE", schedule_next=True)
+    assert engine.process_stage(second.id, "NORMALIZE", schedule_next=True)["status"] == "paused"
+    assert engine.process_stage(second.id, "NORMALIZE", schedule_next=True)["status"] == "paused"
+    assert fail_calls == 1
     assert scheduler.calls[-1] != (second.id, "CLASSIFY")
+    assert engine.recover_stage(second.id, "NORMALIZE", actor="system") is True
+    monkeypatch.setattr(
+        engine, "_run_stage", lambda _document, _stage: StageResult(status="succeeded")
+    )
+    assert engine.process_stage(second.id, "NORMALIZE")["status"] == "succeeded"
+
+
+def test_failed_schema_calls_are_included_in_document_cost_sample(tmp_path):
+    import fitz
+
+    from claim_core.app import create_app
+    from claim_core.models import DocIntelSample, Event
+    from doc_intel.anthropic_client import AnthropicModelClient
+    from doc_intel.engine import build_engine
+
+    pdf = fitz.open()
+    pdf.new_page().insert_text((72, 72), "classification source")
+    content = pdf.tobytes()
+    pdf.close()
+    app = create_app(_database_url(tmp_path, "failed-cost"))
+
+    class Messages:
+        calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                content=[{"type": "tool_use", "input": {"invalid": True}}],
+                usage=SimpleNamespace(input_tokens=0, output_tokens=40_000),
+                model=kwargs["model"],
+            )
+
+    messages = Messages()
+    adapter = AnthropicModelClient(
+        SimpleNamespace(messages=messages),
+        config={
+            "tiers": {
+                "MODEL_LIGHT": {
+                    "model_id": "light",
+                    "input_usd_per_mtok": "1",
+                    "output_usd_per_mtok": "10",
+                }
+            }
+        },
+        ledger=app.state.claim_service,
+    )
+    alerts = _AlertSink()
+    engine = build_engine(app, model_client=adapter, alert_sink=alerts)
+    _claim, document = _claim_and_document(app, content)
+    outcome = engine.process_document(document.id)
+    assert outcome.stages["CLASSIFY"] == "failed"
+    assert messages.calls == 2
+    with Session(app.state.engine) as session:
+        sample = session.scalar(
+            select(DocIntelSample).where(DocIntelSample.document_id == document.id)
+        )
+        assert sample is not None
+        assert sample.cost_usd == Decimal("0.800000")
+        assert sample.breached_cost is True
+        assert session.scalar(
+            select(func.count())
+            .select_from(Event)
+            .where(
+                Event.type == "model.called",
+                Event.payload["document_id"].as_string() == document.id,
+            )
+        ) == 2
+    assert [code for code, _payload in alerts.calls] == ["DOC_INTEL_COST_BREACH"]
 
 
 def test_fresh_worker_runtime_constructs_from_environment_with_injected_sdk(
@@ -366,7 +514,7 @@ def test_fresh_worker_runtime_constructs_from_environment_with_injected_sdk(
 ):
     from doc_intel.runtime import build_worker_runtime
 
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/fresh-worker.db")
+    monkeypatch.setenv("DATABASE_URL", _database_url(tmp_path, "fresh-worker"))
     monkeypatch.setenv("PACHA_BLOB_ROOT", str(tmp_path / "blobs"))
     sdk = SimpleNamespace(messages=SimpleNamespace(create=lambda **_kwargs: None))
     runtime = build_worker_runtime(sdk_client=sdk, alert_sink=_AlertSink())
@@ -403,7 +551,7 @@ def test_worker_bootstrap_fail_loud_paths_and_configured_scheduler(
     assert scheduled == [(["doc-1"], "configured-q")]
 
     sdk = SimpleNamespace(messages=SimpleNamespace(create=lambda **_kwargs: None))
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/factory-worker.db")
+    monkeypatch.setenv("DATABASE_URL", _database_url(tmp_path, "factory-worker"))
     monkeypatch.setenv("PACHA_BLOB_ROOT", str(tmp_path / "factory-blobs"))
     monkeypatch.setenv("DOC_INTEL_ALERT_SINK_FACTORY", f"{__name__}:_alert_factory")
     monkeypatch.setattr(runtime_module, "build_anthropic_sdk_client", lambda: sdk)

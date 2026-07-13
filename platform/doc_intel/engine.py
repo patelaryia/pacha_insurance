@@ -56,7 +56,13 @@ from doc_intel.stages import (
 from doc_intel.swahili import create_remarks_gloss
 from doc_intel.telemetry import LoggingAlertSink, SloSentinel
 from doc_intel.validators import money_kes, sum_check, validate_field
-from doc_intel.vision import crop_png, eligible, normalized_bbox, verify_crop
+from doc_intel.vision import (
+    crop_png,
+    eligible,
+    native_candidate_outside_bbox,
+    normalized_bbox,
+    verify_crop,
+)
 
 CLASSIFY_SCHEMA = {
     "type": "object",
@@ -196,7 +202,7 @@ class DocIntelEngine:
                 update(DocumentStage).where(
                     DocumentStage.document_id == document_id,
                     DocumentStage.stage == stage,
-                    DocumentStage.status.in_(("pending", "failed")),
+                    DocumentStage.status == "pending",
                 )
                 .values(
                     status="running",
@@ -220,15 +226,22 @@ class DocIntelEngine:
                 .where(
                     DocumentStage.document_id == document_id,
                     DocumentStage.stage == stage,
-                    DocumentStage.status == "running",
+                    DocumentStage.status.in_(("running", "failed", "paused")),
                 )
                 .values(
-                    status="failed",
+                    status="pending",
                     last_error=f"explicit recovery by {actor}",
                     updated_at=self.clock(),
                 )
             )
             return result.rowcount == 1
+
+    def _pause_stage(self, document_id: str, stage: str, error: Exception) -> None:
+        self._finish_stage(
+            document_id,
+            stage,
+            StageResult(status="paused", last_error=f"{type(error).__name__}: {error}"[:2000]),
+        )
 
     def _finish_stage(self, document_id: str, stage: str, result: StageResult) -> None:
         with Session(self.engine) as session, session.begin():
@@ -275,14 +288,20 @@ class DocIntelEngine:
             budget_ceiling_usd=self.model_config.get("budget_ceiling_usd"),
             config=self.model_config,
         )
-        rows = self._stage_rows(document_id)
-        for stage in STAGES:
-            row = rows[stage]
-            if row.status != "succeeded" or row.output_ref is None:
-                continue
-            output = json.loads(self.blob_store.get(row.output_ref))
-            wrapper.spent_usd += float(output.get("_model", {}).get("cost_usd", 0))
+        wrapper.spent_usd = float(self._model_cost(document_id))
         return wrapper
+
+    def _model_cost(self, document_id: str) -> Decimal:
+        document = self._document(document_id)
+        return sum(
+            (
+                Decimal(str(event.payload.get("detail", {}).get("cost_usd", "0")))
+                for event in self.claim_service.timeline(document["claim_id"])
+                if event.type == "model.called"
+                and event.payload.get("document_id") == document_id
+            ),
+            start=Decimal("0"),
+        )
 
     def _event_exists(self, claim_id: str, event_type: str, identity: dict[str, Any]) -> bool:
         for event in self.claim_service.timeline(claim_id):
@@ -343,8 +362,8 @@ class DocIntelEngine:
                 source_key=document["s3_key"],
                 blob_store=self.blob_store,
                 ocr_engine=self.ocr_engine,
-                native_page_character_capacity=int(
-                    self.model_config["normalization"]["native_page_character_capacity"]
+                text_coverage_threshold=float(
+                    self.model_config["vision_text_coverage_threshold"]
                 ),
             )
         except NormaliseError:
@@ -391,6 +410,7 @@ class DocIntelEngine:
             inputs={
                 "task": "document_classify",
                 "_claim_id": document["claim_id"],
+                "_document_id": document["id"],
                 "filename": document["filename"],
                 "first_text": normalised["first_text"],
                 "page_png": self.blob_store.get(normalised["page_keys"][0]),
@@ -459,6 +479,7 @@ class DocIntelEngine:
                 inputs={
                     "task": "page_classify",
                     "_claim_id": document["claim_id"],
+                    "_document_id": document["id"],
                     "page": page,
                     "page_png": self.blob_store.get(page_key),
                     "page_text": " ".join(str(word["text"]) for word in words)[:2_000],
@@ -507,6 +528,7 @@ class DocIntelEngine:
             inputs={
                 "task": "extract",
                 "_claim_id": document["claim_id"],
+                "_document_id": document["id"],
                 "prompt": self.registry.prompt_for(doc_type),
                 "document_text": "\n".join(
                     " ".join(str(word["text"]) for word in json.loads(self.blob_store.get(key)))
@@ -573,6 +595,16 @@ class DocIntelEngine:
                     candidate["citation_failed"] = True
                     cited_fields.append(candidate)
                     continue
+                words = json.loads(
+                    self.blob_store.get(normalised["text_keys"][page_index])
+                )
+                if schema.get("handwritten") is not True and native_candidate_outside_bbox(
+                    value=field["value"], words=words, bbox=bbox
+                ):
+                    candidate["citation"] = None
+                    candidate["citation_failed"] = True
+                    cited_fields.append(candidate)
+                    continue
                 crop_key = f"crops/{document['id']}/{field['name']}-{field['page']}.png"
                 crop_bytes = crop_png(
                     self.blob_store.get(normalised["page_keys"][page_index]), bbox
@@ -583,6 +615,7 @@ class DocIntelEngine:
                     crop_png_bytes=crop_bytes,
                     model_client=wrapper,
                     claim_id=document["claim_id"],
+                    document_id=document["id"],
                 )
                 candidate["citation"] = {
                     "bbox": bbox,
@@ -769,6 +802,7 @@ class DocIntelEngine:
                 photo_descriptions=photos,
                 model_client=self._model_wrapper(document["id"]),
                 claim_id=document["claim_id"],
+                document_id=document["id"],
             )
             model_cost += cc5.pop("cost_usd")
             cc5["evidence"] = {"narrative": narrative, "photo_descriptions": photos}
@@ -860,19 +894,17 @@ class DocIntelEngine:
             )
             self._fail_stage(document_id, stage, error)
             result = StageResult(status="failed", last_error=str(error))
-        except (
-            HumanOverrideProtected,
-            ModelUnavailable,
-            NormaliseError,
-            PipelinePause,
-        ) as error:
+        except (ModelUnavailable, PipelinePause) as error:
+            self._pause_stage(document_id, stage, error)
+            result = StageResult(status="paused", last_error=str(error))
+        except (HumanOverrideProtected, NormaliseError) as error:
             self._fail_stage(document_id, stage, error)
             result = StageResult(status="failed", last_error=str(error))
         except Exception as error:
             self._fail_stage(document_id, stage, error)
             if schedule_next:
                 rows = self._stage_rows(document_id)
-                self._record_sample(document_id, rows, rows["NORMALIZE"].created_at)
+                self._record_sample(document_id, rows["NORMALIZE"].created_at)
             raise
         else:
             self._finish_stage(document_id, stage, result)
@@ -883,28 +915,23 @@ class DocIntelEngine:
                         raise RuntimeError("stage chaining requires a scheduler")
                     self.stage_scheduler.schedule(document_id, STAGES[index + 1])
         if schedule_next and (
-            result.status == "failed"
+            result.status in {"failed", "paused"}
             or (stage == STAGES[-1] and result.status in TERMINAL_STAGE_STATUSES)
         ):
             rows = self._stage_rows(document_id)
-            self._record_sample(document_id, rows, rows["NORMALIZE"].created_at)
+            self._record_sample(document_id, rows["NORMALIZE"].created_at)
         return {"stage": stage, "status": result.status, "output_ref": result.output_ref}
 
     def _record_sample(
         self,
         document_id: str,
-        rows: Mapping[str, DocumentStage],
         started_at: datetime,
     ) -> None:
         if started_at.tzinfo is None:
             started_at = started_at.replace(tzinfo=UTC)
         elapsed = self.clock() - started_at
         duration_ms = max(0, int(elapsed.total_seconds() * 1000))
-        total_cost = Decimal("0")
-        for row in rows.values():
-            if row.output_ref and self.blob_store.exists(row.output_ref):
-                output = json.loads(self.blob_store.get(row.output_ref))
-                total_cost += Decimal(str(output.get("_model", {}).get("cost_usd", 0)))
+        total_cost = self._model_cost(document_id)
         self.sentinel.record(
             document_id=document_id, duration_ms=duration_ms, cost_usd=total_cost
         )
@@ -979,7 +1006,7 @@ class DocIntelEngine:
         self._ensure_stages(document_id)
         for stage in STAGES:
             result = self.process_stage(document_id, stage)
-            if result["status"] == "failed":
+            if result["status"] not in TERMINAL_STAGE_STATUSES:
                 break
             document = self._document(document_id)
         rows = self._stage_rows(document_id)
@@ -997,9 +1024,9 @@ class DocIntelEngine:
             stages={stage: rows[stage].status for stage in STAGES},
             committed_paths=list(commit_output.get("committed_paths", [])),
             review_items=review_items,
-            failed=any(row.status == "failed" for row in rows.values()),
+            failed=any(row.status in {"failed", "paused"} for row in rows.values()),
         )
-        self._record_sample(document_id, rows, started_at)
+        self._record_sample(document_id, started_at)
         return outcome
 
 

@@ -4,7 +4,7 @@
 
 Model calls use the shared bounded-retry wrapper: six attempts, exponential backoff
 from one to sixty seconds, a ten-minute ceiling, and fallback after attempt three.
-Transport exhaustion leaves the current durable stage failed for an explicit safe retry.
+Transport exhaustion leaves the current durable stage paused for an explicit safe retry.
 Schema-invalid output regenerates once and then emits `EXCEPTION` with subtype
 `model_schema_invalid`; budget exhaustion emits `EXCEPTION{budget_exceeded}`.
 Never manually replay a provider response or bypass `ModelWrapper`.
@@ -32,7 +32,7 @@ from `packs/motor/doc_intel.yaml`.
 
 `document.received` schedules NORMALIZE. Each successful or skipped task queues the
 next named stage; failed or paused tasks queue nothing. Acquisition is an atomic
-`pending|failed -> running` transition. A crash deliberately leaves `running`; after
+`pending -> running` transition. A crash deliberately leaves `running`; after
 confirming the prior worker cannot still commit, an operator must call
 `recover_stage(..., actor="system"|"user:<ULID>")`. No lease expiry or blind retry is
 performed for uncertain work.
@@ -51,9 +51,8 @@ NORMALIZE complete and CLASSIFY pending.
 ## Vision verification failure
 
 Vision bboxes are eligible only for handwritten schemas or raster/text-sparse pages.
-The predicate is exactly handwritten OR stored coverage below 0.05; 0.05 is not
-eligible. Native coverage combines geometric glyph area with the configured
-native-character density measure in the pack.
+The predicate is exactly handwritten OR stored page-area coverage below 0.05; 0.05
+is not eligible. Coverage is the summed native word-bbox area divided by page area.
 Coordinates must be finite, normalized, and have positive area. The engine crops the
 immutable 300dpi render and asks MODEL_LIGHT whether the value is visible. Any
 ineligible bbox, invalid crop, false response, or schema-invalid response forces
@@ -68,7 +67,13 @@ cost above US$0.60 emits `DOC_INTEL_COST_BREACH`. Inspect the document's stage r
 model-call ledger records, page count, OCR use, and retry history. Alerts are
 operational signals, not review-item types, and must not be auto-cleared.
 
+Cost is summed from durable `model.called` events for the document, including every
+billed schema-invalid response and calls made by a stage that later fails. Stage
+output summaries are not the billing source of truth.
+
 Operational startup requires a configured `AlertSink`; the synchronous driver uses a
 loud logging sink, while the null sink is available only by explicit test injection.
 Migration `0005_packet05_cto_hardening` adds the `running`
-stage state and unique `(claim_id, check_id, input_fingerprint)` consistency key.
+and `paused` stage states plus a unique expression index over
+`(claim_id, check_id, evidence._input_fingerprint)` without changing Packet-05's
+pinned `consistency_results` columns.

@@ -25,6 +25,7 @@ def create_remarks_gloss(
         inputs={
             "task": "translate_swahili_gloss",
             "_claim_id": claim_id,
+            "_document_id": document_id,
             "remarks": remarks,
         },
     )

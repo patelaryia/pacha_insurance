@@ -12,8 +12,6 @@ tiers:
     output_usd_per_mtok: '5.00'
     max_output_tokens: 4096
 classification_confidence_threshold: '0.80'
-normalization:
-  native_page_character_capacity: 400
 vision_confidence_multiplier: '0.90'
 vision_text_coverage_threshold: '0.05'
 slo:

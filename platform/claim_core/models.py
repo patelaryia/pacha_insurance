@@ -181,25 +181,25 @@ class ConsistencyResult(Base):
     """One immutable cross-document consistency evaluation."""
 
     __tablename__ = "consistency_results"
-    __table_args__ = (
-        UniqueConstraint(
-            "claim_id",
-            "check_id",
-            "input_fingerprint",
-            name="uq_consistency_results_input",
-        ),
-    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
     claim_id: Mapped[str] = mapped_column(Text, ForeignKey("claims.id"), nullable=False)
     check_id: Mapped[str] = mapped_column(Text, nullable=False)
-    input_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(Text, nullable=False)
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
     score: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
     evidence: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+Index(
+    "uq_consistency_results_input",
+    ConsistencyResult.claim_id,
+    ConsistencyResult.check_id,
+    ConsistencyResult.evidence["_input_fingerprint"].as_string(),
+    unique=True,
+)
 
 
 class DocIntelSample(Base):

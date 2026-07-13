@@ -144,6 +144,7 @@ class AnthropicModelClient:
             self.ledger.record_model_call(
                 {
                     "claim_id": inputs.get("_claim_id"),
+                    "document_id": inputs.get("_document_id"),
                     "task": inputs.get("task"),
                     "tier": tier,
                     "model_id": getattr(response, "model", model_id),

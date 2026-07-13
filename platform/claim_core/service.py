@@ -132,12 +132,17 @@ class ClaimService:
 
         event_detail = dict(detail)
         claim_id = event_detail.pop("claim_id", None)
+        document_id = event_detail.get("document_id")
         with self._sessions.begin() as session:
             self.record_event(
                 session,
                 claim_id=claim_id,
                 event_type="model.called",
-                payload={"detail": event_detail, "task": event_detail.get("task")},
+                payload={
+                    "detail": event_detail,
+                    "task": event_detail.get("task"),
+                    "document_id": document_id,
+                },
                 actor="agent:doc_intel",
                 correlation_id=new_ulid(),
             )
@@ -784,7 +789,6 @@ class ClaimService:
                             id=new_ulid(),
                             claim_id=claim_id,
                             check_id=result["check_id"],
-                            input_fingerprint=input_fingerprint,
                             status=result["status"],
                             severity=result["severity"],
                             rationale=result["rationale"],

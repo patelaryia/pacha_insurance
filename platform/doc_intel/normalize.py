@@ -187,28 +187,23 @@ def _to_pdf(
     raise NormaliseError(f"unsupported document type: {mime or suffix}")
 
 
-def _native_words(
-    page: fitz.Page, *, native_page_character_capacity: int
-) -> tuple[list[dict[str, Any]], float]:
+def _native_words(page: fitz.Page) -> tuple[list[dict[str, Any]], float]:
     width = page.rect.width
     height = page.rect.height
     page_area = width * height
     words = []
     covered = 0.0
-    character_count = 0
     for raw in page.get_text("words"):
         x0, y0, x1, y1, text = raw[:5]
         covered += max(0.0, x1 - x0) * max(0.0, y1 - y0)
-        character_count += len(str(text))
         words.append(
             {
                 "text": text,
                 "bbox": [x0 / width, y0 / height, x1 / width, y1 / height],
+                "source": "native",
             }
         )
-    geometric_coverage = covered / page_area if page_area else 0.0
-    semantic_coverage = character_count / native_page_character_capacity
-    return words, min(1.0, max(geometric_coverage, semantic_coverage))
+    return words, covered / page_area if page_area else 0.0
 
 
 def normalise_document(
@@ -219,17 +214,17 @@ def normalise_document(
     source_key: str,
     blob_store: BlobStore,
     ocr_engine: OcrEngine | None,
-    native_page_character_capacity: int | None = None,
+    text_coverage_threshold: float | None = None,
 ) -> NormaliseResult:
     """Normalise one immutable original, render pages, and persist word streams."""
 
     try:
         source_bytes = blob_store.get(source_key)
-        capacity = native_page_character_capacity or int(
-            DEFAULTS["normalization"]["native_page_character_capacity"]
+        coverage_threshold = (
+            float(DEFAULTS["vision_text_coverage_threshold"])
+            if text_coverage_threshold is None
+            else text_coverage_threshold
         )
-        if capacity < 1:
-            raise NormaliseError("native page character capacity must be positive")
         suffix = Path(filename).suffix.casefold()
         email_subject = None
         if mime == "message/rfc822" or suffix == ".eml":
@@ -262,13 +257,13 @@ def normalise_document(
                 page_key = f"pages/{document_id}/{page_number}.png"
                 blob_store.put(page_key, png)
                 page_keys.append(page_key)
-                native_words, coverage = _native_words(
-                    page, native_page_character_capacity=capacity
-                )
+                native_words, coverage = _native_words(page)
                 page_text_coverages.append(coverage)
                 words = list(native_words)
-                if coverage < 0.05 and ocr_engine is not None:
-                    words.extend(ocr_engine.words(png))
+                if coverage < coverage_threshold and ocr_engine is not None:
+                    words.extend(
+                        {**word, "source": "ocr"} for word in ocr_engine.words(png)
+                    )
                 text_key = f"text/{document_id}/{page_number}.json"
                 blob_store.put(
                     text_key,
