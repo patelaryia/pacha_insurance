@@ -1,0 +1,39 @@
+default_policy:
+  l1_l2_items: 25
+  l1_l2_grader_pass_percent: 96
+  l2_l3_items: 50
+  l2_l3_pass_percent: 98
+  l3_l4_items: 100
+  l3_l4_pass_percent: 99
+  l3_l4_zero_critical_days: 60
+  sampling_rate: 20
+  sampling_floor: 5
+  demotion_items: 20
+  demotion_pass_percent: 95
+
+capabilities:
+  - {id: intake.mailbox_triage, max_level: L4, policy: {}}
+  - {id: intake.claim_creation, max_level: L4, policy: {}}
+  - {id: intake.acknowledge, max_level: L4, policy: {}}
+  - {id: triage.coverage_check, max_level: L4, policy: {}}
+  - {id: triage.decline_draft, max_level: L1, policy: {}}
+  - {id: triage.ex_gratia, max_level: L1, policy: {}}
+  - {id: assessment.mode_confirm, max_level: L2, policy: {}}
+  - {id: assessment.consistency_flag, max_level: L2, policy: {}}
+  - {id: pack.merge, max_level: L4, policy: {}}
+  - {id: pack.note_draft, max_level: L3, policy: {}}
+  - {id: pack.route, max_level: L4, policy: {}}
+  - {id: chase.checklist, max_level: L4, policy: {}}
+  - {id: repair.authorize, max_level: L3, policy: {}}
+  - {id: repair.invoice_match, max_level: L4, policy: {}}
+  - {id: repair.completion_detect, max_level: L4, policy: {}}
+  - {id: salvage.register, max_level: L3, policy: {}}
+  - {id: salvage.publish, max_level: L3, policy: {}}
+  - {id: salvage.close_and_rank, max_level: L3, policy: {}}
+  - {id: settlement.eft_match, max_level: L3, initial_level: L0, policy: {}}
+  - {id: icon.claim_register, max_level: L4, initial_level: L0, policy: {}}
+  - {id: icon.reserve_adjust, max_level: L3, initial_level: L0, policy: {}}
+  - {id: icon.assessor_payment_request, max_level: L3, initial_level: L0, policy: {}}
+  - {id: icon.payment_voucher, max_level: L3, initial_level: L0, policy: {}}
+  - {id: edms.attach_and_tag, max_level: L4, policy: {}}
+  - {id: edms.claims_workflow, max_level: L4, policy: {}}

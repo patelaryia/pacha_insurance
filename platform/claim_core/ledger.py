@@ -28,6 +28,8 @@ ACTION_MAP = {
     "document.rejected": "document.rejected",
     "model.called": "model.structured_call",
     "pii.decrypted": "pii.decrypt",
+    "autonomy.promoted": "autonomy.promoted",
+    "autonomy.demoted": "autonomy.demoted",
 }
 
 EventRecorder = Callable[..., Event]
