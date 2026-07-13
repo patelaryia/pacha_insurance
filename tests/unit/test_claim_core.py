@@ -78,6 +78,8 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
         "documents",
         "document_stages",
         "communications",
+        "consistency_results",
+        "doc_intel_samples",
         "parties",
         "events",
         "event_deliveries",
@@ -207,11 +209,22 @@ def test_human_can_revise_human_value_with_full_provenance(client: TestClient):
 
 def test_confidence_is_returned_as_a_json_number(client: TestClient):
     claim_id = create_claim(client)
+    document_id = client.post(
+        f"/claims/{claim_id}/documents",
+        files={"file": ("citation.txt", b"MOT/CONF", "text/plain")},
+        data={"source_channel": "test", "source_ref": "confidence"},
+        headers=AGENT,
+    ).json()["id"]
     extracted = write(
         "policy.number",
         "MOT/CONF",
         "string",
-        source_ref={"document_id": "01JZXY00000000000000000DOC"},
+        source_ref={
+            "document_id": document_id,
+            "page": 1,
+            "bbox": [0, 0, 1, 1],
+            "anchor_text": "MOT/CONF",
+        },
         confidence=0.875,
     )
     response = client.patch(

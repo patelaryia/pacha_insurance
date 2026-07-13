@@ -123,7 +123,11 @@ def create_app(
         actor = actor_header(x_actor)
         return ClaimResponse.model_validate(service.create_claim(body, actor), from_attributes=True)
 
-    @app.patch("/claims/{claim_id}/fields", response_model=FieldWriteResponse)
+    @app.patch(
+        "/claims/{claim_id}/fields",
+        response_model=FieldWriteResponse,
+        responses={422: {"model": ErrorResponse}},
+    )
     def patch_fields(
         claim_id: str, body: FieldWriteBatch, x_actor: str = Header(alias="X-Actor")
     ) -> FieldWriteResponse:

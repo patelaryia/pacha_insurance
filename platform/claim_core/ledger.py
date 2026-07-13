@@ -182,6 +182,20 @@ class LedgerWriter:
             event_id=event.id,
         )
 
+    def record_model_call(self, detail: dict[str, Any]) -> None:
+        """Append one already-redacted ED-4 model-call record through the sole writer."""
+
+        self._append(
+            occurred_at=self._clock(),
+            actor="system",
+            action="model.structured_call",
+            claim_id=None,
+            object_ref=detail.get("task"),
+            before_hash=None,
+            after_hash=None,
+            detail=detail,
+        )
+
     def append_pii_decrypt(self, *, claim_id: str, path: str, actor: str) -> None:
         """Synchronously access-log one decrypt through this same writer."""
 

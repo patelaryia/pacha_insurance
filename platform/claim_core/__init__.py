@@ -6,7 +6,7 @@ from claim_core.dictionary import (
     field_dictionary,
     register_dictionary_extensions,
 )
-from claim_core.errors import HumanOverrideProtected
+from claim_core.errors import ClaimCoreError, HumanOverrideProtected
 from claim_core.fsm import STATE_METADATA, ClaimState, ClaimStateMachine
 from claim_core.models import Base, Document
 from claim_core.schemas import FieldWrite, FieldWriteResult
@@ -17,6 +17,7 @@ __all__ = [
     "Base",
     "BlobStore",
     "ClaimService",
+    "ClaimCoreError",
     "ClaimState",
     "ClaimStateMachine",
     "Document",

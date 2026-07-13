@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -22,7 +23,15 @@ from claim_core.dictionary import (
 )
 from claim_core.errors import ClaimCoreError, HumanOverrideProtected
 from claim_core.fsm import ClaimState, ClaimStateMachine, TransitionResult
-from claim_core.models import Claim, ClaimField, Document, Event, SlaClock
+from claim_core.models import (
+    Claim,
+    ClaimField,
+    ConsistencyResult,
+    DocIntelSample,
+    Document,
+    Event,
+    SlaClock,
+)
 from claim_core.schemas import ClaimCreate, FieldWrite, FieldWriteResult
 from claim_core.storage import BlobStore
 
@@ -271,6 +280,8 @@ class ClaimService:
         with self._sessions.begin() as session:
             acquire_database_claim_lock(session, claim_id)
             claim = self._claim_or_error(session, claim_id)
+            for write in writes:
+                self._validate_extraction_citation(session, claim_id, write)
             current = self._current_fields(session, claim_id)
 
             prospective_states = {
@@ -342,6 +353,53 @@ class ClaimService:
                 )
             claim.updated_at = self._clock()
             return results
+
+    @staticmethod
+    def _validate_extraction_citation(
+        session: Session, claim_id: str, write: FieldWrite
+    ) -> None:
+        """Enforce PRD-01 provenance inside the append-only write transaction."""
+
+        if write.verification_state != "extracted":
+            return
+
+        def citation_required(detail: str) -> None:
+            raise ClaimCoreError(422, "CITATION_REQUIRED", detail)
+
+        if write.source_type != "extraction":
+            citation_required("Extracted fields require source_type 'extraction'")
+        source_ref = write.source_ref
+        if not isinstance(source_ref, dict):
+            citation_required("Extracted fields require a resolved citation")
+        document_id = source_ref.get("document_id")
+        document = session.get(Document, document_id) if isinstance(document_id, str) else None
+        if document is None or document.claim_id != claim_id:
+            citation_required("Citation document must exist on the target claim")
+        page = source_ref.get("page")
+        if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+            citation_required("Citation page must be a positive integer")
+        bbox = source_ref.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            citation_required("Citation bbox must contain four normalized coordinates")
+        if any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+            or value > 1
+            for value in bbox
+        ):
+            citation_required("Citation bbox must contain four finite normalized coordinates")
+        if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
+            citation_required("Citation bbox must have positive width and height")
+        anchor = source_ref.get("anchor_text")
+        has_anchor = isinstance(anchor, str) and 0 < len(anchor.strip()) <= 120
+        has_vision = (
+            source_ref.get("citation_mode") == "vision_bbox"
+            and source_ref.get("vision_verified") is True
+        )
+        if has_anchor == has_vision:
+            citation_required("Citation must resolve by exactly one supported mode")
 
     def write_fields(
         self, claim_id: str, writes: list[FieldWrite], actor: str
@@ -553,6 +611,7 @@ class ClaimService:
             row = Document(
                 id=document_id,
                 claim_id=claim_id,
+                parent_document_id=None,
                 doc_type=None,
                 status="received",
                 filename=filename,
@@ -575,6 +634,137 @@ class ClaimService:
             session.flush()
             session.expunge(row)
             return row
+
+    def add_split_document(
+        self,
+        parent_document_id: str,
+        *,
+        start_page: int,
+        end_page: int,
+        content: bytes,
+        actor: str,
+    ) -> Document:
+        """Create or return one immutable child produced by a human split."""
+
+        if self._blob_store is None:
+            raise RuntimeError("blob store is not configured")
+        with self._sessions() as session:
+            parent = session.get(Document, parent_document_id)
+            if parent is None:
+                raise ClaimCoreError(404, "DOCUMENT_NOT_FOUND", "Split parent was not found")
+            claim_id = parent.claim_id
+            filename = f"{parent.filename}.pages-{start_page}-{end_page}.pdf"
+            source = {
+                **parent.source,
+                "parent_document_id": parent_document_id,
+                "parent_page_range": [start_page, end_page],
+                "split_actor": actor,
+            }
+        digest = hashlib.sha256(content).hexdigest()
+        document_id = new_ulid()
+        key = f"documents/{claim_id}/{document_id}"
+        with self._claim_locks.acquire(claim_id):
+            with self._sessions.begin() as session:
+                acquire_database_claim_lock(session, claim_id)
+                parent = session.get(Document, parent_document_id)
+                if parent is None or parent.claim_id != claim_id:
+                    raise ClaimCoreError(
+                        404, "DOCUMENT_NOT_FOUND", "Split parent was not found"
+                    )
+                siblings = list(
+                    session.scalars(
+                        select(Document).where(
+                            Document.parent_document_id == parent_document_id
+                        )
+                    )
+                )
+                for sibling in siblings:
+                    if sibling.source.get("parent_page_range") == [start_page, end_page]:
+                        session.expunge(sibling)
+                        return sibling
+                self._blob_store.put(key, content)
+                row = Document(
+                    id=document_id,
+                    claim_id=claim_id,
+                    parent_document_id=parent_document_id,
+                    doc_type=None,
+                    status="received",
+                    filename=filename,
+                    mime="application/pdf",
+                    s3_key=key,
+                    sha256=digest,
+                    page_count=end_page - start_page + 1,
+                    source=source,
+                    received_at=self._clock(),
+                )
+                session.add(row)
+                self.record_event(
+                    session,
+                    claim_id=claim_id,
+                    event_type="document.received",
+                    payload={
+                        "document_id": document_id,
+                        "sha256": digest,
+                        "parent_document_id": parent_document_id,
+                    },
+                    actor=actor,
+                    correlation_id=new_ulid(),
+                )
+                session.flush()
+                session.expunge(row)
+                return row
+
+    def append_consistency_result(
+        self, claim_id: str, result: dict, *, input_fingerprint: str
+    ) -> bool:
+        """Append a result once per immutable input fingerprint."""
+
+        with self._sessions.begin() as session:
+            self._claim_or_error(session, claim_id)
+            existing = list(
+                session.scalars(
+                    select(ConsistencyResult).where(
+                        ConsistencyResult.claim_id == claim_id,
+                        ConsistencyResult.check_id == result["check_id"],
+                    )
+                )
+            )
+            if any(
+                row.evidence.get("_input_fingerprint") == input_fingerprint
+                for row in existing
+            ):
+                return False
+            evidence = {**result.get("evidence", {}), "_input_fingerprint": input_fingerprint}
+            session.add(
+                ConsistencyResult(
+                    id=new_ulid(),
+                    claim_id=claim_id,
+                    check_id=result["check_id"],
+                    status=result["status"],
+                    severity=result["severity"],
+                    rationale=result["rationale"],
+                    score=result.get("score"),
+                    evidence=evidence,
+                    created_at=self._clock(),
+                )
+            )
+            return True
+
+    def append_doc_intel_sample(self, sample: dict) -> None:
+        """Append one immutable document-intelligence telemetry sample."""
+
+        with self._sessions.begin() as session:
+            session.add(
+                DocIntelSample(
+                    id=new_ulid(),
+                    document_id=sample["document_id"],
+                    duration_ms=sample["duration_ms"],
+                    cost_usd=sample["cost_usd"],
+                    breached_duration=sample["breached_duration"],
+                    breached_cost=sample["breached_cost"],
+                    created_at=self._clock(),
+                )
+            )
 
     def documents(self, claim_id: str) -> list[Document]:
         with self._sessions() as session:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+from itertools import count
 
 import pytest
 
@@ -35,7 +36,34 @@ def _create_claim(client) -> str:
     return r.json()["id"]
 
 
+_CITATION_SEQUENCE = count(1)
+
+
 def _write(client, claim_id, writes, headers=AGENT):
+    uncited = [
+        write
+        for write in writes
+        if write.get("verification_state") == "extracted"
+        and write.get("source_ref") is None
+    ]
+    if uncited:
+        sequence = next(_CITATION_SEQUENCE)
+        document = client.post(
+            f"/claims/{claim_id}/documents",
+            files={"file": (f"fixture-{sequence}.txt", f"citation {sequence}".encode(),
+                            "text/plain")},
+            data={"source_channel": "test", "source_ref": f"fixture-{sequence}"},
+            headers=headers,
+        )
+        assert document.status_code == 201, document.text
+        document_id = document.json()["id"]
+        for write in uncited:
+            write["source_ref"] = {
+                "document_id": document_id,
+                "page": 1,
+                "bbox": [0, 0, 1, 1],
+                "anchor_text": "fixture citation",
+            }
     return client.patch(f"/claims/{claim_id}/fields", json={"writes": writes}, headers=headers)
 
 

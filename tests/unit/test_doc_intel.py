@@ -321,6 +321,12 @@ def test_vehicle_registration_remains_plaintext_per_ed6a(tmp_path):
         json={"lob": "motor", "pack_version": "motor@1.3.0"},
         headers=headers,
     ).json()["id"]
+    document_id = client.post(
+        f"/claims/{claim_id}/documents",
+        files={"file": ("logbook.txt", b"KBX 123A", "text/plain")},
+        data={"source_channel": "test", "source_ref": "logbook"},
+        headers=headers,
+    ).json()["id"]
     response = client.patch(
         f"/claims/{claim_id}/fields",
         json={
@@ -331,7 +337,7 @@ def test_vehicle_registration_remains_plaintext_per_ed6a(tmp_path):
                     "value_type": "string",
                     "source_type": "extraction",
                     "source_ref": {
-                        "document_id": "01K00000000000000000000000",
+                        "document_id": document_id,
                         "page": 1,
                         "bbox": [0, 0, 1, 1],
                         "anchor_text": "KBX 123A",

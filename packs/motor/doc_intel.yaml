@@ -1,0 +1,24 @@
+tiers:
+  MODEL_HEAVY:
+    model_id: claude-sonnet-4-6
+    fallback_model_id: pending_capture
+    input_usd_per_mtok: '3.00'
+    output_usd_per_mtok: '15.00'
+    max_output_tokens: 8192
+  MODEL_LIGHT:
+    model_id: claude-haiku-4-5-20251001
+    fallback_model_id: pending_capture
+    input_usd_per_mtok: '1.00'
+    output_usd_per_mtok: '5.00'
+    max_output_tokens: 4096
+classification_confidence_threshold: '0.80'
+vision_confidence_multiplier: '0.90'
+slo:
+  duration_limit_ms: 180000
+  cost_limit_usd: '0.60'
+audit_redacted_keys:
+  - value
+  - remarks
+  - narrative
+  - first_text
+  - prompt
