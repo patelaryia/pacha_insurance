@@ -96,8 +96,9 @@ class SchemaRegistry:
         schema = self.schema_for(doc_type)
         lines = [
             f"Extract the registered fields for document type: {doc_type}.",
-            "For every field return value, anchor_text (verbatim, at most 120 chars), "
-            "page, and confidence.",
+            "For every field return value, one citation mode, page, and confidence. "
+            "Use anchor_text (verbatim, at most 120 chars) by default; vision_bbox is "
+            "only eligible for handwritten schemas or text-sparse pages.",
         ]
         for name, definition in schema["fields"].items():
             description = definition.get("description", "")
@@ -121,21 +122,42 @@ class SchemaRegistry:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": [
-                            "name",
-                            "value",
-                            "anchor_text",
-                            "page",
-                            "confidence",
-                        ],
+                        "required": ["name", "value", "page", "confidence"],
                         "additionalProperties": False,
                         "properties": {
                             "name": {"type": "string", "enum": names},
                             "value": {},
+                            "citation_mode": {
+                                "type": "string",
+                                "enum": ["anchor_text", "vision_bbox"],
+                            },
                             "anchor_text": {"type": "string", "maxLength": 120},
+                            "bbox": {
+                                "type": "array",
+                                "prefixItems": [
+                                    {"type": "number"},
+                                    {"type": "number"},
+                                    {"type": "number"},
+                                    {"type": "number"},
+                                ],
+                                "minItems": 4,
+                                "maxItems": 4,
+                            },
                             "page": {"type": "integer", "minimum": 1},
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         },
+                        "oneOf": [
+                            {
+                                "properties": {"citation_mode": {"const": "anchor_text"}},
+                                "required": ["anchor_text"],
+                                "not": {"required": ["bbox"]},
+                            },
+                            {
+                                "properties": {"citation_mode": {"const": "vision_bbox"}},
+                                "required": ["bbox"],
+                                "not": {"required": ["anchor_text"]},
+                            },
+                        ],
                     },
                 }
             },

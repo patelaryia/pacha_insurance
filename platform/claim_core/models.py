@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -150,6 +151,11 @@ class Document(Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     claim_id: Mapped[str] = mapped_column(Text, ForeignKey("claims.id"), nullable=False)
+    parent_document_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("documents.id"),
+        comment="Immutable parent bundle for a human-resolved document split",
+    )
     doc_type: Mapped[str | None] = mapped_column(
         Text, comment="from pack taxonomy; null until classified"
     )
@@ -169,6 +175,47 @@ class Document(Base):
         comment='{"channel":"email","message_id":"...","sender":"..."}',
     )
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ConsistencyResult(Base):
+    """One immutable cross-document consistency evaluation."""
+
+    __tablename__ = "consistency_results"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
+    claim_id: Mapped[str] = mapped_column(Text, ForeignKey("claims.id"), nullable=False)
+    check_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+Index(
+    "uq_consistency_results_input",
+    ConsistencyResult.claim_id,
+    ConsistencyResult.check_id,
+    ConsistencyResult.evidence["_input_fingerprint"].as_string(),
+    unique=True,
+)
+
+
+class DocIntelSample(Base):
+    """One immutable per-document duration and cost sample."""
+
+    __tablename__ = "doc_intel_samples"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
+    document_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("documents.id"), nullable=False
+    )
+    duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(8, 6), nullable=False)
+    breached_duration: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    breached_cost: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class Communication(Base):

@@ -60,16 +60,34 @@ def _events(client, claim_id, event_type):
     return [e for e in tl if e["type"] == event_type]
 
 
+def _citation(client, claim_id: str, label: str) -> dict:
+    document = client.post(
+        f"/claims/{claim_id}/documents",
+        files={"file": (f"{label}.txt", label.encode(), "text/plain")},
+        data={"source_channel": "test", "source_ref": label},
+        headers=AGENT,
+    )
+    assert document.status_code == 201, document.text
+    return {
+        "document_id": document.json()["id"],
+        "page": 1,
+        "bbox": [0, 0, 1, 1],
+        "anchor_text": label,
+    }
+
+
 # --- §0.3 dispatcher + scenario (3) ------------------------------------------------
 
 
 def test_dispatch_feeds_ledger_and_chain_verifies(harness):
     client, app, clock = harness
     claim_id = _claim(client)
+    source_ref = _citation(client, claim_id, "ledger reserve")
     client.patch(
         f"/claims/{claim_id}/fields",
         json={"writes": [{"path": "reserve.total", "value": 1_000_000_00,
                           "value_type": "money", "source_type": "extraction",
+                          "source_ref": source_ref,
                           "verification_state": "extracted"}]},
         headers=AGENT,
     )
@@ -300,10 +318,12 @@ def test_approval_dwell_is_blocked_on_inputs(harness):
 def test_pii_encrypted_at_rest_plaintext_on_read_and_access_logged(harness):
     client, app, clock = harness
     claim_id = _claim(client)
+    source_ref = _citation(client, claim_id, "insured phone")
     r = client.patch(
         f"/claims/{claim_id}/fields",
         json={"writes": [{"path": "parties.insured.phone", "value": "0722 000 111",
                           "value_type": "string", "source_type": "extraction",
+                          "source_ref": source_ref,
                           "verification_state": "extracted"}]},
         headers=AGENT,
     )
@@ -349,10 +369,12 @@ def test_pii_encrypted_at_rest_plaintext_on_read_and_access_logged(harness):
 def test_non_pii_fields_stay_plaintext(harness):
     client, app, _clock = harness
     claim_id = _claim(client)
+    source_ref = _citation(client, claim_id, "policy number")
     client.patch(
         f"/claims/{claim_id}/fields",
         json={"writes": [{"path": "policy.number", "value": "MAY/MOT/9",
                           "value_type": "string", "source_type": "extraction",
+                          "source_ref": source_ref,
                           "verification_state": "extracted"}]},
         headers=AGENT,
     )
@@ -372,10 +394,12 @@ def test_non_pii_fields_stay_plaintext(harness):
 def test_no_plaintext_pii_in_timeline_or_replay(harness):
     client, app, clock = harness
     claim_id = _claim(client)
+    source_ref = _citation(client, claim_id, "private phone")
     client.patch(
         f"/claims/{claim_id}/fields",
         json={"writes": [{"path": "parties.insured.phone", "value": "0722 999 888",
                           "value_type": "string", "source_type": "extraction",
+                          "source_ref": source_ref,
                           "verification_state": "extracted"}]},
         headers=AGENT,
     )

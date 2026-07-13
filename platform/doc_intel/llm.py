@@ -33,6 +33,10 @@ class ModelTransportError(ModelError):
     """Retryable provider transport failure."""
 
 
+class ModelProviderUnavailable(ModelError):
+    """Configured provider/model slot is unavailable and must pause fail-closed."""
+
+
 class ModelSchemaError(ModelError):
     """Structured output remained invalid after one regeneration."""
 
@@ -88,6 +92,8 @@ class ModelWrapper:
         model_id = tier_config.get(model_key)
         if model_id is None:
             return inputs
+        if model_id == "pending_capture":
+            raise ModelProviderUnavailable(f"{tier} {model_key} is unresolved")
         call_inputs = deepcopy(inputs)
         call_inputs["_model_id"] = model_id
         return call_inputs
@@ -128,6 +134,8 @@ class ModelWrapper:
                     schema=schema,
                     inputs=self._inputs_for_attempt(tier, inputs, attempt),
                 )
+            except ModelProviderUnavailable as error:
+                raise ModelUnavailable("configured model provider is unavailable") from error
             except (ModelTransportError, TimeoutError, ConnectionError) as error:
                 last_error = error
                 elapsed = self._elapsed_seconds(start, self._clock())

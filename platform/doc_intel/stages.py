@@ -36,7 +36,7 @@ class DocumentStage(Base):
             name="ck_document_stages_stage",
         ),
         CheckConstraint(
-            "status IN ('pending','succeeded','failed','skipped')",
+            "status IN ('pending','running','succeeded','failed','paused','skipped')",
             name="ck_document_stages_status",
         ),
     )

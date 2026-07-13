@@ -1,0 +1,23 @@
+checks:
+  - id: CC-1
+    trigger_docs: [claim, logbook, repair_estimate, assessor_report]
+    expression: all_registrations_equal
+    severity: block-pack
+  - id: CC-2
+    trigger_docs: [claim_form, driving_licence]
+    expression: driver_age_within_one_year
+    severity: flag
+  - id: CC-3
+    trigger_docs: [claim, driving_licence]
+    expression: licence_expiry_on_or_after_loss_date
+    severity: block-pack
+  - id: CC-4
+    trigger_docs: [claim, logbook]
+    expression: owner_name_fuzzy_insured_name
+    threshold: '0.80'
+    severity: flag
+  - id: CC-5
+    trigger_docs: [claim, photo_damage]
+    expression: narrative_vs_photos
+    severity: flag
+    max_autonomy_level: L2

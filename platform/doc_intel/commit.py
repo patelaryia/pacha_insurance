@@ -44,6 +44,21 @@ def prepare_commit(
             and combined >= threshold
         )
         if commit_eligible:
+            if field.get("citation_mode") == "vision_bbox":
+                source_ref = {
+                    "document_id": document_id,
+                    "page": field["page"],
+                    "bbox": citation["bbox"],
+                    "citation_mode": "vision_bbox",
+                    "vision_verified": citation.get("vision_verified") is True,
+                }
+            else:
+                source_ref = {
+                    "document_id": document_id,
+                    "page": field["page"],
+                    "bbox": citation["bbox"],
+                    "anchor_text": field["anchor_text"],
+                }
             writes.append(
                 FieldWrite(
                     path=target,
@@ -52,12 +67,7 @@ def prepare_commit(
                         "money" if definition["validator"] == "money_kes" else definition["type"]
                     ),
                     source_type="extraction",
-                    source_ref={
-                        "document_id": document_id,
-                        "page": field["page"],
-                        "bbox": citation["bbox"],
-                        "anchor_text": field["anchor_text"],
-                    },
+                    source_ref=source_ref,
                     confidence=combined,
                     verification_state="extracted",
                     pii_class=definition["pii_class"],

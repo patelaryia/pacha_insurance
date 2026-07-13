@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from importlib import import_module
 from typing import Any
 
 from celery import Celery
@@ -39,6 +40,18 @@ celery_app.conf.update(
 _runtime: dict[str, Any] = {}
 
 
+def _ensure_runtime() -> None:
+    if _runtime:
+        return
+    reference = os.environ.get("PACHA_WORKER_RUNTIME_FACTORY")
+    if not reference or ":" not in reference:
+        raise RuntimeError("PACHA_WORKER_RUNTIME_FACTORY=module:factory is required")
+    module_name, attribute = reference.split(":", 1)
+    getattr(import_module(module_name), attribute)()
+    if not _runtime:
+        raise RuntimeError("worker runtime factory did not configure claim-core services")
+
+
 def configure_runtime(*, dispatcher: Any, sla_engine: Any, ledger: Any) -> None:
     """Bind application-owned synchronous engines for worker execution."""
 
@@ -47,6 +60,7 @@ def configure_runtime(*, dispatcher: Any, sla_engine: Any, ledger: Any) -> None:
 
 @celery_app.task(name="claim_core.dispatch_events")
 def dispatch_events() -> int:
+    _ensure_runtime()
     return _runtime["dispatcher"].dispatch_once(
         _runtime["dispatcher"].consumer_names - {"ledger"}
     )
@@ -54,14 +68,17 @@ def dispatch_events() -> int:
 
 @celery_app.task(name="claim_core.dispatch_ledger")
 def dispatch_ledger() -> int:
+    _ensure_runtime()
     return _runtime["dispatcher"].dispatch_once({"ledger"})
 
 
 @celery_app.task(name="claim_core.evaluate_slas")
 def evaluate_slas() -> int:
+    _ensure_runtime()
     return _runtime["sla_engine"].evaluate()
 
 
 @celery_app.task(name="claim_core.verify_ledger")
 def verify_ledger() -> dict[str, bool | int | None]:
+    _ensure_runtime()
     return _runtime["ledger"].run_nightly_verification()

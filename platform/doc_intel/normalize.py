@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 from PIL import Image
 
 from claim_core import BlobStore
+from doc_intel.settings import DEFAULTS
 
 
 class NormaliseError(RuntimeError):
@@ -68,6 +69,8 @@ class NormaliseResult:
     text_keys: list[str]
     page_keys: list[str]
     first_text: str
+    page_text_coverages: list[float]
+    email_subject: str | None
 
 
 def _plain_text_pdf(text: str) -> bytes:
@@ -100,6 +103,11 @@ def _email_text(content: bytes) -> str:
     return str(message.get_content())
 
 
+def _email_subject(content: bytes) -> str | None:
+    subject = BytesParser(policy=policy.default).parsebytes(content).get("subject")
+    return str(subject) if subject is not None else None
+
+
 def _msg_text(content: bytes) -> str:
     import extract_msg
 
@@ -109,6 +117,19 @@ def _msg_text(content: bytes) -> str:
         message = extract_msg.Message(source.name)
         try:
             return message.body or ""
+        finally:
+            message.close()
+
+
+def _msg_subject(content: bytes) -> str | None:
+    import extract_msg
+
+    with tempfile.NamedTemporaryFile(suffix=".msg") as source:
+        source.write(content)
+        source.flush()
+        message = extract_msg.Message(source.name)
+        try:
+            return message.subject or None
         finally:
             message.close()
 
@@ -192,12 +213,28 @@ def normalise_document(
     source_key: str,
     blob_store: BlobStore,
     ocr_engine: OcrEngine | None,
+    text_coverage_threshold: float | None = None,
 ) -> NormaliseResult:
     """Normalise one immutable original, render pages, and persist word streams."""
 
     try:
+        source_bytes = blob_store.get(source_key)
+        coverage_threshold = (
+            float(DEFAULTS["vision_text_coverage_threshold"])
+            if text_coverage_threshold is None
+            else text_coverage_threshold
+        )
+        suffix = Path(filename).suffix.casefold()
+        email_subject = None
+        if mime == "message/rfc822" or suffix == ".eml":
+            email_subject = _email_subject(source_bytes)
+        elif suffix == ".msg" or mime in {
+            "application/vnd.ms-outlook",
+            "application/x-msg",
+        }:
+            email_subject = _msg_subject(source_bytes)
         pdf_bytes = _to_pdf(
-            content=blob_store.get(source_key),
+            content=source_bytes,
             filename=filename,
             mime=mime,
             document_id=document_id,
@@ -211,6 +248,7 @@ def normalise_document(
         text_keys = []
         page_keys = []
         first_text_parts = []
+        page_text_coverages = []
         try:
             for page_number, page in enumerate(pdf, start=1):
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), alpha=False)
@@ -219,8 +257,9 @@ def normalise_document(
                 blob_store.put(page_key, png)
                 page_keys.append(page_key)
                 native_words, coverage = _native_words(page)
+                page_text_coverages.append(coverage)
                 words = list(native_words)
-                if coverage < 0.05 and ocr_engine is not None:
+                if coverage < coverage_threshold and ocr_engine is not None:
                     words.extend(ocr_engine.words(png))
                 text_key = f"text/{document_id}/{page_number}.json"
                 blob_store.put(
@@ -242,4 +281,6 @@ def normalise_document(
         text_keys=text_keys,
         page_keys=page_keys,
         first_text=" ".join(first_text_parts)[:2_000],
+        page_text_coverages=page_text_coverages,
+        email_subject=email_subject,
     )

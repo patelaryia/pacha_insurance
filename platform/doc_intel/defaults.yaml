@@ -10,3 +10,4 @@ confidence_thresholds:
   registration: '0.90'
   other: '0.85'
 classification_confidence_threshold: 0.80
+vision_text_coverage_threshold: 0.05
