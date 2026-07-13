@@ -49,3 +49,23 @@ in `rule_runs` — inspect the latest run's `missing_inputs`/`inputs_snapshot`.
 Do not bypass blocked or non-fired rules. R-14 deliberately keeps SETTLEMENT
 blocked until its captured inputs land (register #49/#64); this is the intended
 v1 state, not an incident.
+
+## Autonomy triage (PACKET-08)
+
+**Auto-demotion:** every demotion writes `autonomy_changes` (reason
+`auto_demotion`, evidence includes `trigger` + `trigger_event_id`) plus an
+`ops.alert{autonomy_auto_demotion}` event. Investigate the triggering
+`grader_runs` row (critical failure) or the rolling-20 resolution window
+before considering re-promotion — re-promotion goes through the normal
+signed API, never a DB edit. Demotions never occur below L1 automatically.
+
+**Frozen promotions:** `platform_state['autonomy_promotions_frozen']` is set
+by nightly ledger-verification failure (audit-degraded mode, PACKET-03).
+Recovery: repair + re-verify the chain; the flag is cleared manually after
+incident review. While set, every promotion returns 403 `PROMOTIONS_FROZEN`.
+
+**Critical grader failure:** `review.created{EXCEPTION, grader_critical_fail}`
+carries the grader id and subject_ref. Resolve the underlying data problem;
+never resolve the item by re-grading until inputs changed. GP-1: `settlement.*`
+promotions stay 403 `GATE_GP1_CLOSED` until `platform_state['gp1_open']` is
+set by the GP-1 decision (PRD-12).
