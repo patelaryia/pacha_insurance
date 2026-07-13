@@ -1,7 +1,7 @@
 """Add PRD-01 live-stage storage.
 
-Revision ID: 0004_docintel_live_stages
-Revises: 0003_document_stages
+Revision ID: 0005_docintel_live_stages
+Revises: 0004_cop_runs
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0004_docintel_live_stages"
-down_revision: str | None = "0003_document_stages"
+revision: str = "0005_docintel_live_stages"
+down_revision: str | None = "0004_cop_runs"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -18,3 +18,5 @@ extract-msg>=0.48
 pytesseract>=0.3.13
 jsonschema>=4.22
 anthropic>=0.52
+json-logic-qubit>=0.9.1,<1
+Jinja2>=3.1

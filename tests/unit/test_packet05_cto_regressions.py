@@ -349,7 +349,7 @@ def test_migration_0005_preserves_pinned_columns_and_builds_active_dialect_index
         )
     app.state.engine.dispose()
     database.dispose()
-    command.downgrade(config, "0004_docintel_live_stages")
+    command.downgrade(config, "0005_docintel_live_stages")
 
     downgraded = create_engine(url)
     with downgraded.connect() as connection:

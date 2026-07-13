@@ -1,0 +1,9 @@
+id: R-10
+name: late_intimation
+applies_to: motor
+status: blocked_on_inputs
+blocked_on: [pack.late_days]
+inputs: {late_days: pack.late_days}
+when: false
+outcome: {action: route_review}
+version: 1.0.0

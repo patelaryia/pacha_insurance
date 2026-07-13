@@ -1,0 +1,13 @@
+id: R-08
+name: reinspection_physical
+applies_to: motor
+status: live
+inputs:
+  quote: assessment.agreed_quote
+  parts_replaced: assessment.parts_replaced
+when: {"or": [{">": [{var: quote}, 50_000_00]}, {"==": [{var: parts_replaced}, true]}]}
+outcome:
+  action: set_field
+  path: assessment.reinspection_mode
+  value: physical
+version: 1.0.0

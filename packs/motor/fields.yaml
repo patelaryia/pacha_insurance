@@ -26,3 +26,58 @@ fields:
   assessment.pav:
     value_type: money
     pii_class: none
+  policy.excess_amount:
+    value_type: money
+    pii_class: none
+  policy.sum_insured:
+    value_type: money
+    pii_class: none
+  assessment.parts_replaced:
+    value_type: bool
+    pii_class: none
+  assessment.validation_assessor_id:
+    value_type: string
+    pii_class: none
+  assessment.initial_assessor_id:
+    value_type: string
+    pii_class: none
+  assessment.assessor_fee:
+    value_type: money
+    pii_class: none
+  assessment.reinspection_fee:
+    value_type: money
+    pii_class: none
+  assessment.towing_fee:
+    value_type: money
+    pii_class: none
+  assessment.agreed_value:
+    value_type: money
+    pii_class: none
+  assessment.supplier_lines:
+    value_type: object
+    pii_class: none
+  assessment.garage_party_id:
+    value_type: string
+    pii_class: none
+  assessment.assessor_party_id:
+    value_type: string
+    pii_class: none
+  assessment.write_off_indicated:
+    value_type: bool
+    pii_class: none
+  assessment.reinspection_mode:
+    value_type: string
+    pii_class: none
+  salvage.logbook_held:
+    value_type: bool
+    pii_class: none
+  salvage.keys_held:
+    value_type: bool
+    pii_class: none
+  salvage.election:
+    value_type: enum
+    pii_class: none
+    enum_values: [retain, surrender]
+  settlement.c07_variant:
+    value_type: string
+    pii_class: none

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -562,11 +562,29 @@ class ClaimService:
         return []
 
     def hydrate_claim(
-        self, claim_id: str, actor: str
+        self,
+        claim_id: str,
+        actor: str,
+        *,
+        paths: Sequence[str] | None = None,
     ) -> tuple[Claim, dict[str, ClaimField], list[str]]:
         with self._sessions() as session:
             claim = self._claim_or_error(session, claim_id)
-            fields = self._current_fields(session, claim_id)
+            if paths is None:
+                fields = self._current_fields(session, claim_id)
+            else:
+                selected_paths = tuple(dict.fromkeys(paths))
+                if selected_paths:
+                    rows = session.scalars(
+                        select(ClaimField).where(
+                            ClaimField.claim_id == claim_id,
+                            ClaimField.path.in_(selected_paths),
+                            ClaimField.superseded_by.is_(None),
+                        )
+                    )
+                    fields = {row.path: row for row in rows}
+                else:
+                    fields = {}
             blocked_reasons = self._blocked_reasons(session, claim_id)
             wrapped_dek = claim.dek_wrapped
             session.expunge(claim)

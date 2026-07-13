@@ -1,0 +1,20 @@
+id: motor
+version: 1.0.0
+platform_min_version: 0.1.0
+display_strings:
+  external_expert: Assessor
+  service_provider: Garage
+config:
+  late_days:
+    value: null
+    status: blocked_on_inputs
+  desk_physical_threshold:
+    value: null
+    status: blocked_on_inputs
+  abstract_waiver_conditions:
+    value: null
+    status: blocked_on_inputs
+  routing_amount_calc: C-08
+  routing_amount_fallback: reserve.total
+  review_routes:
+    EX_GRATIA_REVIEW: EX_GRATIA

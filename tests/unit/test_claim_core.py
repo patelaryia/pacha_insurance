@@ -73,6 +73,7 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
     tables = set(inspect(client.app.state.engine).get_table_names())
     assert tables == {
         "audit_ledger",
+        "calc_runs",
         "claims",
         "claim_fields",
         "documents",
@@ -84,6 +85,7 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
         "events",
         "event_deliveries",
         "platform_state",
+        "rule_runs",
         "sla_clocks",
         "sla_definitions",
     }
