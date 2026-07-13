@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 
 import doc_intel.stages  # noqa: F401 - registers Packet-04 table metadata
+import eval_harness.models  # noqa: F401 - registers Packet-08 table metadata
 from claim_core.app import create_app
 from claim_core.dictionary import FieldDefinition, value_matches
 
@@ -73,7 +74,9 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
     tables = set(inspect(client.app.state.engine).get_table_names())
     assert tables == {
         "audit_ledger",
+        "autonomy_changes",
         "calc_runs",
+        "capabilities",
         "claims",
         "claim_fields",
         "documents",
@@ -84,10 +87,12 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
         "parties",
         "events",
         "event_deliveries",
+        "grader_runs",
         "platform_state",
         "rule_runs",
         "sla_clocks",
         "sla_definitions",
+        "test_cases",
     }
     paths = client.app.openapi()["paths"]
     assert "/claims/{claim_id}/fields" in paths
