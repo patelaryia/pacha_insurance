@@ -15,8 +15,11 @@ import pytest
 from sqlalchemy import text
 
 AGENT = {"X-Actor": "agent:cop"}
-HUMAN = {"X-Actor": "user:cop-tester"}
+HUMAN = {"X-Actor": "user:01ARZ3NDEKTSV4RRFFQ69G5FAV"}  # user: + 26-char ULID (D-3)
 ACTOR = "agent:cop"
+
+# Paths whose dictionary value_type is not inferable from the JSON value.
+ENUM_PATHS = {"salvage.election"}
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MOTOR_PACK = REPO / "packs" / "motor"
@@ -52,12 +55,14 @@ def _write(client, claim_id: str, values: dict) -> None:
     writes = []
     for path, value in values.items():
         value_type = (
-            "money"
+            "enum"
+            if path in ENUM_PATHS
+            else "money"
             if isinstance(value, int) and not isinstance(value, bool)
             else "bool"
             if isinstance(value, bool)
             else "object"
-            if isinstance(value, (list, dict))
+            if isinstance(value, dict)
             else "string"
         )
         writes.append(
@@ -601,10 +606,12 @@ def test_c03_breakdown_lines_sum_to_c02(harness):
             "assessment.reinspection_fee": 3_000_00,
             "assessment.garage_party_id": "P-GARAGE",
             "assessment.assessor_party_id": "P-ASSESSOR",
-            "assessment.supplier_lines": [
-                {"payee_party_id": "P-SUP1", "amount": 40_000_00},
-                {"payee_party_id": "P-SUP2", "amount": 25_000_00},
-            ],
+            "assessment.supplier_lines": {
+                "lines": [
+                    {"payee_party_id": "P-SUP1", "amount": 40_000_00},
+                    {"payee_party_id": "P-SUP2", "amount": 25_000_00},
+                ]
+            },
         },
     )
     reserve = runtime.execute_calc("C-02", claim_id, actor=ACTOR)
@@ -631,7 +638,7 @@ def test_c03_without_prior_c02_run_is_blocked(harness):
             "assessment.reinspection_fee": 3_000_00,
             "assessment.garage_party_id": "P-GARAGE",
             "assessment.assessor_party_id": "P-ASSESSOR",
-            "assessment.supplier_lines": [],
+            "assessment.supplier_lines": {"lines": []},
         },
     )
     res = runtime.execute_calc("C-03", claim_id, actor=ACTOR)

@@ -20,7 +20,10 @@
 1. New package **`platform/cop_runtime/`**, import `cop_runtime` (register #46).
 2. **Pack loader (interim):** reads a pack directory (`packs/motor/`), validates every
    YAML against a runtime meta-schema, compiles rule `when` clauses to **JSONLogic**
-   at load (`json-logic-py` — new dependency, named by the PRD), **fails on
+   at load (dependency: **`json-logic-qubit`**, import `json_logic` — the PRD's
+   "json-logic-py" is that project's GitHub name; the `json-logic` PyPI dist is the
+   stale 0.6.3 original lacking `min`/`max`; the qubit fork preserves ints —
+   register #57), **fails on
    unresolvable field paths**, AST-sandbox-checks `calcs/calcs.py`. Full PRD-13 build
    pipeline (tar+sha signing, `pack_registry`, corpus golden run) is packet 7+/PRD-13.
 3. **Rule runtime:** `evaluate(rule_id, claim_id) → RuleResult{fired, outcome,
@@ -247,7 +250,8 @@ partially registered.
   `assessment.reinspection_fee` — path names register #48).
 - **C-03** breakdown = lines `[{category, payee_party_id, amount,
   parent_reserve_id}]`: one line per supplier in `assessment.supplier_lines`
-  (object field: `[{payee_party_id, amount}]`), `garage_residual` =
+  (object field — the dictionary's `object` type is a JSON dict, so the shape is
+  `{"lines": [{payee_party_id, amount}]}`), `garage_residual` =
   agreed_quote − Σsupplier (payee `assessment.garage_party_id`), `assessor` =
   assessor_fee (payee `assessment.assessor_party_id`), `reinspection_residual` =
   reinspection_fee. **Invariant Σlines = C-02 output** — assert it; violation is a
@@ -348,7 +352,8 @@ Numbering continues after PACKET-05's #39–45 (in flight on its branch).
 - Gates green: ruff, ED-8 money-float lint, AR-2 banned-calls, pytest.
 - Alembic migration chained to repo head at merge time (see §3.4; rebase over
   PACKET-05 if it merges first).
-- `json-logic-py` added to `requirements.txt` (PRD-named dependency).
+- `json-logic-qubit` added to `requirements.txt` (register #57 — the PRD-named
+  "json-logic-py" does not exist as a PyPI distribution).
 - Runbook content (pack load failure modes, blocked-rule triage) flagged in PR
   description — CTO ships the docs page.
 - ED-11: anything underdetermined → narrowest safe behaviour + register entry.
