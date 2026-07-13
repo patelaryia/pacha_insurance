@@ -39,6 +39,14 @@ def downgrade() -> None:
     """Remove Packet-05 concurrency hardening."""
 
     op.drop_index("uq_consistency_results_input", table_name="consistency_results")
+    op.execute(
+        "UPDATE document_stages SET status = 'failed', "
+        "last_error = CASE "
+        "WHEN last_error IS NULL OR last_error = '' "
+        "THEN 'downgraded from running/paused; manual recovery required' "
+        "ELSE last_error || '; downgraded from running/paused; manual recovery required' "
+        "END WHERE status IN ('running', 'paused')"
+    )
     with op.batch_alter_table("document_stages") as batch_op:
         batch_op.drop_constraint("ck_document_stages_status", type_="check")
         batch_op.create_check_constraint(

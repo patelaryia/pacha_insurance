@@ -387,7 +387,7 @@ def test_handwritten_vision_bbox_is_crop_verified_and_multiplied_by_point_nine(t
     assert field["source_ref"]["vision_verified"] is True
 
 
-def test_vision_bbox_on_text_rich_nonhandwritten_page_never_commits(tmp_path):
+def test_vision_bbox_on_sub_five_percent_nonhandwritten_page_is_verified(tmp_path):
     from fastapi.testclient import TestClient
 
     from claim_core.app import create_app
@@ -401,18 +401,18 @@ def test_vision_bbox_on_text_rich_nonhandwritten_page_never_commits(tmp_path):
                             "confidence": 1.0, "citation_mode": "vision_bbox",
                             "bbox": [0.1, 0.1, 0.5, 0.2]}]
             },
+            "vision_crop_verify": {"visible": True},
         }
     )
-    app = create_app(f"sqlite:///{tmp_path}/vision-denied.db")
+    app = create_app(f"sqlite:///{tmp_path}/vision-eligible.db")
     build_engine(app, model_client=model, ocr_engine=FakeOcr(), clock=FixedClock())
     client = TestClient(app)
     claim_id = _claim(client)
     document_id = _upload(client, claim_id, _pdf(["Grand Total: KES 75,000"]),
                           "estimate.pdf", "application/pdf")
     outcome = app.state.doc_intel.process_document(document_id)
-    assert "assessment.estimate_total" not in outcome.committed_paths
-    assert any(item["type"] == "FIELD_VERIFY" for item in outcome.review_items)
-    assert not any(call["inputs"]["task"] == "vision_crop_verify" for call in model.calls)
+    assert "assessment.estimate_total" in outcome.committed_paths
+    assert any(call["inputs"]["task"] == "vision_crop_verify" for call in model.calls)
 
 
 def test_swahili_gloss_is_derived_narrative_never_rule_input(tmp_path):

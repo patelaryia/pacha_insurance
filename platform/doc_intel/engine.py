@@ -59,7 +59,6 @@ from doc_intel.validators import money_kes, sum_check, validate_field
 from doc_intel.vision import (
     crop_png,
     eligible,
-    native_candidate_outside_bbox,
     normalized_bbox,
     verify_crop,
 )
@@ -591,16 +590,6 @@ class DocIntelEngine:
                     )
                 )
                 if bbox is None or not page_eligible:
-                    candidate["citation"] = None
-                    candidate["citation_failed"] = True
-                    cited_fields.append(candidate)
-                    continue
-                words = json.loads(
-                    self.blob_store.get(normalised["text_keys"][page_index])
-                )
-                if schema.get("handwritten") is not True and native_candidate_outside_bbox(
-                    value=field["value"], words=words, bbox=bbox
-                ):
                     candidate["citation"] = None
                     candidate["citation_failed"] = True
                     cited_fields.append(candidate)

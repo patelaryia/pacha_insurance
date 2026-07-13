@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import math
-import re
 from typing import Any
 
 from PIL import Image
@@ -51,35 +50,6 @@ def crop_png(page_png: bytes, bbox: list[float]) -> bytes:
     output = io.BytesIO()
     image.crop(pixels).save(output, format="PNG")
     return output.getvalue()
-
-
-def native_candidate_outside_bbox(
-    *, value: Any, words: list[dict[str, Any]], bbox: list[float]
-) -> bool:
-    """Reject a bbox when the native layer locates its candidate somewhere else."""
-
-    candidate_tokens = {
-        token
-        for raw in str(value).split()
-        if len(token := re.sub(r"[^A-Z0-9]", "", raw.upper())) >= 2
-    }
-    matching_boxes = [
-        word.get("bbox")
-        for word in words
-        if word.get("source") == "native"
-        and re.sub(r"[^A-Z0-9]", "", str(word.get("text", "")).upper())
-        in candidate_tokens
-        and normalized_bbox(word.get("bbox")) is not None
-    ]
-    if not matching_boxes:
-        return False
-    return all(
-        box[2] <= bbox[0]
-        or box[0] >= bbox[2]
-        or box[3] <= bbox[1]
-        or box[1] >= bbox[3]
-        for box in matching_boxes
-    )
 
 
 def verify_crop(

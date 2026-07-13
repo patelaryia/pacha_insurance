@@ -200,7 +200,6 @@ def _native_words(page: fitz.Page) -> tuple[list[dict[str, Any]], float]:
             {
                 "text": text,
                 "bbox": [x0 / width, y0 / height, x1 / width, y1 / height],
-                "source": "native",
             }
         )
     return words, covered / page_area if page_area else 0.0
@@ -261,9 +260,7 @@ def normalise_document(
                 page_text_coverages.append(coverage)
                 words = list(native_words)
                 if coverage < coverage_threshold and ocr_engine is not None:
-                    words.extend(
-                        {**word, "source": "ocr"} for word in ocr_engine.words(png)
-                    )
+                    words.extend(ocr_engine.words(png))
                 text_key = f"text/{document_id}/{page_number}.json"
                 blob_store.put(
                     text_key,

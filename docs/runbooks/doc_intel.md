@@ -76,4 +76,6 @@ loud logging sink, while the null sink is available only by explicit test inject
 Migration `0005_packet05_cto_hardening` adds the `running`
 and `paused` stage states plus a unique expression index over
 `(claim_id, check_id, evidence._input_fingerprint)` without changing Packet-05's
-pinned `consistency_results` columns.
+pinned `consistency_results` columns. Downgrading to Packet-04 converts any live
+`running` or `paused` stage to `failed` with a manual-recovery marker before restoring
+the older status constraint; inspect and recover those rows explicitly after rollback.

@@ -286,7 +286,11 @@ def test_migration_0005_preserves_pinned_columns_and_builds_active_dialect_index
 
     from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, inspect
+    from sqlalchemy import create_engine, inspect, text
+
+    from claim_core.app import create_app
+    from doc_intel.engine import build_engine
+    from doc_intel.llm import FakeModelClient
 
     url = _database_url(tmp_path, "migration")
     config = Config()
@@ -323,8 +327,44 @@ def test_migration_0005_preserves_pinned_columns_and_builds_active_dialect_index
         for check in inspector.get_check_constraints("document_stages")
     )
     assert "paused" in stage_checks
+
+    app = create_app(url)
+    engine = build_engine(app, model_client=FakeModelClient([]))
+    _claim, document = _claim_and_document(app)
+    engine._ensure_stages(document.id)
+    with app.state.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE document_stages SET status = 'running' "
+                "WHERE document_id = :document_id AND stage = 'NORMALIZE'"
+            ),
+            {"document_id": document.id},
+        )
+        connection.execute(
+            text(
+                "UPDATE document_stages SET status = 'paused', last_error = 'provider down' "
+                "WHERE document_id = :document_id AND stage = 'CLASSIFY'"
+            ),
+            {"document_id": document.id},
+        )
+    app.state.engine.dispose()
     database.dispose()
     command.downgrade(config, "0004_docintel_live_stages")
+
+    downgraded = create_engine(url)
+    with downgraded.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT status, last_error FROM document_stages "
+                "WHERE document_id = :document_id AND stage IN ('NORMALIZE', 'CLASSIFY')"
+            ),
+            {"document_id": document.id},
+        ).all()
+    downgraded.dispose()
+    assert len(rows) == 2
+    assert {row.status for row in rows} == {"failed"}
+    assert all("manual recovery required" in row.last_error for row in rows)
+
     command.upgrade(config, "head")
 
 
@@ -387,7 +427,7 @@ def test_native_text_coverage_is_only_word_bbox_area_divided_by_page_area():
     pdf.close()
     assert coverage == pytest.approx(expected)
     assert coverage < 0.05
-    assert {word["source"] for word in words} == {"native"}
+    assert all(set(word) == {"text", "bbox"} for word in words)
 
 
 def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, monkeypatch):
