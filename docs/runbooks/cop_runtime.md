@@ -30,3 +30,22 @@ A `rule_runs`/`calc_runs` row with `status = blocked_on_inputs`:
 Blocked runs are auditable evidence, not retry signals. Operators must not
 execute outcome data manually from these rows; outcome execution lands with
 PRD-02 slice 2 behind the existing invariants.
+
+## Render-refusal triage (PACKET-07)
+
+`TemplateRenderBlocked` carries `reason` ∈ {`pending_capture`, `missing_fields`,
+`under_verified`} plus `missing_fields` / `under_verified` path lists; for
+`pending_capture`, the registry row's `blocked_on` names the open item. Never
+substitute prose for a refused render. Calc-slot placeholders render the literal
+`PENDING CAPTURE` and force `signable: false` — a non-signable artifact stays
+non-signable until the calc goes live via pack version bump (open item 5).
+
+## Guard-blocked transition triage (PACKET-07)
+
+`409 TRANSITION_GUARD_BLOCKED` on a rule-wired edge (`REPORT_RECEIVED→WRITE_OFF`
+R-05, `IN_REPAIR→REINSPECTION` R-08, `SURRENDER_CHECKLIST→SETTLEMENT` R-13/R-14):
+`blocked_on` names the rule and its status; each guard check is itself recorded
+in `rule_runs` — inspect the latest run's `missing_inputs`/`inputs_snapshot`.
+Do not bypass blocked or non-fired rules. R-14 deliberately keeps SETTLEMENT
+blocked until its captured inputs land (register #49/#64); this is the intended
+v1 state, not an incident.

@@ -36,6 +36,8 @@ class RuleDefinition:
 class RuleResult:
     """Public result of a rule evaluation attempt."""
 
+    claim_id: str
+    rule_run_id: str
     rule_id: str
     rule_version: str
     pack_id: str

@@ -6,9 +6,12 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from claim_core import Base
+
+JSON_VALUE = JSON().with_variant(JSONB(), "postgresql")
 
 
 class RuleRun(Base):
@@ -25,9 +28,9 @@ class RuleRun(Base):
     pack_version: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     fired: Mapped[bool | None] = mapped_column(Boolean)
-    outcome: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    inputs_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    missing_inputs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    outcome: Mapped[dict[str, Any] | None] = mapped_column(JSON_VALUE)
+    inputs_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    missing_inputs: Mapped[list[str]] = mapped_column(JSON_VALUE, nullable=False)
     actor: Mapped[str] = mapped_column(Text, nullable=False)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -41,14 +44,14 @@ class CalcRun(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
     calc_id: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[str] = mapped_column(Text, nullable=False)
-    inputs: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    output: Mapped[Any | None] = mapped_column(JSON)
+    inputs: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    output: Mapped[Any | None] = mapped_column(JSON_VALUE)
     claim_id: Mapped[str] = mapped_column(Text, ForeignKey("claims.id"), nullable=False)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     pack_id: Mapped[str] = mapped_column(Text, nullable=False)
     pack_version: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
-    missing_inputs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    missing_inputs: Mapped[list[str]] = mapped_column(JSON_VALUE, nullable=False)
     actor: Mapped[str] = mapped_column(Text, nullable=False)
 
 

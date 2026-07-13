@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -120,6 +120,10 @@ RULE_LINKED_GUARDS: dict[tuple[ClaimState, ClaimState], str] = {
     ): "complete, R-13/R-14 gate",
 }
 
+GUARD_HOOK_RESIDUALS: dict[tuple[ClaimState, ClaimState], str] = {
+    (ClaimState.SURRENDER_CHECKLIST, ClaimState.SETTLEMENT): "complete",
+}
+
 PRE_REGISTERED_STATES = frozenset(
     {
         ClaimState.INTIMATED,
@@ -163,6 +167,16 @@ WITHDRAWAL_BLOCKED_STATES = frozenset(
 EventRecorder = Callable[..., Any]
 
 
+class GuardCheck(TypedDict):
+    """Result returned by a registered transition guard hook."""
+
+    passed: bool
+    blocked_on: list[str]
+
+
+GuardHook = Callable[[str], GuardCheck]
+
+
 @dataclass(frozen=True)
 class TransitionResult:
     """A committed state summary or a staged decline-approval result."""
@@ -187,6 +201,16 @@ class ClaimStateMachine:
         self._claim_locks = claim_locks
         self._clock = clock
         self._event = event_recorder
+        self._guard_hooks: dict[tuple[ClaimState, ClaimState], GuardHook] = {}
+
+    def register_guard_hook(
+        self,
+        edge: tuple[ClaimState, ClaimState],
+        hook: GuardHook,
+    ) -> None:
+        """Register the runtime check for one rule-linked transition edge."""
+
+        self._guard_hooks[edge] = hook
 
     @staticmethod
     def _claim_or_error(session: Session, claim_id: str) -> Claim:
@@ -296,8 +320,22 @@ class ClaimStateMachine:
                 extra={"blocked_on": blocked_on},
             )
 
-        guard = RULE_LINKED_GUARDS.get((current, requested))
-        if guard is not None:
+        edge = (current, requested)
+        guard = RULE_LINKED_GUARDS.get(edge)
+        hook = self._guard_hooks.get(edge)
+        if hook is not None:
+            check = hook(claim.id)
+            if not check["passed"]:
+                raise ClaimCoreError(
+                    409,
+                    "TRANSITION_GUARD_BLOCKED",
+                    "Claim transition is blocked by runtime guards",
+                    extra={"blocked_on": list(check["blocked_on"])},
+                )
+            residual = GUARD_HOOK_RESIDUALS.get(edge)
+            if residual is not None:
+                event_payload["guards_pending"] = [residual]
+        elif guard is not None:
             event_payload["guards_pending"] = [guard]
 
         claim.status = requested.value

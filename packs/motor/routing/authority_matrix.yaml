@@ -1,0 +1,5 @@
+- {max: 100_000_00, role: asst_claims_manager}
+- {max: 700_000_00, role: claims_manager}
+- {max: 1_500_000_00, role: gm}
+- {max: 4_000_000_00, role: md}
+- {max: null, role: chairman, side_effects: [render T-03]}
