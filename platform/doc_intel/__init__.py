@@ -8,6 +8,7 @@ __all__ = [
     "PipelineOutcome",
     "StageResult",
     "build_engine",
+    "build_worker_runtime",
 ]
 
 
@@ -26,4 +27,8 @@ def __getattr__(name: str) -> Any:
         from doc_intel.anthropic_client import AnthropicModelClient
 
         return AnthropicModelClient
+    if name == "build_worker_runtime":
+        from doc_intel.runtime import build_worker_runtime
+
+        return build_worker_runtime
     raise AttributeError(name)

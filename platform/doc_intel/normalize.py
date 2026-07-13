@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 from PIL import Image
 
 from claim_core import BlobStore
+from doc_intel.settings import DEFAULTS
 
 
 class NormaliseError(RuntimeError):
@@ -69,7 +70,6 @@ class NormaliseResult:
     page_keys: list[str]
     first_text: str
     page_text_coverages: list[float]
-    page_has_native_text: list[bool]
     email_subject: str | None
 
 
@@ -187,22 +187,28 @@ def _to_pdf(
     raise NormaliseError(f"unsupported document type: {mime or suffix}")
 
 
-def _native_words(page: fitz.Page) -> tuple[list[dict[str, Any]], float]:
+def _native_words(
+    page: fitz.Page, *, native_page_character_capacity: int
+) -> tuple[list[dict[str, Any]], float]:
     width = page.rect.width
     height = page.rect.height
     page_area = width * height
     words = []
     covered = 0.0
+    character_count = 0
     for raw in page.get_text("words"):
         x0, y0, x1, y1, text = raw[:5]
         covered += max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        character_count += len(str(text))
         words.append(
             {
                 "text": text,
                 "bbox": [x0 / width, y0 / height, x1 / width, y1 / height],
             }
         )
-    return words, covered / page_area if page_area else 0.0
+    geometric_coverage = covered / page_area if page_area else 0.0
+    semantic_coverage = character_count / native_page_character_capacity
+    return words, min(1.0, max(geometric_coverage, semantic_coverage))
 
 
 def normalise_document(
@@ -213,11 +219,17 @@ def normalise_document(
     source_key: str,
     blob_store: BlobStore,
     ocr_engine: OcrEngine | None,
+    native_page_character_capacity: int | None = None,
 ) -> NormaliseResult:
     """Normalise one immutable original, render pages, and persist word streams."""
 
     try:
         source_bytes = blob_store.get(source_key)
+        capacity = native_page_character_capacity or int(
+            DEFAULTS["normalization"]["native_page_character_capacity"]
+        )
+        if capacity < 1:
+            raise NormaliseError("native page character capacity must be positive")
         suffix = Path(filename).suffix.casefold()
         email_subject = None
         if mime == "message/rfc822" or suffix == ".eml":
@@ -243,7 +255,6 @@ def normalise_document(
         page_keys = []
         first_text_parts = []
         page_text_coverages = []
-        page_has_native_text = []
         try:
             for page_number, page in enumerate(pdf, start=1):
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), alpha=False)
@@ -251,9 +262,10 @@ def normalise_document(
                 page_key = f"pages/{document_id}/{page_number}.png"
                 blob_store.put(page_key, png)
                 page_keys.append(page_key)
-                native_words, coverage = _native_words(page)
+                native_words, coverage = _native_words(
+                    page, native_page_character_capacity=capacity
+                )
                 page_text_coverages.append(coverage)
-                page_has_native_text.append(bool(native_words))
                 words = list(native_words)
                 if coverage < 0.05 and ocr_engine is not None:
                     words.extend(ocr_engine.words(png))
@@ -278,6 +290,5 @@ def normalise_document(
         page_keys=page_keys,
         first_text=" ".join(first_text_parts)[:2_000],
         page_text_coverages=page_text_coverages,
-        page_has_native_text=page_has_native_text,
         email_subject=email_subject,
     )

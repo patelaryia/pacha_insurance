@@ -8,7 +8,7 @@ from typing import Any
 
 from PIL import Image
 
-VISION_CONFIDENCE_MULTIPLIER = 0.9
+from doc_intel.settings import DEFAULTS
 
 
 def normalized_bbox(value: Any) -> list[float] | None:
@@ -27,8 +27,15 @@ def normalized_bbox(value: Any) -> list[float] | None:
     return bbox if bbox[0] < bbox[2] and bbox[1] < bbox[3] else None
 
 
-def eligible(*, handwritten: bool, text_coverage: float) -> bool:
-    return handwritten or text_coverage < 0.05
+def eligible(
+    *, handwritten: bool, text_coverage: float, threshold: float | None = None
+) -> bool:
+    configured = (
+        float(DEFAULTS["vision_text_coverage_threshold"])
+        if threshold is None
+        else threshold
+    )
+    return handwritten or text_coverage < configured
 
 
 def crop_png(page_png: bytes, bbox: list[float]) -> bytes:
@@ -45,7 +52,13 @@ def crop_png(page_png: bytes, bbox: list[float]) -> bytes:
     return output.getvalue()
 
 
-def verify_crop(*, value: Any, crop_key: str, model_client: Any) -> tuple[bool, float]:
+def verify_crop(
+    *,
+    value: Any,
+    crop_png_bytes: bytes,
+    model_client: Any,
+    claim_id: str | None = None,
+) -> tuple[bool, float]:
     result = model_client.structured_call(
         tier="MODEL_LIGHT",
         schema={
@@ -54,6 +67,11 @@ def verify_crop(*, value: Any, crop_key: str, model_client: Any) -> tuple[bool, 
             "additionalProperties": False,
             "properties": {"visible": {"type": "boolean"}},
         },
-        inputs={"task": "vision_crop_verify", "value": value, "crop_key": crop_key},
+        inputs={
+            "task": "vision_crop_verify",
+            "_claim_id": claim_id,
+            "value": value,
+            "crop_png": crop_png_bytes,
+        },
     )
     return result["data"].get("visible") is True, float(result["cost_usd"])

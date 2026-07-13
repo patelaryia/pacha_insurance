@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -12,7 +13,7 @@ from typing import Any
 
 import yaml
 from fastapi import FastAPI
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import Session
 
 from claim_core import (
@@ -53,15 +54,9 @@ from doc_intel.stages import (
     StageResult,
 )
 from doc_intel.swahili import create_remarks_gloss
-from doc_intel.telemetry import NullAlertSink, SloSentinel
+from doc_intel.telemetry import LoggingAlertSink, SloSentinel
 from doc_intel.validators import money_kes, sum_check, validate_field
-from doc_intel.vision import (
-    VISION_CONFIDENCE_MULTIPLIER,
-    crop_png,
-    eligible,
-    normalized_bbox,
-    verify_crop,
-)
+from doc_intel.vision import crop_png, eligible, normalized_bbox, verify_crop
 
 CLASSIFY_SCHEMA = {
     "type": "object",
@@ -94,6 +89,8 @@ class DocIntelEngine:
         clock: Callable[[], datetime] | None,
         model_config: Mapping[str, Any] | None = None,
         alert_sink: Any | None = None,
+        runtime_mode: str = "test",
+        stage_scheduler: Any | None = None,
     ) -> None:
         self.app = app
         self.engine: Engine = app.state.engine
@@ -102,6 +99,8 @@ class DocIntelEngine:
         self.clock = clock or utc_now
         self.ocr_engine = ocr_engine or TesseractOcrEngine()
         self.model_client = model_client
+        self.runtime_mode = runtime_mode
+        self.stage_scheduler = stage_scheduler
         root = Path(__file__).resolve().parents[2]
         pack_config = yaml.safe_load(
             (root / "packs" / "motor" / "doc_intel.yaml").read_text(encoding="utf-8")
@@ -114,15 +113,14 @@ class DocIntelEngine:
         self.registry.load_directory(Path(__file__).with_name("schemas") / "motor")
         Base.metadata.create_all(self.engine, tables=[DocumentStage.__table__])
         slo = self.model_config["slo"]
+        if runtime_mode != "test" and alert_sink is None:
+            raise RuntimeError("operational doc-intel requires an alert sink")
         self.sentinel = SloSentinel(
             duration_limit_ms=int(slo["duration_limit_ms"]),
             cost_limit_usd=Decimal(str(slo["cost_limit_usd"])),
             sample_sink=self.claim_service.append_doc_intel_sample,
-            alert_sink=alert_sink or NullAlertSink(),
+            alert_sink=alert_sink if alert_sink is not None else LoggingAlertSink(),
         )
-        from doc_intel.tasks import configure_runtime
-
-        configure_runtime(self)
 
     def consume(self, event: Any) -> None:
         """Transactional-outbox consumer entry; unrelated event types are no-ops."""
@@ -131,7 +129,12 @@ class DocIntelEngine:
             return
         document_id = event.payload.get("document_id")
         if isinstance(document_id, str):
-            self.process_document(document_id)
+            if self.runtime_mode == "test":
+                self.process_document(document_id)
+            else:
+                if self.stage_scheduler is None:
+                    raise RuntimeError("operational doc-intel requires a stage scheduler")
+                self.stage_scheduler.schedule(document_id, "NORMALIZE")
 
     def _document(self, document_id: str) -> dict[str, Any]:
         row = self.claim_service.get_document(document_id)
@@ -187,19 +190,45 @@ class DocIntelEngine:
                 session.expunge(row)
         return {row.stage: row for row in rows}
 
-    def _begin_stage(self, document_id: str, stage: str) -> None:
+    def _begin_stage(self, document_id: str, stage: str) -> bool:
         with Session(self.engine) as session, session.begin():
-            row = session.scalar(
-                select(DocumentStage).where(
+            result = session.execute(
+                update(DocumentStage).where(
                     DocumentStage.document_id == document_id,
                     DocumentStage.stage == stage,
+                    DocumentStage.status.in_(("pending", "failed")),
+                )
+                .values(
+                    status="running",
+                    attempts=DocumentStage.attempts + 1,
+                    last_error=None,
+                    updated_at=self.clock(),
                 )
             )
-            if row is None:
-                raise RuntimeError(f"missing durable stage {stage}")
-            row.attempts += 1
-            row.last_error = None
-            row.updated_at = self.clock()
+            return result.rowcount == 1
+
+    def recover_stage(self, document_id: str, stage: str, *, actor: str) -> bool:
+        """Explicitly release a crashed running stage; never auto-reclaim uncertain work."""
+
+        if actor != "system" and re.fullmatch(r"user:[0-9A-HJKMNP-TV-Z]{26}", actor) is None:
+            raise ClaimCoreError(
+                422, "VALUE_TYPE_MISMATCH", "Recovery requires system or user ULID"
+            )
+        with Session(self.engine) as session, session.begin():
+            result = session.execute(
+                update(DocumentStage)
+                .where(
+                    DocumentStage.document_id == document_id,
+                    DocumentStage.stage == stage,
+                    DocumentStage.status == "running",
+                )
+                .values(
+                    status="failed",
+                    last_error=f"explicit recovery by {actor}",
+                    updated_at=self.clock(),
+                )
+            )
+            return result.rowcount == 1
 
     def _finish_stage(self, document_id: str, stage: str, result: StageResult) -> None:
         with Session(self.engine) as session, session.begin():
@@ -314,6 +343,9 @@ class DocIntelEngine:
                 source_key=document["s3_key"],
                 blob_store=self.blob_store,
                 ocr_engine=self.ocr_engine,
+                native_page_character_capacity=int(
+                    self.model_config["normalization"]["native_page_character_capacity"]
+                ),
             )
         except NormaliseError:
             self._emit_once(
@@ -342,7 +374,6 @@ class DocIntelEngine:
             "page_keys": result.page_keys,
             "first_text": result.first_text,
             "page_text_coverages": result.page_text_coverages,
-            "page_has_native_text": result.page_has_native_text,
             "email_subject": result.email_subject,
         }
         return StageResult(
@@ -359,9 +390,10 @@ class DocIntelEngine:
             schema=CLASSIFY_SCHEMA,
             inputs={
                 "task": "document_classify",
+                "_claim_id": document["claim_id"],
                 "filename": document["filename"],
                 "first_text": normalised["first_text"],
-                "page_1_key": normalised["page_keys"][0],
+                "page_png": self.blob_store.get(normalised["page_keys"][0]),
                 "email_subject": normalised.get("email_subject"),
                 "source": document["source"],
             },
@@ -375,7 +407,7 @@ class DocIntelEngine:
         requires_review = (
             doc_type == "other"
             or doc_type not in self.registry.doc_types()
-            or confidence < float(DEFAULTS["classification_confidence_threshold"])
+            or confidence < float(self.model_config["classification_confidence_threshold"])
         )
         if requires_review:
             self._review_once(
@@ -426,8 +458,9 @@ class DocIntelEngine:
                 schema=CLASSIFY_SCHEMA,
                 inputs={
                     "task": "page_classify",
+                    "_claim_id": document["claim_id"],
                     "page": page,
-                    "page_key": page_key,
+                    "page_png": self.blob_store.get(page_key),
                     "page_text": " ".join(str(word["text"]) for word in words)[:2_000],
                     "filename": document["filename"],
                 },
@@ -473,9 +506,13 @@ class DocIntelEngine:
             schema=self.registry.extraction_output_schema(doc_type),
             inputs={
                 "task": "extract",
+                "_claim_id": document["claim_id"],
                 "prompt": self.registry.prompt_for(doc_type),
-                "text_keys": normalised["text_keys"],
-                "page_keys": normalised["page_keys"],
+                "document_text": "\n".join(
+                    " ".join(str(word["text"]) for word in json.loads(self.blob_store.get(key)))
+                    for key in normalised["text_keys"]
+                ),
+                "page_pngs": [self.blob_store.get(key) for key in normalised["page_keys"]],
             },
         )
         output = {
@@ -497,6 +534,7 @@ class DocIntelEngine:
                     remarks=remarks,
                     model_client=wrapper,
                     blob_store=self.blob_store,
+                    claim_id=document["claim_id"],
                 )
                 output["_model"]["cost_usd"] += gloss_cost
         return StageResult(
@@ -527,10 +565,7 @@ class DocIntelEngine:
                     and eligible(
                         handwritten=schema.get("handwritten") is True,
                         text_coverage=float(normalised["page_text_coverages"][page_index]),
-                    )
-                    and (
-                        schema.get("handwritten") is True
-                        or not normalised["page_has_native_text"][page_index]
+                        threshold=float(self.model_config["vision_text_coverage_threshold"]),
                     )
                 )
                 if bbox is None or not page_eligible:
@@ -539,12 +574,15 @@ class DocIntelEngine:
                     cited_fields.append(candidate)
                     continue
                 crop_key = f"crops/{document['id']}/{field['name']}-{field['page']}.png"
-                self.blob_store.put(
-                    crop_key,
-                    crop_png(self.blob_store.get(normalised["page_keys"][page_index]), bbox),
+                crop_bytes = crop_png(
+                    self.blob_store.get(normalised["page_keys"][page_index]), bbox
                 )
+                self.blob_store.put(crop_key, crop_bytes)
                 visible, _cost = verify_crop(
-                    value=field["value"], crop_key=crop_key, model_client=wrapper
+                    value=field["value"],
+                    crop_png_bytes=crop_bytes,
+                    model_client=wrapper,
+                    claim_id=document["claim_id"],
                 )
                 candidate["citation"] = {
                     "bbox": bbox,
@@ -597,7 +635,7 @@ class DocIntelEngine:
                 else combined_confidence(0, result.outcome)
             )
             if field.get("citation_mode") == "vision_bbox":
-                combined *= Decimal(str(VISION_CONFIDENCE_MULTIPLIER))
+                combined *= Decimal(str(self.model_config["vision_confidence_multiplier"]))
             candidate = dict(field)
             candidate.update(
                 {
@@ -730,6 +768,7 @@ class DocIntelEngine:
                 narrative=narrative,
                 photo_descriptions=photos,
                 model_client=self._model_wrapper(document["id"]),
+                claim_id=document["claim_id"],
             )
             model_cost += cc5.pop("cost_usd")
             cc5["evidence"] = {"narrative": narrative, "photo_descriptions": photos}
@@ -739,21 +778,24 @@ class DocIntelEngine:
             fingerprint = hashlib.sha256(
                 json.dumps(result.get("evidence", {}), sort_keys=True, default=str).encode()
             ).hexdigest()
+            review_payload = (
+                {
+                    "type": "CONSISTENCY_FLAG",
+                    "subtype": result["check_id"],
+                    "document_id": document["id"],
+                    "status": result["status"],
+                    "severity": result["severity"],
+                }
+                if result.get("review_required")
+                else None
+            )
             if self.claim_service.append_consistency_result(
-                document["claim_id"], result, input_fingerprint=fingerprint
+                document["claim_id"],
+                result,
+                input_fingerprint=fingerprint,
+                review_payload=review_payload,
             ):
                 stored.append(result["check_id"])
-                if result.get("review_required"):
-                    self._review_once(
-                        document["claim_id"],
-                        {
-                            "type": "CONSISTENCY_FLAG",
-                            "subtype": result["check_id"],
-                            "document_id": document["id"],
-                            "status": result["status"],
-                            "severity": result["severity"],
-                        },
-                    )
         output = {"stored_checks": stored, "_model": {"cost_usd": model_cost}}
         return StageResult(
             status="succeeded" if results else "skipped",
@@ -773,7 +815,9 @@ class DocIntelEngine:
         }
         return handlers[stage](document)
 
-    def process_stage(self, document_id: str, stage: str) -> dict[str, Any]:
+    def process_stage(
+        self, document_id: str, stage: str, *, schedule_next: bool = False
+    ) -> dict[str, Any]:
         """Run exactly one idempotent stage for Celery and synchronous callers."""
 
         if stage not in STAGES:
@@ -782,8 +826,16 @@ class DocIntelEngine:
         self._ensure_stages(document_id)
         row = self._stage_rows(document_id)[stage]
         if row.status in TERMINAL_STAGE_STATUSES:
+            if schedule_next:
+                index = STAGES.index(stage)
+                if index + 1 < len(STAGES):
+                    if self.stage_scheduler is None:
+                        raise RuntimeError("stage chaining requires a scheduler")
+                    self.stage_scheduler.schedule(document_id, STAGES[index + 1])
             return {"stage": stage, "status": row.status, "output_ref": row.output_ref}
-        self._begin_stage(document_id, stage)
+        if not self._begin_stage(document_id, stage):
+            row = self._stage_rows(document_id)[stage]
+            return {"stage": stage, "status": row.status, "output_ref": row.output_ref}
         try:
             result = self._run_stage(document, stage)
         except ModelBudgetExceeded as error:
@@ -818,14 +870,52 @@ class DocIntelEngine:
             result = StageResult(status="failed", last_error=str(error))
         except Exception as error:
             self._fail_stage(document_id, stage, error)
+            if schedule_next:
+                rows = self._stage_rows(document_id)
+                self._record_sample(document_id, rows, rows["NORMALIZE"].created_at)
             raise
         else:
             self._finish_stage(document_id, stage, result)
+            if schedule_next and result.status in TERMINAL_STAGE_STATUSES:
+                index = STAGES.index(stage)
+                if index + 1 < len(STAGES):
+                    if self.stage_scheduler is None:
+                        raise RuntimeError("stage chaining requires a scheduler")
+                    self.stage_scheduler.schedule(document_id, STAGES[index + 1])
+        if schedule_next and (
+            result.status == "failed"
+            or (stage == STAGES[-1] and result.status in TERMINAL_STAGE_STATUSES)
+        ):
+            rows = self._stage_rows(document_id)
+            self._record_sample(document_id, rows, rows["NORMALIZE"].created_at)
         return {"stage": stage, "status": result.status, "output_ref": result.output_ref}
+
+    def _record_sample(
+        self,
+        document_id: str,
+        rows: Mapping[str, DocumentStage],
+        started_at: datetime,
+    ) -> None:
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        elapsed = self.clock() - started_at
+        duration_ms = max(0, int(elapsed.total_seconds() * 1000))
+        total_cost = Decimal("0")
+        for row in rows.values():
+            if row.output_ref and self.blob_store.exists(row.output_ref):
+                output = json.loads(self.blob_store.get(row.output_ref))
+                total_cost += Decimal(str(output.get("_model", {}).get("cost_usd", 0)))
+        self.sentinel.record(
+            document_id=document_id, duration_ms=duration_ms, cost_usd=total_cost
+        )
 
     def apply_human_boundaries(
         self, parent_document_id: str, *, boundaries: list[dict[str, Any]], actor: str
     ) -> list[str]:
+        if re.fullmatch(r"user:[0-9A-HJKMNP-TV-Z]{26}", actor) is None:
+            raise ClaimCoreError(
+                422, "VALUE_TYPE_MISMATCH", "Split resolution requires actor user:<ULID>"
+            )
         parent = self._document(parent_document_id)
         self._ensure_stages(parent_document_id)
         if parent["page_count"] is None:
@@ -852,6 +942,10 @@ class DocIntelEngine:
             if normalise_row.status != "succeeded":
                 result = self._normalise(self._document(child.id))
                 self._finish_stage(child.id, "NORMALIZE", result)
+            if self.runtime_mode != "test":
+                if self.stage_scheduler is None:
+                    raise RuntimeError("operational split resolution requires a scheduler")
+                self.stage_scheduler.schedule(child.id, "CLASSIFY")
         resolution = {
             "boundaries": [
                 {"start_page": start_page, "end_page": end_page}
@@ -905,16 +999,7 @@ class DocIntelEngine:
             review_items=review_items,
             failed=any(row.status == "failed" for row in rows.values()),
         )
-        elapsed = self.clock() - started_at
-        duration_ms = max(0, int(elapsed.total_seconds() * 1000))
-        total_cost = Decimal("0")
-        for row in rows.values():
-            if row.output_ref and self.blob_store.exists(row.output_ref):
-                output = json.loads(self.blob_store.get(row.output_ref))
-                total_cost += Decimal(str(output.get("_model", {}).get("cost_usd", 0)))
-        self.sentinel.record(
-            document_id=document_id, duration_ms=duration_ms, cost_usd=total_cost
-        )
+        self._record_sample(document_id, rows, started_at)
         return outcome
 
 
@@ -926,6 +1011,8 @@ def build_engine(
     clock: Callable[[], datetime] | None = None,
     model_config: Mapping[str, Any] | None = None,
     alert_sink: Any | None = None,
+    runtime_mode: str = "test",
+    stage_scheduler: Any | None = None,
 ) -> DocIntelEngine:
     """Build, expose, and register the doc-intel event consumer."""
 
@@ -936,6 +1023,8 @@ def build_engine(
         clock=clock,
         model_config=model_config,
         alert_sink=alert_sink,
+        runtime_mode=runtime_mode,
+        stage_scheduler=stage_scheduler,
     )
     app.state.doc_intel = engine
     app.state.dispatcher.register_consumer("doc_intel", engine.consume)

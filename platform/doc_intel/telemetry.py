@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, Protocol
@@ -12,8 +13,19 @@ class AlertSink(Protocol):
 
 
 class NullAlertSink:
+    """Explicit test-only alert sink."""
+
     def alert(self, code: str, payload: dict[str, Any]) -> None:
         return None
+
+
+class LoggingAlertSink:
+    """Loud local-driver sink used when no external pager is configured."""
+
+    def alert(self, code: str, payload: dict[str, Any]) -> None:
+        logging.getLogger("pacha.doc_intel.alerts").error(
+            "%s %s", code, payload
+        )
 
 
 class SloSentinel:

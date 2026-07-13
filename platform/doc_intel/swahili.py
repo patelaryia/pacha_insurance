@@ -7,7 +7,12 @@ from typing import Any
 
 
 def create_remarks_gloss(
-    *, document_id: str, remarks: str, model_client: Any, blob_store: Any
+    *,
+    document_id: str,
+    remarks: str,
+    model_client: Any,
+    blob_store: Any,
+    claim_id: str | None = None,
 ) -> float:
     result = model_client.structured_call(
         tier="MODEL_LIGHT",
@@ -17,7 +22,11 @@ def create_remarks_gloss(
             "additionalProperties": False,
             "properties": {"gloss": {"type": "string"}},
         },
-        inputs={"task": "translate_swahili_gloss", "remarks": remarks},
+        inputs={
+            "task": "translate_swahili_gloss",
+            "_claim_id": claim_id,
+            "remarks": remarks,
+        },
     )
     payload = {
         "source_field": "remarks",

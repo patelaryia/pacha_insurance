@@ -181,10 +181,19 @@ class ConsistencyResult(Base):
     """One immutable cross-document consistency evaluation."""
 
     __tablename__ = "consistency_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "claim_id",
+            "check_id",
+            "input_fingerprint",
+            name="uq_consistency_results_input",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
     claim_id: Mapped[str] = mapped_column(Text, ForeignKey("claims.id"), nullable=False)
     check_id: Mapped[str] = mapped_column(Text, nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(Text, nullable=False)
     rationale: Mapped[str] = mapped_column(Text, nullable=False)

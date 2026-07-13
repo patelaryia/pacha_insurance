@@ -127,6 +127,21 @@ class ClaimService:
         session.flush()
         return row
 
+    def record_model_call(self, detail: dict) -> None:
+        """Publish a redacted model-call fact; the ledger consumer is the sole writer."""
+
+        event_detail = dict(detail)
+        claim_id = event_detail.pop("claim_id", None)
+        with self._sessions.begin() as session:
+            self.record_event(
+                session,
+                claim_id=claim_id,
+                event_type="model.called",
+                payload={"detail": event_detail, "task": event_detail.get("task")},
+                actor="agent:doc_intel",
+                correlation_id=new_ulid(),
+            )
+
     def create_claim(self, request: ClaimCreate, actor: str) -> Claim:
         now = self._clock()
         claim = Claim(
@@ -276,10 +291,37 @@ class ClaimService:
         definitions: list[FieldDefinition],
         actor: str,
         correlation_id: str,
+        extraction_document_id: str | None = None,
     ) -> list[FieldWriteResult]:
         with self._sessions.begin() as session:
             acquire_database_claim_lock(session, claim_id)
             claim = self._claim_or_error(session, claim_id)
+            if extraction_document_id is not None:
+                document = session.get(Document, extraction_document_id)
+                if document is None or document.claim_id != claim_id:
+                    raise ClaimCoreError(
+                        422,
+                        "VALUE_TYPE_MISMATCH",
+                        "Extraction document must belong to the target claim",
+                    )
+                already_written = {
+                    field.path
+                    for field in session.scalars(
+                        select(ClaimField).where(
+                            ClaimField.claim_id == claim_id,
+                            ClaimField.source_type == "extraction",
+                        )
+                    )
+                    if isinstance(field.source_ref, dict)
+                    and field.source_ref.get("document_id") == extraction_document_id
+                }
+                selected = [
+                    (write, definition)
+                    for write, definition in zip(writes, definitions, strict=True)
+                    if write.path not in already_written
+                ]
+                writes = [pair[0] for pair in selected]
+                definitions = [pair[1] for pair in selected]
             for write in writes:
                 self._validate_extraction_citation(session, claim_id, write)
             current = self._current_fields(session, claim_id)
@@ -431,27 +473,6 @@ class ClaimService:
     ) -> list[FieldWriteResult]:
         """Write extraction results once per document/path through the public gate."""
 
-        with self._sessions() as session:
-            self._claim_or_error(session, claim_id)
-            document = session.get(Document, document_id)
-            if document is None or document.claim_id != claim_id:
-                raise ClaimCoreError(
-                    422,
-                    "VALUE_TYPE_MISMATCH",
-                    "Extraction document must belong to the target claim",
-                )
-            already_written = {
-                field.path
-                for field in session.scalars(
-                    select(ClaimField).where(
-                        ClaimField.claim_id == claim_id,
-                        ClaimField.source_type == "extraction",
-                    )
-                )
-                if isinstance(field.source_ref, dict)
-                and field.source_ref.get("document_id") == document_id
-            }
-        pending = []
         for write in writes:
             if write.source_type != "extraction":
                 raise ClaimCoreError(
@@ -465,9 +486,28 @@ class ClaimService:
                     "VALUE_TYPE_MISMATCH",
                     "Extraction source_ref must identify the source document",
                 )
-            if write.path not in already_written:
-                pending.append(write)
-        return self.write_fields(claim_id, pending, actor) if pending else []
+        definitions = [self._validate_write(write, actor) for write in writes]
+        correlation_id = new_ulid()
+        with self._claim_locks.acquire(claim_id):
+            for attempt in range(MAX_WRITE_RETRIES + 1):
+                try:
+                    return self._write_batch_once(
+                        claim_id,
+                        writes,
+                        definitions,
+                        actor,
+                        correlation_id,
+                        extraction_document_id=document_id,
+                    )
+                except HumanOverrideProtected as error:
+                    self._record_protected_attempt(
+                        claim_id, error.path, actor, correlation_id
+                    )
+                    raise
+                except IntegrityError:
+                    if attempt == MAX_WRITE_RETRIES:
+                        raise
+        raise RuntimeError("unreachable extraction write retry state")
 
     def transition_claim(
         self, claim_id: str, to: str, payload: dict | None, actor: str
@@ -538,9 +578,15 @@ class ClaimService:
             dek = self._key_provider.unwrap(bytes(wrapped_dek))
             for path in encrypted_paths:
                 fields[path].value = decrypt_value(fields[path].value, dek)
-                self._ledger.append_pii_decrypt(
-                    claim_id=claim_id, path=path, actor=actor
-                )
+                with self._sessions.begin() as session:
+                    self.record_event(
+                        session,
+                        claim_id=claim_id,
+                        event_type="pii.decrypted",
+                        payload={"field_path": path},
+                        actor=actor,
+                        correlation_id=new_ulid(),
+                    )
         return claim, fields, blocked_reasons
 
     def timeline(self, claim_id: str) -> list[Event]:
@@ -715,40 +761,51 @@ class ClaimService:
                 return row
 
     def append_consistency_result(
-        self, claim_id: str, result: dict, *, input_fingerprint: str
+        self,
+        claim_id: str,
+        result: dict,
+        *,
+        input_fingerprint: str,
+        review_payload: dict | None = None,
     ) -> bool:
-        """Append a result once per immutable input fingerprint."""
+        """Atomically append one result and its optional closed-type review event."""
 
-        with self._sessions.begin() as session:
-            self._claim_or_error(session, claim_id)
-            existing = list(
-                session.scalars(
-                    select(ConsistencyResult).where(
-                        ConsistencyResult.claim_id == claim_id,
-                        ConsistencyResult.check_id == result["check_id"],
+        with self._claim_locks.acquire(claim_id):
+            try:
+                with self._sessions.begin() as session:
+                    acquire_database_claim_lock(session, claim_id)
+                    self._claim_or_error(session, claim_id)
+                    evidence = {
+                        **result.get("evidence", {}),
+                        "_input_fingerprint": input_fingerprint,
+                    }
+                    session.add(
+                        ConsistencyResult(
+                            id=new_ulid(),
+                            claim_id=claim_id,
+                            check_id=result["check_id"],
+                            input_fingerprint=input_fingerprint,
+                            status=result["status"],
+                            severity=result["severity"],
+                            rationale=result["rationale"],
+                            score=result.get("score"),
+                            evidence=evidence,
+                            created_at=self._clock(),
+                        )
                     )
-                )
-            )
-            if any(
-                row.evidence.get("_input_fingerprint") == input_fingerprint
-                for row in existing
-            ):
+                    session.flush()
+                    if review_payload is not None:
+                        self.record_event(
+                            session,
+                            claim_id=claim_id,
+                            event_type="review.created",
+                            payload=review_payload,
+                            actor="agent:doc_intel",
+                            correlation_id=new_ulid(),
+                        )
+                    return True
+            except IntegrityError:
                 return False
-            evidence = {**result.get("evidence", {}), "_input_fingerprint": input_fingerprint}
-            session.add(
-                ConsistencyResult(
-                    id=new_ulid(),
-                    claim_id=claim_id,
-                    check_id=result["check_id"],
-                    status=result["status"],
-                    severity=result["severity"],
-                    rationale=result["rationale"],
-                    score=result.get("score"),
-                    evidence=evidence,
-                    created_at=self._clock(),
-                )
-            )
-            return True
 
     def append_doc_intel_sample(self, sample: dict) -> None:
         """Append one immutable document-intelligence telemetry sample."""

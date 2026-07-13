@@ -54,7 +54,7 @@ def test_anthropic_adapter_redacts_audit_and_accepts_mapping_tool_blocks():
 
 def test_anthropic_adapter_fail_closed_configuration_and_transport():
     from doc_intel.anthropic_client import AnthropicModelClient
-    from doc_intel.llm import ModelTransportError
+    from doc_intel.llm import ModelProviderUnavailable, ModelTransportError
 
     empty = AnthropicModelClient(
         SimpleNamespace(messages=None), config={"tiers": {}}, ledger=None
@@ -67,7 +67,7 @@ def test_anthropic_adapter_fail_closed_configuration_and_transport():
         config={"tiers": {"MODEL_LIGHT": {"model_id": "pending_capture"}}},
         ledger=None,
     )
-    with pytest.raises(ValueError, match="no usable model id"):
+    with pytest.raises(ModelProviderUnavailable, match="no usable model id"):
         pending.structured_call(tier="MODEL_LIGHT", schema={}, inputs={})
 
     class Messages:
@@ -131,15 +131,16 @@ def test_consistency_missing_triggers_and_unknown_expression_fail_closed():
         )
 
 
-def test_named_stage_task_calls_configured_shared_engine():
-    from doc_intel.tasks import PIPELINE_TASKS, configure_runtime
+def test_named_stage_task_builds_worker_runtime_without_api_global(monkeypatch):
+    from doc_intel import tasks
 
     class Engine:
-        def process_stage(self, document_id, stage):
+        def process_stage(self, document_id, stage, *, schedule_next):
+            assert schedule_next is True
             return {"document_id": document_id, "stage": stage}
 
-    configure_runtime(Engine())
-    assert PIPELINE_TASKS["CITE"].run("doc-1") == {
+    monkeypatch.setattr(tasks, "get_worker_runtime", lambda: SimpleNamespace(engine=Engine()))
+    assert tasks.PIPELINE_TASKS["CITE"].run("doc-1") == {
         "document_id": "doc-1",
         "stage": "CITE",
     }

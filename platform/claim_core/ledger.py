@@ -26,6 +26,8 @@ ACTION_MAP = {
     "document.received": "document.received",
     "document.extracted": "document.extracted",
     "document.rejected": "document.rejected",
+    "model.called": "model.structured_call",
+    "pii.decrypted": "pii.decrypt",
 }
 
 EventRecorder = Callable[..., Event]
@@ -164,6 +166,8 @@ class LedgerWriter:
             payload.get("field_id")
             or payload.get("document_id")
             or payload.get("review_id")
+            or payload.get("task")
+            or payload.get("field_path")
             or event.claim_id
         )
         before_hash = (
@@ -180,34 +184,6 @@ class LedgerWriter:
             after_hash=after_hash,
             detail={"event_id": event.id, "event_type": event.type, "payload": payload},
             event_id=event.id,
-        )
-
-    def record_model_call(self, detail: dict[str, Any]) -> None:
-        """Append one already-redacted ED-4 model-call record through the sole writer."""
-
-        self._append(
-            occurred_at=self._clock(),
-            actor="system",
-            action="model.structured_call",
-            claim_id=None,
-            object_ref=detail.get("task"),
-            before_hash=None,
-            after_hash=None,
-            detail=detail,
-        )
-
-    def append_pii_decrypt(self, *, claim_id: str, path: str, actor: str) -> None:
-        """Synchronously access-log one decrypt through this same writer."""
-
-        self._append(
-            occurred_at=self._clock(),
-            actor=actor,
-            action="pii.decrypt",
-            claim_id=claim_id,
-            object_ref=path,
-            before_hash=None,
-            after_hash=None,
-            detail={"field_path": path},
         )
 
     def verify_chain(self) -> dict[str, bool | int | None]:

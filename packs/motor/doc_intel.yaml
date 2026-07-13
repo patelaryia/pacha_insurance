@@ -12,7 +12,10 @@ tiers:
     output_usd_per_mtok: '5.00'
     max_output_tokens: 4096
 classification_confidence_threshold: '0.80'
+normalization:
+  native_page_character_capacity: 400
 vision_confidence_multiplier: '0.90'
+vision_text_coverage_threshold: '0.05'
 slo:
   duration_limit_ms: 180000
   cost_limit_usd: '0.60'
@@ -22,3 +25,13 @@ audit_redacted_keys:
   - narrative
   - first_text
   - prompt
+  - document_text
+  - page_text
+  - email_subject
+  - filename
+  - source
+  - gloss
+  - photo_descriptions
+  - rationale
+worker:
+  queue: doc_intel

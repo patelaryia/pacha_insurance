@@ -109,7 +109,11 @@ def evaluate_observations(
 
 
 def evaluate_cc5(
-    *, narrative: str, photo_descriptions: list[str], model_client: Any
+    *,
+    narrative: str,
+    photo_descriptions: list[str],
+    model_client: Any,
+    claim_id: str | None = None,
 ) -> dict[str, Any]:
     result = model_client.structured_call(
         tier="MODEL_HEAVY",
@@ -125,6 +129,7 @@ def evaluate_cc5(
         },
         inputs={
             "task": "consistency_cc5",
+            "_claim_id": claim_id,
             "narrative": narrative,
             "photo_descriptions": photo_descriptions,
         },

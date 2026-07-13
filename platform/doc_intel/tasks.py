@@ -1,27 +1,29 @@
-"""One named Celery task per idempotent document-intelligence stage."""
+"""One named Celery task per stage, bootstrapped independently in each worker."""
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
-from claim_core.celery_app import celery_app
+from claim_core import celery_app
 from doc_intel.stages import STAGES
 
-_engine: Any = None
 
+@lru_cache(maxsize=1)
+def get_worker_runtime() -> Any:
+    """Construct a fresh-process runtime without depending on FastAPI module globals."""
 
-def configure_runtime(engine: Any) -> None:
-    global _engine
-    _engine = engine
+    from doc_intel.runtime import build_worker_runtime
+
+    return build_worker_runtime()
 
 
 def _run(document_id: str, stage: str) -> dict[str, Any]:
-    if _engine is None:
-        raise RuntimeError("doc-intel task runtime is not configured")
-    return _engine.process_stage(document_id, stage)
+    runtime = get_worker_runtime()
+    return runtime.engine.process_stage(document_id, stage, schedule_next=True)
 
 
-PIPELINE_TASKS = {}
+PIPELINE_TASKS: dict[str, Any] = {}
 
 
 def _stage_callable(stage: str):
