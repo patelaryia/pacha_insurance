@@ -122,12 +122,12 @@ def _ledger_actions(app) -> list[str]:
 @pytest.fixture()
 def env(tmp_path):
     from fastapi.testclient import TestClient
-    from notify import build_notify
 
     from claim_core import create_app
     from claim_core.schemas import ClaimCreate
     from cop_runtime import build_cop_runtime
     from eval_harness import build_eval_harness
+    from notify import build_notify
     from review_queue import build_review_queue, install_console, install_ops
 
     url = os.environ.get("DATABASE_URL", f"sqlite:///{tmp_path}/pacha_acc12.db")
@@ -569,22 +569,14 @@ def test_scenario_2_decline_visible_from_queue_360_and_portfolio(env):
             {"actor": OFFICER, "claim_id": claim.id},
         )
     # walk to a post-triage state; rule-linked guards record guards_pending
-    # per PACKET-02 D-6 (register #24)
+    # per PACKET-02 D-6 (register #24). In-process service calls: the installed
+    # console ingress rejects every network X-Actor header (register #100), and
+    # agents call public in-process engine interfaces in this phase.
     for target in ("TRIAGED", "AWAITING_DOCS"):
-        moved = client.post(
-            f"/claims/{claim.id}/transition",
-            json={"to": target},
-            headers=_h(AGENT),
-        )
-        assert moved.status_code == 200, moved.text
+        app.state.claim_service.transition_claim(claim.id, target, {}, AGENT)
 
-    declined = client.post(
-        f"/claims/{claim.id}/decline",
-        json={"reason": "fixture decline"},
-        headers=_h(AGENT),
-    )
-    assert declined.status_code == 202, declined.text
-    assert declined.json()["code"] == "APPROVAL_REQUIRED"
+    declined = app.state.claim_service.decline_claim(claim.id, "other", AGENT)
+    assert declined.approval_required, "post-triage decline must require approval"
     _drain(app)
 
     # queue visibility
