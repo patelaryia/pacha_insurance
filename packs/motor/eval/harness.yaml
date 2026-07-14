@@ -1,0 +1,18 @@
+model_graders:
+  G-CITE:
+    task: g_cite_verify
+    tier: MODEL_LIGHT
+    prompt_ref: g_cite_verify@1
+    max_cost_usd: 0.01
+  G-NOTE:
+    task: g_note_grade
+    tier: MODEL_HEAVY
+    prompt_ref: g_note_grade@1
+    rubric_ref: T-01@pending_capture
+    required_section_ids: []
+    max_cost_usd: 0.18
+
+weekly:
+  enabled: true
+  interval_seconds: 604800
+  corpus: motor_v1

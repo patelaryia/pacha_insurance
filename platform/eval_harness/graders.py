@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -13,7 +15,8 @@ from json_logic import jsonLogic
 from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
-from doc_intel.validators import validate_field
+from doc_intel.validators import money_kes, validate_field
+from doc_intel.vision import crop_png, normalized_bbox
 from eval_harness.models import GraderRun
 
 GradeOutcome = Literal["pass", "fail", "error"]
@@ -131,6 +134,254 @@ class ValueGrader(Grader):
         outcome = validate_field(validator, field.value, today=self.harness.clock().date())
         result: GradeOutcome = "pass" if outcome.outcome in {"pass", "not_applicable"} else "fail"
         return RawGrade(result, {"validator": validator, "outcome": outcome.outcome})
+
+
+GCITE_SCHEMA = {
+    "type": "object",
+    "required": ["value_present", "observed_value"],
+    "additionalProperties": False,
+    "properties": {
+        "value_present": {"type": "boolean"},
+        "observed_value": {"type": ["string", "integer", "null"]},
+    },
+}
+
+
+class CitationGrader(Grader):
+    """Verify a current extracted value against only its cited render crop."""
+
+    def __init__(self, harness: Any) -> None:
+        super().__init__(harness, "G-CITE", "field", "critical")
+
+    def _field(self, claim_id: str, path: str, actor: str) -> dict[str, Any] | None:
+        try:
+            _claim, fields, _blocked = self.harness.claim_service.hydrate_claim(
+                claim_id,
+                actor,
+                paths=[path],
+            )
+        except Exception:  # noqa: BLE001 - missing/inaccessible current data is invalid
+            return None
+        field = fields.get(path)
+        if field is None:
+            return None
+        return {
+            "id": field.id,
+            "value": field.value,
+            "value_type": field.value_type,
+            "source_type": field.source_type,
+            "source_ref": field.source_ref,
+            "verification_state": field.verification_state,
+        }
+
+    @staticmethod
+    def _exact_numeric(value_type: str, observed: Any, current: Any) -> bool:
+        if value_type == "money":
+            parsed = money_kes(observed)
+            return (
+                parsed.outcome == "pass"
+                and isinstance(current, int)
+                and not isinstance(current, bool)
+                and parsed.value == current
+            )
+        if value_type == "date":
+            if not isinstance(observed, str) or not isinstance(current, str):
+                return False
+            try:
+                return date.fromisoformat(observed) == date.fromisoformat(current)
+            except ValueError:
+                return False
+        return True
+
+    def grade(self, subject: dict[str, Any], actor: str) -> RawGrade:
+        claim_id = subject.get("claim_id")
+        path = subject.get("path")
+        if not isinstance(claim_id, str) or not isinstance(path, str):
+            return RawGrade("error", {"code": "INVALID_SUBJECT_REF"})
+        field = self._field(claim_id, path, actor)
+        if field is None:
+            return RawGrade("error", {"code": "CURRENT_FIELD_MISSING"})
+        if (
+            field["source_type"] != "extraction"
+            or field["verification_state"] != "extracted"
+            or (isinstance(subject.get("field_id"), str) and subject["field_id"] != field["id"])
+        ):
+            return RawGrade("error", {"code": "INVALID_CURRENT_EXTRACTED_FIELD"})
+        source = field["source_ref"]
+        if not isinstance(source, dict):
+            return RawGrade("error", {"code": "INVALID_PROVENANCE"})
+        document_id = source.get("document_id")
+        page = source.get("page")
+        bbox = normalized_bbox(source.get("bbox"))
+        has_anchor = isinstance(source.get("anchor_text"), str) and bool(
+            source["anchor_text"].strip()
+        )
+        has_vision = source.get("vision_bbox") is not None
+        if (
+            not isinstance(document_id, str)
+            or not isinstance(page, int)
+            or isinstance(page, bool)
+            or page < 1
+            or bbox is None
+            or not (has_anchor or has_vision)
+        ):
+            return RawGrade("error", {"code": "INVALID_PROVENANCE"})
+        with self.harness.engine.connect() as connection:
+            belongs = connection.execute(
+                text("SELECT 1 FROM documents WHERE id = :document_id AND claim_id = :claim_id"),
+                {"document_id": document_id, "claim_id": claim_id},
+            ).scalar()
+        if belongs is None:
+            return RawGrade("error", {"code": "INVALID_PROVENANCE"})
+        page_key = f"pages/{document_id}/{page}.png"
+        try:
+            page_png = self.harness.blob_store.get(page_key)
+            crop = crop_png(page_png, bbox)
+        except Exception as error:  # noqa: BLE001 - corrupt/missing renders fail closed
+            return RawGrade(
+                "error",
+                {"code": "CITATION_RENDER_ERROR", "error_type": type(error).__name__},
+            )
+        try:
+            response = self.harness.model_call(
+                "G-CITE",
+                schema=GCITE_SCHEMA,
+                inputs={
+                    "_claim_id": claim_id,
+                    "_document_id": document_id,
+                    "crop_png": crop,
+                    "value": field["value"],
+                    "value_type": field["value_type"],
+                },
+            )["data"]
+        except Exception as error:  # noqa: BLE001 - model failures are visible outcomes
+            return RawGrade(
+                "error",
+                {"code": "MODEL_GRADER_ERROR", "error_type": type(error).__name__},
+            )
+        if response.get("value_present") is not True:
+            return RawGrade("fail", {"code": "VALUE_NOT_PRESENT"})
+        if field["value_type"] in {"money", "date"} and not self._exact_numeric(
+            field["value_type"], response.get("observed_value"), field["value"]
+        ):
+            return RawGrade("fail", {"code": "EXACT_VALUE_MISMATCH"})
+        return RawGrade("pass", {"code": "CITATION_VERIFIED"})
+
+
+GNOTE_SCHEMA = {
+    "type": "object",
+    "required": [
+        "numeric_claims",
+        "unsupported_assertions",
+        "missing_sections",
+        "tone_ok",
+    ],
+    "additionalProperties": False,
+    "properties": {
+        "numeric_claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["text", "field_path", "observed_value", "value_type"],
+                "additionalProperties": False,
+                "properties": {
+                    "text": {"type": "string"},
+                    "field_path": {"type": "string"},
+                    "observed_value": {"type": ["string", "integer"]},
+                    "value_type": {"type": "string"},
+                },
+            },
+        },
+        "unsupported_assertions": {"type": "array", "items": {"type": "string"}},
+        "missing_sections": {"type": "array", "items": {"type": "string"}},
+        "tone_ok": {"type": "boolean"},
+    },
+}
+NUMERIC_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+class NoteGrader(Grader):
+    """Grade T-01 prose and independently verify every numeric observation."""
+
+    def __init__(self, harness: Any) -> None:
+        super().__init__(harness, "G-NOTE", "artifact", "major")
+
+    @staticmethod
+    def _tokens(text_value: str) -> Counter[str]:
+        return Counter(token.replace(",", "") for token in NUMERIC_TOKEN.findall(text_value))
+
+    def grade(self, subject: dict[str, Any], actor: str) -> RawGrade:
+        claim_id = subject.get("claim_id")
+        blob_key = subject.get("blob_key")
+        if (
+            not isinstance(claim_id, str)
+            or not isinstance(blob_key, str)
+            or subject.get("template_id") != "T-01"
+        ):
+            return RawGrade("error", {"code": "INVALID_T01_SUBJECT"})
+        try:
+            note = self.harness.blob_store.get(blob_key).decode("utf-8")
+        except Exception as error:  # noqa: BLE001 - missing/non-UTF8 artifacts are errors
+            return RawGrade(
+                "error",
+                {"code": "ARTIFACT_READ_ERROR", "error_type": type(error).__name__},
+            )
+        config = self.harness.config["model_graders"]["G-NOTE"]
+        try:
+            response = self.harness.model_call(
+                "G-NOTE",
+                schema=GNOTE_SCHEMA,
+                inputs={
+                    "_claim_id": claim_id,
+                    "note": note,
+                    "rubric_ref": config.get("rubric_ref"),
+                    "required_section_ids": config.get("required_section_ids", []),
+                },
+            )["data"]
+        except Exception as error:  # noqa: BLE001 - model failures are visible outcomes
+            return RawGrade(
+                "error",
+                {"code": "MODEL_GRADER_ERROR", "error_type": type(error).__name__},
+            )
+        claims = response["numeric_claims"]
+        reported_tokens: Counter[str] = Counter()
+        for numeric_claim in claims:
+            reported_tokens.update(self._tokens(numeric_claim["text"]))
+        if reported_tokens != self._tokens(note):
+            return RawGrade("fail", {"code": "NUMERIC_TOKEN_OMISSION"})
+        if (
+            response["unsupported_assertions"]
+            or response["missing_sections"]
+            or response["tone_ok"] is not True
+        ):
+            return RawGrade("fail", {"code": "RUBRIC_FAILURE"})
+        paths = list(dict.fromkeys(item["field_path"] for item in claims))
+        try:
+            _claim, fields, _blocked = self.harness.claim_service.hydrate_claim(
+                claim_id,
+                actor,
+                paths=paths,
+            )
+        except Exception as error:  # noqa: BLE001 - inaccessible fields fail closed
+            return RawGrade(
+                "fail",
+                {"code": "FIELD_RESOLUTION_FAILED", "error_type": type(error).__name__},
+            )
+        for numeric_claim in claims:
+            value_type = numeric_claim["value_type"]
+            field = fields.get(numeric_claim["field_path"])
+            if (
+                field is None
+                or value_type not in {"money", "date"}
+                or field.value_type != value_type
+                or not CitationGrader._exact_numeric(
+                    value_type,
+                    numeric_claim["observed_value"],
+                    field.value,
+                )
+            ):
+                return RawGrade("fail", {"code": "STRUCTURED_VALUE_MISMATCH"})
+        return RawGrade("pass", {"code": "NOTE_VERIFIED"})
 
 
 class CalcGrader(Grader):
@@ -380,26 +631,30 @@ class GraderRegistry:
 
     def __init__(self, harness: Any) -> None:
         entries = [
-            PendingGrader(
+            CitationGrader(harness)
+            if harness.model_client is not None
+            else PendingGrader(
                 harness,
                 "G-CITE",
                 "field",
                 "critical",
                 status="pending",
-                blocked_on="PACKET-09 model crop verification",
+                blocked_on="model client not configured",
             ),
             ValueGrader(harness),
             CalcGrader(harness),
             RuleGrader(harness),
             SumGrader(harness),
             TemplateGrader(harness),
-            PendingGrader(
+            NoteGrader(harness)
+            if harness.model_client is not None
+            else PendingGrader(
                 harness,
                 "G-NOTE",
                 "artifact",
                 "major",
                 status="pending",
-                blocked_on="PACKET-09 model rubric grader",
+                blocked_on="model client not configured",
             ),
             PendingGrader(
                 harness,
@@ -499,36 +754,46 @@ class EvalConsumer:
                 )
             return
         if event.type == "template.rendered":
-            self.harness.grade(
-                "G-TPL",
-                {
-                    "claim_id": event.claim_id,
-                    "template_id": payload.get("template_id"),
-                    "blob_key": payload.get("blob_key"),
-                    "signable": payload.get("signable"),
-                    "source_event_id": event.id,
-                },
-                actor="agent:eval",
-            )
+            subject = {
+                "claim_id": event.claim_id,
+                "template_id": payload.get("template_id"),
+                "blob_key": payload.get("blob_key"),
+                "signable": payload.get("signable"),
+                "source_event_id": event.id,
+            }
+            if not self._already_graded("G-TPL", "source_event_id", event.id):
+                self.harness.grade("G-TPL", subject, actor="agent:eval")
+            if (
+                payload.get("template_id") == "T-01"
+                and self.harness.graders.get("G-NOTE").status == "live"
+                and not self._already_graded("G-NOTE", "source_event_id", event.id)
+            ):
+                self.harness.grade("G-NOTE", subject, actor="agent:eval")
             return
         if event.type == "field.updated":
             field_id = payload.get("field_id")
             with self.harness.engine.connect() as connection:
-                row = connection.execute(
-                    text("SELECT source_type, path FROM claim_fields WHERE id = :field_id"),
-                    {"field_id": field_id},
-                ).mappings().first()
-            if row is not None and row["source_type"] == "extraction":
-                self.harness.grade(
-                    "G-VAL",
-                    {
-                        "claim_id": event.claim_id,
-                        "field_id": field_id,
-                        "path": row["path"],
-                        "source_event_id": event.id,
-                    },
-                    actor="agent:eval",
+                row = (
+                    connection.execute(
+                        text("SELECT source_type, path FROM claim_fields WHERE id = :field_id"),
+                        {"field_id": field_id},
+                    )
+                    .mappings()
+                    .first()
                 )
+            if row is not None and row["source_type"] == "extraction":
+                subject = {
+                    "claim_id": event.claim_id,
+                    "field_id": field_id,
+                    "path": row["path"],
+                    "source_event_id": event.id,
+                }
+                if not self._already_graded("G-VAL", "field_id", field_id):
+                    self.harness.grade("G-VAL", subject, actor="agent:eval")
+                if self.harness.graders.get("G-CITE").status == "live" and not self._already_graded(
+                    "G-CITE", "field_id", field_id
+                ):
+                    self.harness.grade("G-CITE", subject, actor="agent:eval")
 
 
 __all__ = ["EvalConsumer", "GraderRegistry", "GraderResult", "RawGrade"]
