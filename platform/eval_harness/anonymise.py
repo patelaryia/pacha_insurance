@@ -16,7 +16,21 @@ from typing import Any
 PII_KINDS = frozenset({"name", "id", "phone"})
 FREE_TEXT_PATH = re.compile(r"(?:narrative|remarks|notes?|free[_-]?text)", re.IGNORECASE)
 PII_PATH = re.compile(r"(?:^|\.)(?:name|national_id|id_no|phone)(?:$|\.)", re.IGNORECASE)
-FREE_TEXT_KEYS = frozenset({"body", "content", "message", "narrative", "prose", "remarks", "text"})
+FREE_TEXT_KEYS = frozenset(
+    {
+        "body",
+        "content",
+        "description",
+        "message",
+        "narrative",
+        "note",
+        "notes",
+        "prose",
+        "remarks",
+        "text",
+    }
+)
+SCALAR_VALUE_TYPES = frozenset({"string", "money", "date", "datetime", "bool", "enum"})
 
 
 class AnonymisationRefused(ValueError):
@@ -87,7 +101,7 @@ def anonymise_bundle(bundle: Any, *, claim_key: str, secret: bytes) -> dict[str,
     if not isinstance(secret, bytes) or not secret:
         raise AnonymisationRefused("a non-empty runtime secret is required")
     _reject_binary(bundle)
-    _reject_ambiguous_free_text({key: value for key, value in bundle.items() if key != "fields"})
+    _reject_ambiguous_free_text(bundle)
     output = deepcopy(bundle)
     fields = output.get("fields")
     if not isinstance(fields, list):
@@ -101,6 +115,10 @@ def anonymise_bundle(bundle: Any, *, claim_key: str, secret: bytes) -> dict[str,
         kind = field.get("pii_kind")
         pii_class = field.get("pii_class")
         path = field.get("path")
+        if value_type not in SCALAR_VALUE_TYPES:
+            raise AnonymisationRefused("non-scalar or unknown field type is not exportable")
+        if isinstance(value, (dict, list)):
+            raise AnonymisationRefused("non-scalar field value is not exportable")
         if value_type == "money":
             if not isinstance(value, int) or isinstance(value, bool):
                 raise AnonymisationRefused("money must be integer KES cents")

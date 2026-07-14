@@ -152,8 +152,10 @@ class AutonomyController:
         since: datetime | None = None,
     ) -> list[GraderRun]:
         with self.sessions() as session:
-            query = select(GraderRun).order_by(
-                GraderRun.occurred_at.desc(), GraderRun.id.desc()
+            query = (
+                select(GraderRun)
+                .where(GraderRun.test_case_id.is_(None))
+                .order_by(GraderRun.occurred_at.desc(), GraderRun.id.desc())
             )
             if since is not None:
                 query = query.where(GraderRun.occurred_at >= since)
@@ -480,6 +482,9 @@ class AutonomyController:
         """Idempotently update counters/demotions from production events."""
 
         if event.type == "grader.failed":
+            subject_ref = event.payload.get("subject_ref")
+            if isinstance(subject_ref, dict) and subject_ref.get("test_case_id") is not None:
+                return
             capability_id = event.payload.get("capability_id")
             if (
                 isinstance(capability_id, str)

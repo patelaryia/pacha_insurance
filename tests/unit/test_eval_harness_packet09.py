@@ -6,6 +6,7 @@ import io
 import json
 import pathlib
 from collections import defaultdict
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,10 +15,12 @@ from sqlalchemy import select, text
 
 from claim_core.app import create_app
 from claim_core.models import Event
+from claim_core.service import new_ulid
 from cop_runtime import build_cop_runtime
-from eval_harness import build_eval_harness
+from eval_harness import PromotionDenied, build_eval_harness
 from eval_harness.anonymise import AnonymisationRefused, anonymise_bundle, main
 from eval_harness.graders import CitationGrader
+from eval_harness.models import Capability, GraderRun
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MOTOR_PACK = REPO / "packs" / "motor"
@@ -307,6 +310,124 @@ def test_named_weekly_task_uses_sync_engine_and_requires_runtime(eval_app, monke
         tasks.run_weekly_corpus.run()
 
 
+def test_corpus_grades_are_excluded_from_autonomy_evidence(eval_app):
+    _client, _app, harness, _model = eval_app
+    capability_id = "intake.acknowledge"
+    now = harness.clock()
+    with harness.sessions.begin() as session:
+        session.add_all(
+            [
+                GraderRun(
+                    id=new_ulid(),
+                    grader_id="G-CITE",
+                    subject_type="field",
+                    subject_ref={"capability_id": capability_id},
+                    claim_id=None,
+                    test_case_id=None,
+                    result="fail",
+                    severity="critical",
+                    detail={},
+                    occurred_at=now,
+                ),
+                GraderRun(
+                    id=new_ulid(),
+                    grader_id="G-CITE",
+                    subject_type="field",
+                    subject_ref={"capability_id": capability_id},
+                    claim_id=None,
+                    test_case_id="synthetic-case",
+                    result="pass",
+                    severity="critical",
+                    detail={},
+                    occurred_at=now,
+                ),
+            ]
+        )
+    evidence = harness.autonomy.evidence(capability_id)
+    assert evidence["grader_window_count"] == 1
+    assert evidence["grader_pass_percent"] == 0
+    assert evidence["critical_failures"] == 1
+
+
+def test_synthetic_passes_cannot_satisfy_production_promotion_window(eval_app):
+    _client, app, harness, _model = eval_app
+    capability_id = "intake.acknowledge"
+    now = harness.clock()
+    with harness.sessions.begin() as session:
+        for _ in range(25):
+            app.state.record_event(
+                session,
+                claim_id=None,
+                event_type="review.resolved",
+                payload={
+                    "capability_id": capability_id,
+                    "resolution": "approved",
+                    "diff": {"typed_changes": [], "prose_change_ratio": 0.0},
+                },
+                actor=HUMAN["X-Actor"],
+                correlation_id=None,
+            )
+        session.add(
+            GraderRun(
+                id=new_ulid(),
+                grader_id="G-CITE",
+                subject_type="field",
+                subject_ref={"capability_id": capability_id},
+                claim_id=None,
+                test_case_id=None,
+                result="fail",
+                severity="critical",
+                detail={},
+                occurred_at=now,
+            )
+        )
+        for index in range(24):
+            session.add(
+                GraderRun(
+                    id=new_ulid(),
+                    grader_id="G-CITE",
+                    subject_type="field",
+                    subject_ref={"capability_id": capability_id},
+                    claim_id=None,
+                    test_case_id=f"synthetic-{index}",
+                    result="pass",
+                    severity="critical",
+                    detail={},
+                    occurred_at=now + timedelta(seconds=1),
+                )
+            )
+    with pytest.raises(PromotionDenied) as error:
+        harness.autonomy.request_promotion(
+            capability_id,
+            "L2",
+            sign_offs=[{"actor": HUMAN["X-Actor"], "role": "claims_manager"}],
+            actor=HUMAN["X-Actor"],
+        )
+    assert error.value.code == "CRITERIA_NOT_MET"
+
+
+def test_corpus_grader_failure_event_cannot_demote_live_capability(eval_app):
+    _client, app, harness, _model = eval_app
+    capability_id = "intake.acknowledge"
+    with harness.sessions.begin() as session:
+        session.get(Capability, capability_id).current_level = "L3"
+    harness.grade(
+        "G-CITE",
+        {
+            "capability_id": capability_id,
+            "test_case_id": "synthetic-case",
+        },
+        "agent:eval",
+    )
+    app.state.dispatcher.dispatch_once(consumers=["autonomy"])
+    assert harness.autonomy.level(capability_id) == "L3"
+    with harness.engine.connect() as connection:
+        alerts = connection.execute(
+            text("SELECT COUNT(*) FROM events WHERE type = 'ops.alert'")
+        ).scalar_one()
+    assert alerts == 0
+
+
 def test_unknown_correction_capture_is_blocked_and_idempotent(eval_app):
     client, app, harness, _model = eval_app
     claim_id = _claim(client)
@@ -378,7 +499,19 @@ def test_correction_with_changed_prose_requires_immutable_reference(eval_app):
             ]
         },
         {"fields": [], "email": {"body": "Call Wanjiku on 0712345678"}},
+        {"fields": [], "metadata": {"notes": "Call Wanjiku on 0712345678"}},
+        {"fields": [], "metadata": {"description": "Wanjiku's claim"}},
         {"fields": [], "attachment": {"mime": "image/png", "value": "base64"}},
+        {
+            "fields": [
+                {
+                    "path": "claim.metadata",
+                    "value": {"name": "Wanjiku Kamau", "phone": "+254712345678"},
+                    "value_type": "object",
+                    "pii_class": "none",
+                }
+            ]
+        },
     ],
 )
 def test_anonymiser_refuses_money_bool_unclassified_pii_text_and_images(bundle):
