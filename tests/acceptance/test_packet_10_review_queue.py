@@ -7,6 +7,7 @@ No browser, broker, network, or live model call is permitted.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import pathlib
@@ -75,6 +76,23 @@ def _claim(client) -> str:
     response = client.post(
         "/claims",
         json={"lob": "motor", "pack_version": "motor@1.0.0"},
+        headers=_h(AGENT),
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+def _upload(client, claim_id: str, label: str = "source") -> str:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (600, 300), "white")
+    ImageDraw.Draw(image).text((40, 100), label, fill="black")
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    response = client.post(
+        f"/claims/{claim_id}/documents",
+        files={"file": (f"{label}.png", io.BytesIO(output.getvalue()), "image/png")},
+        data={"source_channel": "test", "source_ref": f"msg-{label}"},
         headers=_h(AGENT),
     )
     assert response.status_code == 201, response.text
@@ -606,6 +624,7 @@ def test_missing_band_amount_blocks_never_guesses(env):
 def test_field_verify_resolution_is_append_only_human_write(env):
     client, app, _queue = env
     claim_id = _claim(client)
+    document_id = _upload(client, claim_id)
     seeded = _write_field(
         client,
         claim_id,
@@ -616,7 +635,7 @@ def test_field_verify_resolution_is_append_only_human_write(env):
         source_type="extraction",
         verification_state="extracted",
         source_ref={
-            "document_id": "01HREVQDOCUMENT0000000AAAA",
+            "document_id": document_id,
             "page": 1,
             "bbox": [0.1, 0.1, 0.9, 0.9],
             "anchor_text": "KAA 111A",
@@ -673,7 +692,7 @@ def test_field_verify_resolution_is_append_only_human_write(env):
         source_type="extraction",
         verification_state="extracted",
         source_ref={
-            "document_id": "01HREVQDOCUMENT0000000AAAA",
+            "document_id": document_id,
             "page": 1,
             "bbox": [0.1, 0.1, 0.9, 0.9],
             "anchor_text": "KCC 333C",
