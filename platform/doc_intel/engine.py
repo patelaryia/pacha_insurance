@@ -113,6 +113,10 @@ class DocIntelEngine:
         self.model_config = {**DEFAULTS["model_wrapper"], **pack_config}
         if model_config is not None:
             self.model_config.update(dict(model_config))
+        self.review_capability_id = self.model_config.get("review_capability_id")
+        if not isinstance(self.review_capability_id, str) or not self.review_capability_id.strip():
+            raise ValueError("doc-intel review_capability_id must be configured")
+        self.review_capability_id = self.review_capability_id.strip()
         register_dictionary_extensions(root / "packs" / "motor" / "fields.yaml")
         self.registry = SchemaRegistry(field_dictionary())
         self.registry.load_directory(Path(__file__).with_name("schemas") / "motor")
@@ -721,6 +725,7 @@ class DocIntelEngine:
             fields=validated["fields"],
             schema=schema,
             blob_store=self.blob_store,
+            review_capability_id=self.review_capability_id,
         )
         committed_paths = commit_writes(
             service=self.claim_service,

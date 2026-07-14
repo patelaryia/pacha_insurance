@@ -643,6 +643,43 @@ class ClaimService:
                     )
         return claim, fields, blocked_reasons
 
+    def field_citation_lineage(
+        self,
+        claim_id: str,
+        *,
+        paths: Sequence[str] | None = None,
+    ) -> dict[str, list[dict]]:
+        """Return append-only provenance versions without exposing stored field values.
+
+        This is the curated cross-package read used by the console citation resolver.
+        Values (including encrypted PII) deliberately stay behind ``hydrate_claim``;
+        the lineage contains only the facts needed to retain extraction evidence after
+        a later human correction.
+        """
+
+        with self._sessions() as session:
+            self._claim_or_error(session, claim_id)
+            query = select(ClaimField).where(ClaimField.claim_id == claim_id)
+            if paths is not None:
+                selected_paths = tuple(dict.fromkeys(paths))
+                if not selected_paths:
+                    return {}
+                query = query.where(ClaimField.path.in_(selected_paths))
+            rows = session.scalars(
+                query.order_by(ClaimField.path, ClaimField.version.desc())
+            )
+            lineage: dict[str, list[dict]] = {}
+            for row in rows:
+                lineage.setdefault(row.path, []).append(
+                    {
+                        "version": row.version,
+                        "source_type": row.source_type,
+                        "source_ref": row.source_ref,
+                        "verification_state": row.verification_state,
+                    }
+                )
+            return lineage
+
     def timeline(self, claim_id: str) -> list[Event]:
         with self._sessions() as session:
             self._claim_or_error(session, claim_id)

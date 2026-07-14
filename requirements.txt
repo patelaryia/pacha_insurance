@@ -20,3 +20,5 @@ jsonschema>=4.22
 anthropic>=0.52
 json-logic-qubit>=0.9.1,<1
 Jinja2>=3.1
+PyJWT[crypto]>=2.9,<3
+httpx>=0.27,<1
