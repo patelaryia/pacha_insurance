@@ -296,6 +296,7 @@ class ClaimStateMachine:
         correlation_id: str,
         payload: dict[str, Any],
         decline_reason: str | None = None,
+        approved_by_event: str | None = None,
     ) -> None:
         if decline_reason is None and requested not in self._legal_successors(current):
             raise self._illegal_transition(current, requested)
@@ -303,6 +304,8 @@ class ClaimStateMachine:
         event_payload: dict[str, Any] = {"from": current.value, "to": requested.value}
         if decline_reason is not None:
             event_payload["reason"] = decline_reason
+        if approved_by_event is not None:
+            event_payload["approved_by_event"] = approved_by_event
 
         if current == ClaimState.IN_APPROVAL and requested == ClaimState.PACK_READY:
             event_payload["reason"] = self._structured_reject_reasons(payload)
@@ -361,6 +364,7 @@ class ClaimStateMachine:
         to: str | None = None,
         payload: dict[str, Any] | None = None,
         decline_reason: str | None = None,
+        approved_by_event: str | None = None,
         substatus: str | None | object = ...,
     ) -> TransitionResult:
         """Validate and atomically commit one state action under the claim lock."""
@@ -405,23 +409,36 @@ class ClaimStateMachine:
                             decline_reason=decline_reason,
                         )
                     elif current in DECLINE_APPROVAL_STATES:
-                        self._event(
-                            session,
-                            claim_id=claim.id,
-                            event_type="review.created",
-                            payload={
-                                "type": "EXCEPTION",
-                                "subtype": "decline_approval_required",
-                                "reason": decline_reason,
-                                "requested_by": actor,
-                            },
-                            actor=actor,
-                            correlation_id=correlation_id,
-                        )
-                        claim.updated_at = self._clock()
-                        return TransitionResult(
-                            claim.id, current, claim.substatus, approval_required=True
-                        )
+                        if approved_by_event is not None:
+                            self._commit_status(
+                                session,
+                                claim,
+                                current,
+                                requested,
+                                actor=actor,
+                                correlation_id=correlation_id,
+                                payload=request_payload,
+                                decline_reason=decline_reason,
+                                approved_by_event=approved_by_event,
+                            )
+                        else:
+                            self._event(
+                                session,
+                                claim_id=claim.id,
+                                event_type="review.created",
+                                payload={
+                                    "type": "EXCEPTION",
+                                    "subtype": "decline_approval_required",
+                                    "reason": decline_reason,
+                                    "requested_by": actor,
+                                },
+                                actor=actor,
+                                correlation_id=correlation_id,
+                            )
+                            claim.updated_at = self._clock()
+                            return TransitionResult(
+                                claim.id, current, claim.substatus, approval_required=True
+                            )
                     else:
                         raise self._illegal_transition(current, requested)
                 else:
@@ -442,7 +459,13 @@ class ClaimStateMachine:
                 )
 
     def decline(
-        self, claim_id: str, *, reason: str, actor: str, correlation_id: str
+        self,
+        claim_id: str,
+        *,
+        reason: str,
+        actor: str,
+        correlation_id: str,
+        approved_by_event: str | None = None,
     ) -> TransitionResult:
         """Run the reasoned decline action through the central transition method."""
 
@@ -452,6 +475,7 @@ class ClaimStateMachine:
             correlation_id=correlation_id,
             to=ClaimState.DECLINED.value,
             decline_reason=reason,
+            approved_by_event=approved_by_event,
         )
 
     def set_substatus(
