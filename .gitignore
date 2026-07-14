@@ -12,6 +12,7 @@ htmlcov/
 # Node / frontend (console/)
 node_modules/
 dist/
+coverage/
 *.tsbuildinfo
 
 # Env / secrets — never commit

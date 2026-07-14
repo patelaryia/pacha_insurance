@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import yaml
@@ -119,6 +120,21 @@ class ContractRegistry:
     @property
     def types(self) -> frozenset[str]:
         return frozenset(self._contracts)
+
+    @property
+    def metadata(self) -> MappingProxyType[str, dict[str, Any]]:
+        """Expose immutable console-facing contract metadata."""
+
+        return MappingProxyType(
+            {
+                type_name: {
+                    "workspace_layout": contract.workspace_layout,
+                    "resolution_schema": contract.resolution_schema,
+                    "resolution_actions": contract.resolution_actions,
+                }
+                for type_name, contract in self._contracts.items()
+            }
+        )
 
 
 __all__ = ["ContractRegistry", "RESOLUTION_ACTIONS", "ReviewContract"]

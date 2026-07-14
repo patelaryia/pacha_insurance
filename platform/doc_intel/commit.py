@@ -23,6 +23,7 @@ def prepare_commit(
     fields: list[dict[str, Any]],
     schema: dict[str, Any],
     blob_store: BlobStore,
+    review_capability_id: str,
 ) -> tuple[list[FieldWrite], list[dict[str, Any]]]:
     """Separate provenance-backed writes from review candidates."""
 
@@ -76,10 +77,16 @@ def prepare_commit(
             continue
         payload: dict[str, Any] = {
             "type": "FIELD_VERIFY",
+            "capability_id": review_capability_id,
             "document_id": document_id,
             "path": target,
             "candidate_value": field["normalised_value"],
+            "value_type": (
+                "money" if definition["validator"] == "money_kes" else definition["type"]
+            ),
             "combined_confidence": float(combined),
+            "page": field.get("page"),
+            "citation_mode": field.get("citation_mode", "anchor_text"),
             "citation": citation or {"citation_failed": True},
         }
         if definition["pii_class"] != "none":
