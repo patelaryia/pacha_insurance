@@ -68,3 +68,25 @@ jobs:
           DATABASE_URL: postgresql+psycopg://pacha:pacha@localhost:5432/pacha_test
           REDIS_URL: redis://localhost:6379/0
         run: pytest -q
+
+  console:
+    name: console (PACKET-11, ED-7 vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install console dependencies
+        working-directory: console
+        run: npm ci
+
+      - name: Build console (Vite)
+        working-directory: console
+        run: npm run build
+
+      - name: Console tests (vitest, includes protected tests/acceptance/console)
+        working-directory: console
+        run: npm test -- --run --coverage
