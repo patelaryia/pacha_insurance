@@ -1,0 +1,109 @@
+version: 1
+reject_reasons: pending_capture
+types:
+  FIELD_VERIFY:
+    producing_events: [review.created]
+    workspace_layout: field_verify
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: FIELD_VERIFY@1
+    authorised_roles: &operational_roles
+      [claims_officer, asst_claims_manager, claims_manager, gm, md, chairman]
+  DOC_CLASSIFY:
+    producing_events: [review.created]
+    workspace_layout: document_classification
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: DOC_CLASSIFY@1
+    authorised_roles: *operational_roles
+  DOC_SPLIT:
+    producing_events: [review.created]
+    workspace_layout: document_split
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: DOC_SPLIT@1
+    authorised_roles: *operational_roles
+  CONSISTENCY_FLAG:
+    producing_events: [review.created]
+    workspace_layout: consistency_evidence
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: CONSISTENCY_FLAG@1
+    authorised_roles: *operational_roles
+  DRAFT_RELEASE:
+    producing_events: [review.created]
+    workspace_layout: draft_release
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: DRAFT_RELEASE@1
+    authorised_roles: *operational_roles
+  MODE_CONFIRM:
+    producing_events: [review.created]
+    workspace_layout: mode_confirmation
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: MODE_CONFIRM@1
+    authorised_roles: *operational_roles
+  NOTE_REVIEW:
+    producing_events: [review.created]
+    workspace_layout: note_review
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: NOTE_REVIEW@1
+    authorised_roles: *operational_roles
+  PACK_REVIEW:
+    producing_events: [review.created]
+    workspace_layout: pack_review
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: PACK_REVIEW@1
+    authorised_roles: &approval_roles
+      [asst_claims_manager, claims_manager, gm, md, chairman]
+    band_amount_path: assessment.agreed_quote
+  EX_GRATIA:
+    producing_events: [review.created]
+    workspace_layout: ex_gratia_review
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: EX_GRATIA@1
+    authorised_roles: *approval_roles
+    band_amount_path: assessment.agreed_quote
+  EXCEPTION:
+    producing_events: [review.created]
+    workspace_layout: exception_detail
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: EXCEPTION@1
+    authorised_roles: *operational_roles
+  PROMOTION_SIGNOFF:
+    producing_events: [review.created]
+    workspace_layout: promotion_signoff
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: PROMOTION_SIGNOFF@1
+    authorised_roles: [claims_manager]
+  SAMPLE_REVIEW:
+    producing_events: [review.created]
+    workspace_layout: sampled_output
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: SAMPLE_REVIEW@1
+    authorised_roles: *operational_roles
+  PASTE_READBACK_CHECK:
+    producing_events: [review.created]
+    workspace_layout: paste_readback
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: PASTE_READBACK_CHECK@1
+    authorised_roles: *operational_roles
+  PROCEED_PARTIAL:
+    producing_events: [review.created]
+    workspace_layout: partial_documents
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: PROCEED_PARTIAL@1
+    authorised_roles: *operational_roles
+  KYC_VERIFY:
+    producing_events: [review.created]
+    workspace_layout: kyc_verification
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: KYC_VERIFY@1
+    authorised_roles: *operational_roles
+  EFT_MATCH:
+    producing_events: [review.created]
+    workspace_layout: eft_match
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: EFT_MATCH@1
+    authorised_roles: [claims_manager, finance]
+  REOPEN_PROMPT:
+    producing_events: [review.created]
+    workspace_layout: reopen_prompt
+    resolution_actions: [approve, edit_approve, reject]
+    resolution_schema: REOPEN_PROMPT@1
+    authorised_roles: *operational_roles

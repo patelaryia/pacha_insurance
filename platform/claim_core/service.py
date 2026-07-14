@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from ulid import ULID
@@ -527,11 +527,22 @@ class ClaimService:
             payload=payload,
         )
 
-    def decline_claim(self, claim_id: str, reason: str, actor: str) -> TransitionResult:
+    def decline_claim(
+        self,
+        claim_id: str,
+        reason: str,
+        actor: str,
+        *,
+        approved_by_event: str | None = None,
+    ) -> TransitionResult:
         """Delegate the decline action to the package's sole FSM gate."""
 
         return self.fsm.decline(
-            claim_id, reason=reason, actor=actor, correlation_id=new_ulid()
+            claim_id,
+            reason=reason,
+            actor=actor,
+            correlation_id=new_ulid(),
+            approved_by_event=approved_by_event,
         )
 
     def set_claim_substatus(
@@ -548,15 +559,35 @@ class ClaimService:
 
     @staticmethod
     def _blocked_reasons(session: Session, claim_id: str) -> list[str]:
-        review_events = session.scalars(
-            select(Event).where(
-                Event.claim_id == claim_id,
-                Event.type == "review.created",
+        review_events = list(
+            session.scalars(
+                select(Event).where(
+                    Event.claim_id == claim_id,
+                    Event.type == "review.created",
+                )
             )
         )
-        if any(
-            event.payload.get("subtype") == "decline_approval_required"
+        pending_source_ids = [
+            event.id
             for event in review_events
+            if event.payload.get("subtype") == "decline_approval_required"
+        ]
+        if not pending_source_ids:
+            return []
+        bind = session.get_bind()
+        if not inspect(bind).has_table("review_items"):
+            return ["decline pending claims_manager approval"]
+        projected = session.execute(
+            text(
+                "SELECT source_event_id, status FROM review_items "
+                "WHERE source_event_id IN :source_ids"
+            ).bindparams(bindparam("source_ids", expanding=True)),
+            {"source_ids": pending_source_ids},
+        ).all()
+        status_by_source = {str(source_id): str(status) for source_id, status in projected}
+        if any(
+            status_by_source.get(source_id, "open") == "open"
+            for source_id in pending_source_ids
         ):
             return ["decline pending claims_manager approval"]
         return []

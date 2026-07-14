@@ -1,0 +1,3 @@
+# Interim organisation identity map. PACKET-11 replaces X-Actor transport with Entra SSO.
+# Production user assignments are deployment config and deliberately not invented here.
+roles: {}

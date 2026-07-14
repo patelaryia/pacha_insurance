@@ -22,6 +22,8 @@ ACTION_MAP = {
     "field.verified": "field.verified",
     "claim.status_changed": "fsm.transition",
     "review.created": "review.action",
+    "review.resolved": "review.resolved",
+    "authz.denied": "authz.denied",
     "claim.created": "claim.created",
     "document.received": "document.received",
     "document.extracted": "document.extracted",

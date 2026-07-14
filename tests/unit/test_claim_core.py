@@ -12,6 +12,7 @@ from sqlalchemy import inspect
 
 import doc_intel.stages  # noqa: F401 - registers Packet-04 table metadata
 import eval_harness.models  # noqa: F401 - registers Packet-08 table metadata
+import review_queue.models  # noqa: F401 - registers Packet-10 table metadata
 from claim_core.app import create_app
 from claim_core.dictionary import FieldDefinition, value_matches
 
@@ -90,6 +91,7 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
         "grader_runs",
         "platform_state",
         "rule_runs",
+        "review_items",
         "sla_clocks",
         "sla_definitions",
         "test_cases",
