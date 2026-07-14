@@ -14,6 +14,7 @@ tiers:
 classification_confidence_threshold: '0.80'
 vision_confidence_multiplier: '0.90'
 vision_text_coverage_threshold: '0.05'
+review_capability_id: doc.extract
 slo:
   duration_limit_ms: 180000
   cost_limit_usd: '0.60'

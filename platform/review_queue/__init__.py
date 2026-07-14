@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from sqlalchemy.orm import sessionmaker
 
 from claim_core import Base
 from review_queue.api import build_router
+from review_queue.auth import install_console
 from review_queue.contracts import ContractRegistry
 from review_queue.models import ReviewItem
 from review_queue.projection import ReviewProjection
@@ -25,6 +27,18 @@ class ReviewQueue:
 
     def backfill(self, actor: str) -> None:
         self._projection.backfill(actor)
+
+    @property
+    def roles(self) -> MappingProxyType[str, str]:
+        """Read-only organisation roles used by the installed console."""
+
+        return MappingProxyType(dict(self.service.authorizer.roles))
+
+    @property
+    def contracts(self):
+        """Read-only workspace and resolution contract metadata."""
+
+        return self.service.contracts.metadata
 
 
 def build_review_queue(
@@ -55,4 +69,4 @@ def build_review_queue(
     return queue
 
 
-__all__ = ["ReviewQueue", "build_review_queue"]
+__all__ = ["ReviewQueue", "build_review_queue", "install_console"]

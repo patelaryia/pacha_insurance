@@ -1,0 +1,3 @@
+version: 1
+# Production (tenant-id, object-id) mappings are deployment-controlled org data.
+identities: {}

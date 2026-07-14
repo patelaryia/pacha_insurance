@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -133,7 +134,11 @@ def test_field_verify_edits_through_append_only_human_write(tmp_path: Path) -> N
             session,
             claim_id=claim["id"],
             event_type="review.created",
-            payload={"type": "FIELD_VERIFY", "capability_id": "doc.extract"},
+            payload={
+                "type": "FIELD_VERIFY",
+                "capability_id": "doc.extract",
+                "path": "vehicle.reg",
+            },
             actor=AGENT,
             correlation_id=None,
         )
@@ -179,6 +184,129 @@ def test_field_verify_edits_through_append_only_human_write(tmp_path: Path) -> N
         value = json.loads(value)
     assert value == "KBB 222B"
     assert versions[-1][1] == "human_verified"
+
+
+@pytest.mark.parametrize(
+    ("action", "candidate", "corrected", "expected"),
+    [
+        ("approve", 75_000_00, None, 75_000_00),
+        ("edit_approve", 75_000_00, 74_500_00, 74_500_00),
+    ],
+)
+def test_field_verify_creates_first_human_version_from_review_candidate(
+    tmp_path: Path,
+    action: str,
+    candidate: int,
+    corrected: int | None,
+    expected: int,
+) -> None:
+    client, app = _build(tmp_path, f"field_verify_{action}")
+    claim = client.post(
+        "/claims",
+        json={"lob": "motor", "pack_version": "motor@1.0.0"},
+        headers={"X-Actor": AGENT},
+    ).json()
+    with Session(app.state.engine) as session:
+        event = app.state.record_event(
+            session,
+            claim_id=claim["id"],
+            event_type="review.created",
+            payload={
+                "type": "FIELD_VERIFY",
+                "capability_id": "doc.extract",
+                "path": "assessment.estimate_total",
+                "candidate_value": candidate,
+                "value_type": "money",
+            },
+            actor="agent:doc_intel",
+            correlation_id=None,
+        )
+        event_id = event.id
+        session.commit()
+    _drain(app)
+    with app.state.engine.connect() as connection:
+        review_id = connection.execute(
+            text("SELECT id FROM review_items WHERE source_event_id = :event_id"),
+            {"event_id": event_id},
+        ).scalar_one()
+    request_payload: dict[str, object] = {
+        "capability_id": "doc.extract",
+        "diff": {
+            "typed_changes": (
+                []
+                if action == "approve"
+                else [{"path": "assessment.estimate_total", "kind": "money"}]
+            ),
+            "prose_change_ratio": 0,
+        },
+    }
+    if corrected is not None:
+        request_payload["corrected_fields"] = {
+            "assessment.estimate_total": corrected
+        }
+    response = client.post(
+        f"/reviews/{review_id}/resolve",
+        json={
+            "action": action,
+            "schema_version": "FIELD_VERIFY@1",
+            "payload": request_payload,
+        },
+        headers={"X-Actor": OFFICER},
+    )
+    assert response.status_code == 200, response.text
+    _claim, fields, _blocked = app.state.claim_service.hydrate_claim(
+        claim["id"], OFFICER, paths=["assessment.estimate_total"]
+    )
+    field = fields["assessment.estimate_total"]
+    assert field.value == expected
+    assert field.version == 1
+    assert field.verification_state == "human_verified"
+
+
+def test_field_verify_transport_hydrates_private_candidate_without_blob_key(
+    tmp_path: Path,
+) -> None:
+    client, app = _build(tmp_path, "field_verify_private_candidate")
+    app.state.doc_intel = SimpleNamespace(review_capability_id="doc.extract")
+    claim = client.post(
+        "/claims",
+        json={"lob": "motor", "pack_version": "motor@1.0.0"},
+        headers={"X-Actor": AGENT},
+    ).json()
+    document_id = "01HPRIVATECANDIDATEDOC00AAAA"
+    blob_key = f"review-candidates/{document_id}/insured_name.json"
+    app.state.blob_store.put(blob_key, json.dumps("Amina Wanjiku").encode())
+    with Session(app.state.engine) as session:
+        app.state.record_event(
+            session,
+            claim_id=claim["id"],
+            event_type="review.created",
+            payload={
+                "type": "FIELD_VERIFY",
+                "document_id": document_id,
+                "path": "parties.insured.name",
+                "candidate_value": "__redacted__",
+                "candidate_blob_ref": blob_key,
+            },
+            actor="agent:doc_intel",
+            correlation_id=None,
+        )
+        session.commit()
+    _drain(app)
+
+    response = client.get(
+        "/reviews?scope=pool&type=FIELD_VERIFY&status=open",
+        headers={"X-Actor": OFFICER},
+    )
+
+    assert response.status_code == 200, response.text
+    [item] = response.json()["items"]
+    assert item["payload"]["candidate_value"] == "Amina Wanjiku"
+    assert item["payload"]["candidate_status"] == "available"
+    assert item["payload"]["value_type"] == "string"
+    assert item["payload"]["capability_id"] == "doc.extract"
+    assert "candidate_blob_ref" not in item["payload"]
+    assert blob_key not in response.text
 
 
 def test_decline_state_is_checked_before_resolution_commit(tmp_path: Path) -> None:

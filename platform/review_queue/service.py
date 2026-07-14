@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import column, null, select, table, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from claim_core import ClaimCoreError, FieldWrite
+from claim_core import ClaimCoreError, FieldDefinition, FieldWrite, field_dictionary
 from review_queue.contracts import ContractRegistry
 from review_queue.models import ReviewItem
 from review_queue.rbac import Authorizer
@@ -81,7 +82,82 @@ class ReviewService:
                 for row in rows
             ]
 
+    @staticmethod
+    def _field_definition(item: ReviewItem) -> FieldDefinition | None:
+        path = item.payload.get("path")
+        if not isinstance(path, str) or not path:
+            return None
+        return field_dictionary().get(path)
+
+    @staticmethod
+    def _candidate_blob_key(item: ReviewItem) -> str | None:
+        document_id = item.payload.get("document_id")
+        blob_key = item.payload.get("candidate_blob_ref")
+        if not isinstance(document_id, str) or not document_id:
+            return None
+        prefix = f"review-candidates/{document_id}/"
+        if (
+            not isinstance(blob_key, str)
+            or not blob_key.startswith(prefix)
+            or "/" in blob_key[len(prefix) :]
+            or blob_key.endswith("/")
+        ):
+            return None
+        return blob_key
+
+    def _candidate_value(self, item: ReviewItem) -> Any:
+        candidate = item.payload.get("candidate_value")
+        if candidate != "__redacted__":
+            if candidate is None:
+                raise ClaimCoreError(
+                    409,
+                    "RESOLUTION_BLOCKED_ON_INPUTS",
+                    "Review candidate is unavailable",
+                )
+            return candidate
+        blob_key = self._candidate_blob_key(item)
+        if blob_key is None:
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Private review candidate reference is invalid",
+            )
+        try:
+            return json.loads(self.app.state.blob_store.get(blob_key))
+        except (OSError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Private review candidate is unavailable",
+            ) from error
+
+    def _transport_payload(self, item: ReviewItem) -> dict[str, Any]:
+        payload = dict(item.payload)
+        if item.type != "FIELD_VERIFY":
+            return payload
+        definition = self._field_definition(item)
+        if definition is not None:
+            payload["value_type"] = definition.value_type
+            if definition.enum_values is not None:
+                payload["allowed_values"] = sorted(definition.enum_values)
+        capability = payload.get("capability_id")
+        if not isinstance(capability, str) or not capability.strip():
+            engine = getattr(self.app.state, "doc_intel", None)
+            configured = getattr(engine, "review_capability_id", None)
+            if isinstance(payload.get("document_id"), str) and isinstance(configured, str):
+                payload["capability_id"] = configured
+        if payload.get("candidate_value") == "__redacted__":
+            try:
+                payload["candidate_value"] = self._candidate_value(item)
+                payload["candidate_status"] = "available"
+            except ClaimCoreError:
+                payload["candidate_value"] = None
+                payload["candidate_status"] = "blocked_on_inputs"
+        payload.pop("candidate_blob_ref", None)
+        return payload
+
     def serialise(self, item: ReviewItem) -> dict[str, Any]:
+        contract = self.contracts.get(item.type)
         return {
             "id": item.id,
             "claim_id": item.claim_id,
@@ -89,7 +165,7 @@ class ReviewService:
             "subtype": item.subtype,
             "status": item.status,
             "assigned_to": item.assigned_to,
-            "payload": item.payload,
+            "payload": self._transport_payload(item),
             "source_event_id": item.source_event_id,
             "created_at": self._iso(item.created_at),
             "resolved_at": self._iso(item.resolved_at),
@@ -97,6 +173,8 @@ class ReviewService:
             "resolution": item.resolution,
             "resolution_payload": item.resolution_payload,
             "resolution_schema_version": item.resolution_schema_version,
+            "workspace_layout": contract.workspace_layout,
+            "resolution_schema": contract.resolution_schema,
             "sla": self._sla(item.claim_id),
         }
 
@@ -115,12 +193,12 @@ class ReviewService:
         status: str | None,
         claim_id: str | None,
     ) -> list[dict[str, Any]]:
-        self._read_role(actor)
+        role = self._read_role(actor)
         if scope not in {"mine", "pool"}:
             raise ClaimCoreError(422, "VALUE_TYPE_MISMATCH", "scope must be mine or pool")
         with self.sessions() as session:
             query = select(ReviewItem)
-            if scope == "mine":
+            if scope == "mine" and role != "auditor":
                 query = query.where(
                     ReviewItem.claim_id.in_(
                         select(CLAIMS.c.id).where(CLAIMS.c.assigned_to == actor)
@@ -193,32 +271,69 @@ class ReviewService:
             if not isinstance(boundaries, list) or not boundaries:
                 raise ClaimCoreError(422, "PAYLOAD_INVALID", "DOC_SPLIT edit requires boundaries")
 
-    def _field_verify(self, item: ReviewItem, payload: dict[str, Any], actor: str) -> None:
-        corrected = payload["corrected_fields"]
-        paths = list(corrected)
+    def _field_verify(
+        self,
+        item: ReviewItem,
+        action: str,
+        payload: dict[str, Any],
+        actor: str,
+    ) -> None:
         if item.claim_id is None:
             raise ClaimCoreError(409, "RESOLUTION_BLOCKED_ON_INPUTS", "Review has no claim")
-        _claim, current, _blocked = self.app.state.claim_service.hydrate_claim(
-            item.claim_id, actor, paths=paths
-        )
-        if set(current) != set(paths):
+        path = item.payload.get("path")
+        definition = self._field_definition(item)
+        if not isinstance(path, str) or definition is None:
             raise ClaimCoreError(
                 409,
                 "RESOLUTION_BLOCKED_ON_INPUTS",
-                "A corrected field has no current value to verify",
+                "Reviewed field contract is unavailable",
             )
-        writes = [
-            FieldWrite(
-                path=path,
-                value=value,
-                value_type=current[path].value_type,
-                source_type="human",
-                source_ref={"user_id": actor, "review_item_id": item.id},
-                verification_state="human_verified",
+        if action == "approve":
+            value = self._candidate_value(item)
+        else:
+            corrected = payload["corrected_fields"]
+            if set(corrected) != {path}:
+                raise ClaimCoreError(
+                    422,
+                    "PAYLOAD_INVALID",
+                    "FIELD_VERIFY correction must target only the reviewed field",
+                )
+            value = corrected[path]
+        source_ref: dict[str, Any] = {"user_id": actor, "review_item_id": item.id}
+        document_id = item.payload.get("document_id")
+        page = item.payload.get("page")
+        citation = item.payload.get("citation")
+        bbox = citation.get("bbox") if isinstance(citation, dict) else None
+        if (
+            isinstance(document_id, str)
+            and isinstance(page, int)
+            and not isinstance(page, bool)
+            and page > 0
+            and isinstance(bbox, list)
+            and len(bbox) == 4
+        ):
+            source_ref.update(
+                {
+                    "document_id": document_id,
+                    "page": page,
+                    "bbox": list(bbox),
+                    "review_verified": True,
+                }
             )
-            for path, value in corrected.items()
-        ]
-        self.app.state.claim_service.write_fields(item.claim_id, writes, actor)
+        self.app.state.claim_service.write_fields(
+            item.claim_id,
+            [
+                FieldWrite(
+                    path=path,
+                    value=value,
+                    value_type=definition.value_type,
+                    source_type="human",
+                    source_ref=source_ref,
+                    verification_state="human_verified",
+                )
+            ],
+            actor,
+        )
 
     def _doc_split(self, item: ReviewItem, payload: dict[str, Any], actor: str) -> None:
         engine = getattr(self.app.state, "doc_intel", None)
@@ -234,11 +349,9 @@ class ReviewService:
     def _side_effect_before(
         self, item: ReviewItem, action: str, payload: dict[str, Any], actor: str
     ) -> None:
-        if action != "edit_approve":
-            return
-        if item.type == "FIELD_VERIFY":
-            self._field_verify(item, payload, actor)
-        elif item.type == "DOC_SPLIT":
+        if item.type == "FIELD_VERIFY" and action in {"approve", "edit_approve"}:
+            self._field_verify(item, action, payload, actor)
+        elif item.type == "DOC_SPLIT" and action == "edit_approve":
             self._doc_split(item, payload, actor)
 
     def _assert_open_locked(self, review_id: str) -> None:

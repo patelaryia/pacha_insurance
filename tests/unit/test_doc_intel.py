@@ -240,9 +240,13 @@ def test_prepare_commit_never_writes_without_citation(tmp_path):
         fields=[base],
         schema=schema,
         blob_store=store,
+        review_capability_id="doc.extract",
     )
     assert writes == []
     assert reviews[0]["combined_confidence"] == 0.99
+    assert reviews[0]["capability_id"] == "doc.extract"
+    assert reviews[0]["value_type"] == "money"
+    assert reviews[0]["page"] == 1
     cited = {**base, "citation": {"bbox": [0, 0, 1, 1]}, "citation_failed": False}
     writes, reviews = prepare_commit(
         document_id="doc",
@@ -250,6 +254,7 @@ def test_prepare_commit_never_writes_without_citation(tmp_path):
         fields=[cited],
         schema=schema,
         blob_store=store,
+        review_capability_id="doc.extract",
     )
     assert [write.path for write in writes] == ["assessment.estimate_total"]
     assert reviews == []

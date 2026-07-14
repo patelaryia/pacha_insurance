@@ -40,6 +40,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install system dependencies (Tesseract OCR, PRD-01)
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
 
@@ -69,24 +73,16 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
         run: pytest -q
 
-  console:
-    name: console (PACKET-11, ED-7 vitest)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Install console dependencies
         working-directory: console
         run: npm ci
 
-      - name: Build console (Vite)
+      - name: Console lint and production build
         working-directory: console
-        run: npm run build
+        run: |
+          npm run lint
+          npm run build
 
-      - name: Console tests (vitest, includes protected tests/acceptance/console)
+      - name: Console protected acceptance and coverage
         working-directory: console
-        run: npm test -- --run --coverage
+        run: npm exec -- vitest run --config ../tests/acceptance/console/vitest.config.ts --coverage
