@@ -40,6 +40,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install system dependencies (Tesseract OCR, PRD-01)
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
 
@@ -68,3 +72,17 @@ jobs:
           DATABASE_URL: postgresql+psycopg://pacha:pacha@localhost:5432/pacha_test
           REDIS_URL: redis://localhost:6379/0
         run: pytest -q
+
+      - name: Install console dependencies
+        working-directory: console
+        run: npm ci
+
+      - name: Console lint and production build
+        working-directory: console
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Console protected acceptance and coverage
+        working-directory: console
+        run: npm exec -- vitest run --config ../tests/acceptance/console/vitest.config.ts --coverage
