@@ -69,3 +69,41 @@ carries the grader id and subject_ref. Resolve the underlying data problem;
 never resolve the item by re-grading until inputs changed. GP-1: `settlement.*`
 promotions stay 403 `GATE_GP1_CLOSED` until `platform_state['gp1_open']` is
 set by the GP-1 decision (PRD-12).
+
+## Eval corpus triage (PACKET-09)
+
+**Model-grader failure (G-CITE / G-NOTE):** `grader_runs.detail.code`
+distinguishes model faults (`MODEL_GRADER_ERROR`, `CITATION_RENDER_ERROR` =
+missing/corrupt page render, schema violations) from genuine grade fails
+(`VALUE_NOT_PRESENT`, `EXACT_VALUE_MISMATCH`, `NUMERIC_TOKEN_OMISSION`,
+`STRUCTURED_VALUE_MISMATCH`, `RUBRIC_FAILURE`). `error` results never pass and
+never gate; investigate the render/blob/provider before re-grading. Model ids,
+tiers, prompts and per-call budgets live in `packs/motor/eval/harness.yaml` —
+config change only, never code (ED-4).
+
+**Corpus vs production isolation (register #87):** grader runs carrying
+`test_case_id` are corpus replays. They never create review items, never feed
+promotion/demotion evidence windows, and their `grader.failed` events are
+ignored by the autonomy consumer. If a demotion cites a corpus run, that is a
+defect — do not "fix" it by re-promoting; file it.
+
+**Blocked correction capture:** a `production_correction` test case with
+`expected._capture.status="blocked_on_inputs"` names its `missing_inputs`
+(capability, typed paths, current fields, corrected prose ref, pack pin).
+The batch runner counts it blocked, never grades it. Recovery is upstream:
+fix the producing `review.resolved` payload; the consumer is idempotent on
+the source event id, so a corrected re-emission creates a new complete case.
+
+**Weekly batch failure:** the Beat task `eval_harness.run_weekly_corpus` calls
+the same synchronous `harness.corpus.run(...)`; reproduce locally with no
+broker. Executor exceptions score as `errors` per case (never passes); a
+disabled run raises against `weekly.enabled` in `harness.yaml`. Scorecard
+`pass_percent` uses exact arithmetic over passed/failed/errors/blocked.
+
+**Anonymisation refusal:** the exporter is all-or-nothing (register #88).
+Refusals name the surface: unclassified/ambiguous PII, non-scalar or unknown
+`value_type`, binary/image input, free-text keys, missing
+`PACHA_ANONYMISATION_SECRET`, or an existing output path. Fix the bundle's
+classification and re-run; never bypass a single field. The pseudonym mapping
+is process-memory only — there is nothing to recover or rotate besides the
+runtime secret.
