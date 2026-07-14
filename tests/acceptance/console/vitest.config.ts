@@ -58,6 +58,7 @@ export default async function protectedAcceptanceConfig() {
       environment: "jsdom",
       include: [
         path.resolve(here, "test_packet_11_console.test.tsx"),
+        path.resolve(here, "test_packet_12_console.test.tsx"),
         path.resolve(consoleRoot, "src/**/*.test.{ts,tsx}"),
       ],
       coverage: {
