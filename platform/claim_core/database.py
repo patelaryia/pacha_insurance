@@ -52,7 +52,12 @@ def build_engine(database_url: str) -> Engine:
 def initialise_database(engine: Engine) -> None:
     """Create the Packet-1 schema for an empty local or test database."""
 
-    Base.metadata.create_all(engine)
+    # Optional packages share Base but own their build-time table activation.
+    # Import order must not make create_app() silently install a later packet.
+    core_tables = [
+        table for table in Base.metadata.sorted_tables if table.name != "agent_runs"
+    ]
+    Base.metadata.create_all(engine, tables=core_tables)
     if engine.dialect.name == "postgresql":
         with engine.begin() as connection:
             connection.execute(

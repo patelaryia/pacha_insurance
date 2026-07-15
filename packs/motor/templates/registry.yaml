@@ -58,10 +58,19 @@ templates:
     channel: email
     body_ref: null
     required_fields: []
-    min_verification: human_verified
+    min_verification: extracted
     locale: en-KE
     status: pending_capture
-    blocked_on: ["register 61: template capture"]
+    blocked_on: ["open item 6: verbatim template capture"]
+  - id: T-06a
+    version: 1.0.0
+    channel: email
+    body_ref: null
+    required_fields: []
+    min_verification: extracted
+    locale: en-KE
+    status: pending_capture
+    blocked_on: ["open item 6: verbatim template capture"]
   - id: T-06r-broker
     version: 1.0.0
     channel: email

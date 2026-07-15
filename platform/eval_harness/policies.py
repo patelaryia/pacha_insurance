@@ -13,7 +13,8 @@ LEVEL_RANK = {level: rank for rank, level in enumerate(LEVELS)}
 
 EXPLICIT_CEILINGS = {
     "triage.ex_gratia": "L1",
-    "triage.decline_draft": "L1",
+    "triage.decline_draft": "L2",
+    "triage.coverage_check": "L3",
     "assessment.consistency_flag": "L2",
     "assessment.mode_confirm": "L2",
     "pack.note_draft": "L3",

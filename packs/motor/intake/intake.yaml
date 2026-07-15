@@ -1,0 +1,14 @@
+version: 1
+self_addresses: []
+archive_sample_rate: 10
+classifier:
+  tier: MODEL_LIGHT
+  purpose: mailbox triage
+  max_cost_usd: 0.02
+  thresholds:
+    new_intimation: 0.85
+    not_a_claim: 0.95
+  prompt: >-
+    Classify one shared-mailbox message into exactly one of new_intimation,
+    multi_intimation, claim_related_unmatched, not_a_claim, or unclear. Return
+    only the structured class and confidence. Never infer a claim reference.

@@ -1,0 +1,8 @@
+version: 1
+confirm_types:
+  assessment.mode_confirm: MODE_CONFIRM
+exempt_capabilities:
+  - intake.acknowledge
+transport:
+  status: pending_capture
+  blocked_on: open-item-1
