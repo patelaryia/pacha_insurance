@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "FIELD_VERIFY_COVERAGE@1",
+  "type": "object",
+  "required": ["capability_id", "diff", "fields"],
+  "properties": {
+    "capability_id": {"const": "triage.coverage_check"},
+    "diff": {"$ref": "#/$defs/diff"},
+    "reason": {"type": "string", "minLength": 1},
+    "fields": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "policy.sum_insured": {"type": "integer"},
+        "policy.period_start": {"type": "string", "format": "date"},
+        "policy.period_end": {"type": "string", "format": "date"},
+        "policy.endorsement_ref": {"type": "string"},
+        "policy.premium_paid": {"type": "boolean"},
+        "policy.excess_protector": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "diff": {
+      "type": "object",
+      "required": ["typed_changes", "prose_change_ratio"],
+      "properties": {
+        "typed_changes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/change"}
+        },
+        "prose_change_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "corrected_prose_ref": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "change": {
+      "type": "object",
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["money", "date", "party", "enum", "text"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

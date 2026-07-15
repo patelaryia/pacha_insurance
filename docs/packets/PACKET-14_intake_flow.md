@@ -106,7 +106,8 @@ exists; it never fabricates a duration.
      instantiated checklist — base 7 items verbatim §5.5
      (`claim_form, logbook_copy, dl_copy, kra_pin, police_abstract,
      repair_estimate, photos`, ids from pack
-     `packs/motor/intake/intake.yaml checklist_base_items`), each with
+     `packs/motor/intake/intake.yaml checklist_base_items`, with the
+     item→accepted-document mapping in `checklist_doc_types`), each with
      `already_received` computed from documents held on the claim; the
      police abstract is **included** while R-11 is `blocked_on_inputs`
      (item 4 — an unevaluable waiver fails closed to include); missing
@@ -138,6 +139,10 @@ exists; it never fabricates a duration.
        fields (`client.loss_ratio`, `client.premium_history`) remain
        unregistered per #56: the card shows visible
        `pending_field_registration` markers (proposed #143).
+     - If the estimate is not yet held, R-02 persists
+       `blocked_on_inputs` and S8 still completes `INTIMATED → TRIAGED`;
+       PRD-06 obtains the estimate later. The missing estimate is not an
+       exception or a coverage-triage precondition (#149).
      - The clean path and the below-excess path end with
        `INTIMATED → TRIAGED` (coverage + excess evaluated — PRD-00 §0.4);
        `out_of_cover` / `premium_unpaid` pause **before** the transition —
@@ -255,11 +260,13 @@ agents/intake_agent/
   flow.py         # intake_flow consumer; S1–S7 step callables; run start
   triage.py       # S8 Mode A card + deterministic §5.4 sequence + decline path
 packs/motor/review/schemas/FIELD_VERIFY_COVERAGE@1.json
+docs/runbooks/intake_flow.md
 ```
 
 plus the pinned data edits (§1.5) and the authorized package changes below.
-**No new table, no Alembic migration, no new route** — the resolve transport
-is the existing `POST /reviews/{id}/resolve`.
+**No new table and no Alembic migration.** The resolve transport is the existing
+`POST /reviews/{id}/resolve`; the §3.1 bare `/portfolio` compatibility reads are
+the only added routes and are registered for consolidation at #153.
 
 **Authorised existing-package changes, exactly these:**
 
@@ -282,6 +289,15 @@ is the existing `POST /reviews/{id}/resolve`.
    `intimation_to_acknowledgement` series reader in `ops_reads`.
 4. No `eval_harness` change; no `grader_map.yaml` change (no new
    OutputType); G-PROC stays pending.
+
+**Implementation inventory beyond the initial authorised-change list:**
+`agent_runtime` passes the owning workflow `run_id` through the gate and exposes
+`execute_staged` so an approved S1 action can commit without a second autonomy
+decision; `cop_runtime/outcomes.py` adds the decline capability attribution and
+#143 pending-field markers; `doc_intel/commit.py` carries the already-validated
+`citation_mode` into source provenance. These are enumerated for review rather
+than treated as implicit scope; the remaining per-action autonomy snapshot gap is
+registered at #154.
 
 `.github/`, `tools/ci/`, protected acceptance files untouched by the
 builder. No new CI legs.
@@ -319,6 +335,9 @@ builder. No new CI legs.
   "FIELD_VERIFY_COVERAGE@1", "payload": {"capability_id":
   "triage.coverage_check", "diff": {…}, "fields": {<path>: <value>, …}}}` —
   money in integer cents (ED-8), dates ISO `YYYY-MM-DD`, bools JSON.
+- Coverage-card reject issues one fresh open `coverage_manual` item carrying
+  `retry_of: <rejected item id>`; the run remains `awaiting_review` and no
+  exception subtype is created.
 - Decline release while T-07 is pending: resolve approve returns **409**
   with `code == "RESOLUTION_BLOCKED_ON_INPUTS"` and the item stays open.
 - `GET /portfolio` includes `intimation_to_acknowledgement` with
@@ -401,6 +420,12 @@ entries are **#134–#148**.
   exists in the PRD-01 motor registry); terminal inbound stays
   attach + notify visibly until capture.
 
+Review-round additions #149–#157 pin the no-estimate R-02 continuation,
+creation-reject no-op, missing-sender insufficient outcome, coverage-card re-key,
+portfolio-route consolidation, per-action attribution gap, checklist taxonomy
+mapping, indexed duplicate-query follow-up, and staged-communication release
+boundary. The master register is authoritative for their complete wording.
+
 ## 5. Builder guardrails
 
 - **AR-2 is the only door** — S1 creation and every send go through
@@ -444,5 +469,5 @@ entries are **#134–#148**.
 - `grader_map.yaml` unchanged — confirm explicitly in the PR description;
   G-PROC remains pending with its `blocked_on` intact.
 - ED-11: further ambiguity ⇒ narrowest safe behaviour + proposed register
-  entry (next free number **#149**); stop and flag before expanding this
+  entry (next free number **#158**); stop and flag before expanding this
   packet.

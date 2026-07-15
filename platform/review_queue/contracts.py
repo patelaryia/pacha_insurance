@@ -34,7 +34,7 @@ class ContractRegistry:
 
     def __init__(self, review_dir: Path) -> None:
         self.review_dir = review_dir
-        self._contracts = self._load(review_dir)
+        self._contracts, self._subtypes = self._load(review_dir)
 
     @staticmethod
     def _mapping(value: Any, message: str) -> dict[str, Any]:
@@ -43,7 +43,9 @@ class ContractRegistry:
         return value
 
     @classmethod
-    def _load(cls, review_dir: Path) -> dict[str, ReviewContract]:
+    def _load(
+        cls, review_dir: Path
+    ) -> tuple[dict[str, ReviewContract], dict[tuple[str, str], ReviewContract]]:
         try:
             raw = yaml.safe_load((review_dir / "contracts.yaml").read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as error:
@@ -58,6 +60,7 @@ class ContractRegistry:
             raise ValueError(f"review contract type set mismatch; missing={missing}, extra={extra}")
 
         loaded: dict[str, ReviewContract] = {}
+        subtype_contracts: dict[tuple[str, str], ReviewContract] = {}
         for type_name in sorted(expected):
             contract = cls._mapping(types[type_name], f"{type_name} contract must be a mapping")
             producing = contract.get("producing_events")
@@ -103,13 +106,58 @@ class ContractRegistry:
                 band_amount_path=band_path,
                 schema=schema,
             )
-        return loaded
+            raw_subtypes = contract.get("subtypes", {})
+            if not isinstance(raw_subtypes, dict):
+                raise ValueError(f"{type_name} subtypes must be a mapping")
+            for subtype, raw_subtype in raw_subtypes.items():
+                if not isinstance(subtype, str) or not subtype:
+                    raise ValueError(f"{type_name} subtype id is invalid")
+                values = cls._mapping(
+                    raw_subtype,
+                    f"{type_name}/{subtype} subtype contract must be a mapping",
+                )
+                subtype_workspace = values.get("workspace_layout")
+                subtype_schema_ref = values.get("resolution_schema")
+                if not isinstance(subtype_workspace, str) or not subtype_workspace:
+                    raise ValueError(f"{type_name}/{subtype} workspace_layout is required")
+                if not isinstance(subtype_schema_ref, str) or not subtype_schema_ref.endswith("@1"):
+                    raise ValueError(f"{type_name}/{subtype} resolution_schema is invalid")
+                subtype_schema_path = review_dir / "schemas" / f"{subtype_schema_ref}.json"
+                try:
+                    subtype_schema = json.loads(
+                        subtype_schema_path.read_text(encoding="utf-8")
+                    )
+                    Draft202012Validator.check_schema(subtype_schema)
+                except (OSError, json.JSONDecodeError, SchemaError) as error:
+                    raise ValueError(
+                        f"invalid resolution schema {subtype_schema_ref}: {error}"
+                    ) from error
+                subtype_contracts[(type_name, subtype)] = ReviewContract(
+                    type=type_name,
+                    producing_events=tuple(producing),
+                    workspace_layout=subtype_workspace,
+                    resolution_actions=tuple(actions),
+                    resolution_schema=subtype_schema_ref,
+                    authorised_roles=tuple(roles),
+                    band_amount_path=band_path,
+                    schema=subtype_schema,
+                )
+        return loaded, subtype_contracts
 
-    def get(self, type_name: str) -> ReviewContract:
+    def get(self, type_name: str, subtype: str | None = None) -> ReviewContract:
+        if subtype is not None and (type_name, subtype) in self._subtypes:
+            return self._subtypes[(type_name, subtype)]
         return self._contracts[type_name]
 
-    def validate(self, type_name: str, schema_version: str, payload: dict[str, Any]) -> None:
-        contract = self.get(type_name)
+    def validate(
+        self,
+        type_name: str,
+        schema_version: str,
+        payload: dict[str, Any],
+        *,
+        subtype: str | None = None,
+    ) -> None:
+        contract = self.get(type_name, subtype)
         if schema_version != contract.resolution_schema:
             raise KeyError(schema_version)
         try:
@@ -131,6 +179,14 @@ class ContractRegistry:
                     "workspace_layout": contract.workspace_layout,
                     "resolution_schema": contract.resolution_schema,
                     "resolution_actions": contract.resolution_actions,
+                    "subtypes": {
+                        subtype: {
+                            "workspace_layout": subtype_contract.workspace_layout,
+                            "resolution_schema": subtype_contract.resolution_schema,
+                        }
+                        for (owner_type, subtype), subtype_contract in self._subtypes.items()
+                        if owner_type == type_name
+                    },
                 }
                 for type_name, contract in self._contracts.items()
             }

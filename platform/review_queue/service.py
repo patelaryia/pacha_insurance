@@ -10,6 +10,7 @@ from sqlalchemy import column, null, select, table, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from claim_core import ClaimCoreError, FieldDefinition, FieldWrite, field_dictionary
+from cop_runtime.templates import TemplateRenderBlocked
 from review_queue.contracts import ContractRegistry
 from review_queue.models import ReviewItem
 from review_queue.rbac import Authorizer
@@ -158,7 +159,7 @@ class ReviewService:
         return payload
 
     def serialise(self, item: ReviewItem) -> dict[str, Any]:
-        contract = self.contracts.get(item.type)
+        contract = self.contracts.get(item.type, item.subtype)
         return {
             "id": item.id,
             "claim_id": item.claim_id,
@@ -225,7 +226,7 @@ class ReviewService:
         if scope == "band":
             eligible = []
             for item in items:
-                contract = self.contracts.get(item.type)
+                contract = self.contracts.get(item.type, item.subtype)
                 if role not in contract.authorised_roles:
                     continue
                 amount = self._band_amount(item, contract.band_amount_path, actor)
@@ -361,6 +362,141 @@ class ReviewService:
             actor,
         )
 
+    def _coverage_manual(
+        self,
+        item: ReviewItem,
+        payload: dict[str, Any],
+        actor: str,
+    ) -> None:
+        if item.claim_id is None:
+            raise ClaimCoreError(409, "RESOLUTION_BLOCKED_ON_INPUTS", "Review has no claim")
+        raw_fields = payload.get("fields")
+        if not isinstance(raw_fields, dict):
+            raise ClaimCoreError(422, "PAYLOAD_INVALID", "Coverage fields are required")
+        dictionary = field_dictionary()
+        writes = []
+        for path, value in raw_fields.items():
+            if value in {None, ""}:
+                continue
+            definition = dictionary.get(path)
+            if definition is None:
+                raise ClaimCoreError(
+                    422,
+                    "PAYLOAD_INVALID",
+                    f"Coverage path {path!r} is not registered",
+                )
+            writes.append(
+                FieldWrite(
+                    path=path,
+                    value=value,
+                    value_type=definition.value_type,
+                    source_type="human",
+                    source_ref={"user_id": actor, "review_item_id": item.id},
+                    verification_state="human_verified",
+                )
+            )
+        if not writes:
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Coverage review supplied no committed field values",
+            )
+        self.app.state.claim_service.write_fields(item.claim_id, writes, actor)
+
+    def _execute_staged_action(self, item: ReviewItem) -> None:
+        action = item.payload.get("action")
+        if not isinstance(action, dict) or action.get("type") != "intake.create_claim":
+            return
+        action_payload = action.get("payload")
+        if not isinstance(action_payload, dict):
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Staged claim-creation payload is unavailable",
+            )
+        runtime = getattr(self.app.state, "agent_runtime", None)
+        if runtime is None:
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Agent runtime is unavailable",
+            )
+        from agent_runtime import Action
+
+        try:
+            runtime.execute_staged(Action(type="intake.create_claim", payload=action_payload))
+        except Exception as error:  # noqa: BLE001 - keep the staged item open
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Claim creation did not commit; the review item remains open",
+            ) from error
+
+    def _validate_decline_release(self, item: ReviewItem, actor: str) -> list[str]:
+        if item.claim_id is None:
+            raise ClaimCoreError(
+                409, "RESOLUTION_BLOCKED_ON_INPUTS", "Decline claim is unavailable"
+            )
+        claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
+            item.claim_id, actor, paths=[]
+        )
+        if claim.status != "TRIAGED":
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Decline release requires a TRIAGED claim",
+            )
+        pack_id, separator, version = claim.pack_version.partition("@")
+        if not separator:
+            raise ClaimCoreError(
+                409, "RESOLUTION_BLOCKED_ON_INPUTS", "Claim pack pin is malformed"
+            )
+        definition = self.app.state.cop_runtime.template_registry(pack_id, version).get("T-07")
+        if definition.status == "pending_capture":
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "T-07 is pending capture",
+            )
+        try:
+            self.app.state.cop_runtime.render("T-07", item.claim_id, actor)
+        except TemplateRenderBlocked as error:
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "T-07 cannot render from the captured claim inputs",
+                extra={
+                    "reason": error.reason,
+                    "missing_fields": list(error.missing_fields),
+                    "under_verified": list(error.under_verified),
+                },
+            ) from error
+        with self.app.state.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT id, email, meta FROM parties WHERE claim_id = :claim_id "
+                    "ORDER BY id"
+                ),
+                {"claim_id": item.claim_id},
+            ).all()
+        recipients = []
+        for party_id, email, raw_meta in rows:
+            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else raw_meta
+            if (
+                isinstance(meta, dict)
+                and meta.get("source") == "intimation_sender"
+                and isinstance(email, str)
+                and email.strip()
+            ):
+                recipients.append(str(party_id))
+        if len(recipients) != 1:
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "Decline release requires exactly one captured intimation sender",
+            )
+        return recipients
+
     def _doc_split(self, item: ReviewItem, payload: dict[str, Any], actor: str) -> None:
         engine = getattr(self.app.state, "doc_intel", None)
         document_id = item.payload.get("document_id")
@@ -376,9 +512,15 @@ class ReviewService:
         self, item: ReviewItem, action: str, payload: dict[str, Any], actor: str
     ) -> None:
         if item.type == "FIELD_VERIFY" and action in {"approve", "edit_approve"}:
-            self._field_verify(item, action, payload, actor)
+            if item.subtype == "coverage_manual":
+                self._coverage_manual(item, payload, actor)
+            else:
+                self._field_verify(item, action, payload, actor)
         elif item.type == "DOC_SPLIT" and action == "edit_approve":
             self._doc_split(item, payload, actor)
+        elif item.type == "DRAFT_RELEASE" and action == "approve":
+            if item.subtype != "decline_draft":
+                self._execute_staged_action(item)
 
     def _assert_open_locked(self, review_id: str) -> None:
         with self.sessions.begin() as session:
@@ -427,7 +569,7 @@ class ReviewService:
             session.expunge(item)
         if item.status != "open":
             raise ClaimCoreError(409, "ALREADY_RESOLVED", "Review item is no longer open")
-        contract = self.contracts.get(item.type)
+        contract = self.contracts.get(item.type, item.subtype)
         code = self.authorizer.resolve_role_code(
             actor=actor,
             contract=contract,
@@ -445,7 +587,12 @@ class ReviewService:
         if action not in contract.resolution_actions:
             raise ClaimCoreError(422, "PAYLOAD_INVALID", "Resolution action is not allowed")
         try:
-            self.contracts.validate(item.type, schema_version, payload)
+            self.contracts.validate(
+                item.type,
+                schema_version,
+                payload,
+                subtype=item.subtype,
+            )
         except KeyError as error:
             raise ClaimCoreError(
                 422, "SCHEMA_VERSION_UNKNOWN", "Unknown resolution schema"
@@ -454,6 +601,7 @@ class ReviewService:
             raise ClaimCoreError(422, "PAYLOAD_INVALID", str(error)) from error
         self._validate_action_payload(action, item.type, payload)
         decline_reason = None
+        decline_release_recipients: list[str] | None = None
         if (
             item.type == "EXCEPTION"
             and item.subtype == "decline_approval_required"
@@ -465,6 +613,12 @@ class ReviewService:
                     409, "RESOLUTION_BLOCKED_ON_INPUTS", "Decline inputs are unavailable"
                 )
             self._validate_decline_claim_state(item, actor)
+        if (
+            item.type == "DRAFT_RELEASE"
+            and item.subtype == "decline_draft"
+            and action == "approve"
+        ):
+            decline_release_recipients = self._validate_decline_release(item, actor)
         self._assert_open_locked(review_id)
         self._side_effect_before(item, action, payload, actor)
 
@@ -516,6 +670,28 @@ class ReviewService:
                     "RESOLUTION_BLOCKED_ON_INPUTS",
                     "Decline did not commit; the review item was reopened",
                 ) from error
+        if decline_release_recipients is not None:
+            try:
+                self.app.state.claim_service.decline_claim(
+                    item.claim_id,
+                    "below_excess",
+                    actor,
+                )
+            except Exception as error:  # noqa: BLE001 - compensate every failed effect
+                self._reopen_after_failed_decline(review_id)
+                raise ClaimCoreError(
+                    409,
+                    "RESOLUTION_BLOCKED_ON_INPUTS",
+                    "Decline did not commit; the review item was reopened",
+                ) from error
+            self.app.state.agent_runtime.comms.send(
+                template_id="T-07",
+                claim_id=item.claim_id,
+                to_party_ids=decline_release_recipients,
+                attachments=(),
+                capability_id="triage.decline_draft",
+                actor=actor,
+            )
         return self.get_item(review_id, actor=actor)
 
 

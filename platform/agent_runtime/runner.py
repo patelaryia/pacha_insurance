@@ -42,6 +42,7 @@ class StepContext:
     claim_id: str | None
     capability_id: str
     step_id: str
+    trigger_event: str | None = None
 
 
 class AgentRunner:
@@ -234,6 +235,17 @@ class AgentRunner:
                     return
             raise ValueError(f"step {step_id!r} is not running")
 
+    def set_claim_id(self, run_id: str, claim_id: str) -> None:
+        """Attach the claim created by a governed workflow step exactly once."""
+
+        with self.sessions.begin() as session:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                raise LookupError(f"agent run {run_id} was not found")
+            if run.claim_id not in {None, claim_id}:
+                raise ValueError("agent run is already attached to a different claim")
+            run.claim_id = claim_id
+
     @staticmethod
     def _next_step(run: AgentRun) -> tuple[int, dict[str, Any]] | None:
         for index, step in enumerate(run.steps):
@@ -280,13 +292,47 @@ class AgentRunner:
                     updated_at=now.isoformat(),
                 )
                 current.steps = steps
-            context = StepContext(run_id, run.claim_id, run.capability_id, step_id)
+            context = StepContext(
+                run_id,
+                run.claim_id,
+                run.capability_id,
+                step_id,
+                run.trigger_event,
+            )
             try:
                 raw = fn(context)
             except Exception as error:  # noqa: BLE001 - reaper owns bounded recovery
                 self._record_step_error(run_id, index, error)
                 return {"run_id": run_id, "status": "running", "error": type(error).__name__}
             outcome = dict(raw) if isinstance(raw, dict) else {"result": raw}
+            if outcome.get("status") == "waiting":
+                expects_event = outcome.get("expects_event")
+                if not isinstance(expects_event, str) or not expects_event:
+                    self._record_step_error(
+                        run_id,
+                        index,
+                        ValueError("waiting outcome requires expects_event"),
+                    )
+                    return {"run_id": run_id, "status": "running", "error": "ValueError"}
+                waited_at = self.app.state.clock()
+                with self.sessions.begin() as session:
+                    current = session.get(AgentRun, run_id)
+                    if current is None:
+                        raise LookupError(f"agent run {run_id} was not found")
+                    steps = [dict(item) for item in current.steps]
+                    steps[index].update(
+                        status="waiting",
+                        attempts=max(0, attempts - 1),
+                        updated_at=waited_at.isoformat(),
+                        outcome=outcome,
+                    )
+                    current.steps = steps
+                    current.error = None
+                return {
+                    "run_id": run_id,
+                    "status": "running",
+                    "expects_event": expects_event,
+                }
             review_id = outcome.get("review_id")
             awaits_review = outcome.get("status") in {"staged", "awaiting_review"} or isinstance(
                 review_id, str
@@ -298,7 +344,11 @@ class AgentRunner:
                     raise LookupError(f"agent run {run_id} was not found")
                 steps = [dict(item) for item in current.steps]
                 steps[index].update(
-                    status="completed",
+                    status=(
+                        "awaiting_review"
+                        if awaits_review and outcome.get("resume_step") is True
+                        else "completed"
+                    ),
                     ended=ended.isoformat(),
                     updated_at=ended.isoformat(),
                     outcome=outcome,
@@ -339,23 +389,66 @@ class AgentRunner:
             run.error = detail
 
     def consume(self, event: Any) -> None:
-        """Resume an awaiting run only after its review resolution is durable."""
+        """Resume runs after durable review resolution or a waited-for event."""
 
         if event.type != "review.resolved":
+            self._resume_waiting(event)
             return
         run_id = event.payload.get("agent_run_id")
-        if not isinstance(run_id, str):
-            review_id = event.payload.get("review_id")
-            if isinstance(review_id, str):
-                with self.app.state.engine.connect() as connection:
-                    raw = connection.execute(
-                        text("SELECT payload FROM review_items WHERE id = :id"),
-                        {"id": review_id},
-                    ).scalar()
-                payload = _json_value(raw)
-                if isinstance(payload, dict):
+        review_payload: dict[str, Any] | None = None
+        review_id = event.payload.get("review_id")
+        if isinstance(review_id, str):
+            with self.app.state.engine.connect() as connection:
+                raw = connection.execute(
+                    text("SELECT payload FROM review_items WHERE id = :id"),
+                    {"id": review_id},
+                ).scalar()
+            payload = _json_value(raw)
+            if isinstance(payload, dict):
+                review_payload = payload
+                if not isinstance(run_id, str):
                     run_id = payload.get("agent_run_id")
         if not isinstance(run_id, str):
+            return
+        action = review_payload.get("action") if review_payload is not None else None
+        if (
+            event.payload.get("resolution") == "rejected"
+            and isinstance(action, dict)
+            and action.get("type") == "intake.create_claim"
+        ):
+            now = self.app.state.clock()
+            with self.sessions.begin() as session:
+                run = session.get(AgentRun, run_id)
+                if run is None or run.status != "awaiting_review":
+                    return
+                steps = [dict(step) for step in run.steps]
+                for step in steps:
+                    if (
+                        step.get("step_id") == "create_claim"
+                        and step.get("status") == "completed"
+                    ):
+                        outcome = step.get("outcome")
+                        step["outcome"] = {
+                            **(outcome if isinstance(outcome, dict) else {}),
+                            "resolution": "rejected",
+                            "result": "no_op",
+                        }
+                    elif step.get("status") == "completed":
+                        continue
+                    else:
+                        step.update(
+                            status="completed",
+                            ended=now.isoformat(),
+                            updated_at=now.isoformat(),
+                            outcome={
+                                "status": "skipped",
+                                "reason": "claim_creation_rejected",
+                            },
+                        )
+                run.steps = steps
+                run.status = "completed"
+                run.error = None
+                run.ended_at = now
             return
         with self.sessions.begin() as session:
             run = session.get(AgentRun, run_id)
@@ -364,6 +457,28 @@ class AgentRunner:
             run.status = "running"
             run.error = None
         self.run(run_id)
+
+    def _resume_waiting(self, event: Any) -> None:
+        """Re-invoke waiting steps whose declared event has now committed."""
+
+        with self.sessions() as session:
+            runs = list(session.scalars(select(AgentRun).where(AgentRun.status == "running")))
+            for run in runs:
+                session.expunge(run)
+        for run in runs:
+            if event.claim_id is not None and run.claim_id != event.claim_id:
+                continue
+            pending = self._next_step(run)
+            if pending is None:
+                continue
+            _index, step = pending
+            outcome = step.get("outcome")
+            if (
+                step.get("status") == "waiting"
+                and isinstance(outcome, dict)
+                and outcome.get("expects_event") == event.type
+            ):
+                self.run(run.id)
 
     def reap(self) -> int:
         """Resume stale running steps, failing visibly after three attempts."""

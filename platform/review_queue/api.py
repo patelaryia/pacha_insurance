@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Header, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from review_queue.ops_reads import OpsReadService
 from review_queue.service import ReviewService
+
+PORTFOLIO_ROLES = frozenset(
+    {"claims_manager", "gm", "md", "chairman", "head_of_claims", "auditor"}
+)
 
 
 class ResolveRequest(BaseModel):
@@ -20,6 +25,16 @@ class ResolveRequest(BaseModel):
 
 def build_router(service: ReviewService) -> APIRouter:
     router = APIRouter()
+    ops_reads = OpsReadService(service.app)
+
+    def require_portfolio(actor: str) -> None:
+        role = service.authorizer.role(actor)
+        if role not in PORTFOLIO_ROLES:
+            from claim_core import ClaimCoreError
+
+            raise ClaimCoreError(
+                403, "FORBIDDEN_ROLE", "Role is not authorised for portfolio reads"
+            )
 
     @router.get("/reviews")
     def list_reviews(
@@ -59,6 +74,19 @@ def build_router(service: ReviewService) -> APIRouter:
             schema_version=body.schema_version,
             payload=body.payload,
         )
+
+    @router.get("/portfolio")
+    def portfolio(x_actor: str = Header(alias="X-Actor")) -> dict[str, Any]:
+        require_portfolio(x_actor)
+        return {"tiles": ops_reads.portfolio()}
+
+    @router.get("/portfolio/{series_id}.csv")
+    def portfolio_csv(
+        series_id: str,
+        x_actor: str = Header(alias="X-Actor"),
+    ) -> Response:
+        require_portfolio(x_actor)
+        return Response(content=ops_reads.csv(series_id), media_type="text/csv")
 
     return router
 

@@ -8,6 +8,10 @@ types:
     resolution_schema: FIELD_VERIFY@1
     authorised_roles: &operational_roles
       [claims_officer, asst_claims_manager, claims_manager, gm, md, chairman]
+    subtypes:
+      coverage_manual:
+        workspace_layout: coverage_checklist_card
+        resolution_schema: FIELD_VERIFY_COVERAGE@1
   DOC_CLASSIFY:
     producing_events: [review.created]
     workspace_layout: document_classification

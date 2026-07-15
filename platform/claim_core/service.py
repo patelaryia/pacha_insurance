@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import bindparam, func, inspect, select, text
@@ -31,6 +31,7 @@ from claim_core.models import (
     DocIntelSample,
     Document,
     Event,
+    Party,
     SlaClock,
 )
 from claim_core.schemas import ClaimCreate, FieldWrite, FieldWriteResult
@@ -241,6 +242,177 @@ class ClaimService:
                     correlation_id=new_ulid(),
                 )
         return claim
+
+    def create_parties(
+        self,
+        claim_id: str,
+        parties: list[dict],
+        *,
+        actor: str,
+    ) -> list[Party]:
+        """Create claim parties idempotently through the curated core boundary."""
+
+        allowed_roles = {
+            "insured",
+            "broker",
+            "agent",
+            "driver",
+            "garage",
+            "assessor",
+            "supplier",
+            "third_party",
+            "bank",
+            "salvage_yard",
+        }
+        checked: list[dict] = []
+        for raw in parties:
+            role = raw.get("role")
+            name = raw.get("name")
+            email = raw.get("email")
+            phone = raw.get("phone")
+            if role not in allowed_roles:
+                raise ValueError(f"unsupported party role {role!r}")
+            if not any(isinstance(value, str) and value.strip() for value in (name, email, phone)):
+                raise ValueError("party requires at least one name, email, or phone")
+            checked.append(
+                {
+                    "role": role,
+                    "name": name.strip() if isinstance(name, str) and name.strip() else None,
+                    "email": email.strip() if isinstance(email, str) and email.strip() else None,
+                    "phone": phone.strip() if isinstance(phone, str) and phone.strip() else None,
+                    "meta": dict(raw.get("meta") or {}),
+                }
+            )
+        created: list[Party] = []
+        with self._claim_locks.acquire(claim_id):
+            with self._sessions.begin() as session:
+                acquire_database_claim_lock(session, claim_id)
+                self._claim_or_error(session, claim_id)
+                existing = list(
+                    session.scalars(select(Party).where(Party.claim_id == claim_id))
+                )
+                for values in checked:
+                    duplicate = next(
+                        (
+                            row
+                            for row in existing
+                            if row.role == values["role"]
+                            and row.name == values["name"]
+                            and row.email == values["email"]
+                            and row.phone == values["phone"]
+                        ),
+                        None,
+                    )
+                    if duplicate is not None:
+                        created.append(duplicate)
+                        continue
+                    row = Party(id=new_ulid(), claim_id=claim_id, **values)
+                    session.add(row)
+                    existing.append(row)
+                    created.append(row)
+                session.flush()
+                for row in created:
+                    session.expunge(row)
+        return created
+
+    def find_claim_duplicates(
+        self,
+        *,
+        claim_id: str,
+        vehicle_reg: str,
+        loss_date: str,
+    ) -> list[dict]:
+        """Read same-reg/date candidates using current append-only field versions."""
+
+        try:
+            target_date = date.fromisoformat(loss_date)
+        except ValueError as error:
+            raise ValueError("loss_date must be ISO YYYY-MM-DD") from error
+
+        def normalise_reg(value: str) -> str:
+            return " ".join(value.upper().replace("-", " ").split())
+
+        target_reg = normalise_reg(vehicle_reg)
+        terminal_states = {"SETTLED", "CLOSED", "DECLINED", "WITHDRAWN", "VOID"}
+        now = self._clock()
+        with self._sessions() as session:
+            claims = list(
+                session.scalars(
+                    select(Claim)
+                    .where(Claim.id != claim_id)
+                    .order_by(Claim.created_at, Claim.id)
+                )
+            )
+            fields = list(
+                session.scalars(
+                    select(ClaimField).where(
+                        ClaimField.claim_id.in_([claim.id for claim in claims]),
+                        ClaimField.path.in_(("vehicle.reg", "loss.date")),
+                        ClaimField.superseded_by.is_(None),
+                    )
+                )
+            ) if claims else []
+            values: dict[str, dict[str, object]] = {}
+            for field in fields:
+                values.setdefault(field.claim_id, {})[field.path] = field.value
+            matches: list[dict] = []
+            for claim in claims:
+                current = values.get(claim.id, {})
+                candidate_reg = current.get("vehicle.reg")
+                candidate_date = current.get("loss.date")
+                if (
+                    not isinstance(candidate_reg, str)
+                    or normalise_reg(candidate_reg) != target_reg
+                    or not isinstance(candidate_date, str)
+                ):
+                    continue
+                try:
+                    parsed_date = date.fromisoformat(candidate_date)
+                except ValueError:
+                    continue
+                if abs((parsed_date - target_date).days) > 3:
+                    continue
+                terminal_at = None
+                if claim.status in terminal_states:
+                    terminal_events = list(
+                        session.scalars(
+                            select(Event)
+                            .where(
+                                Event.claim_id == claim.id,
+                                Event.type == "claim.status_changed",
+                            )
+                            .order_by(Event.occurred_at.desc(), Event.seq.desc())
+                        )
+                    )
+                    terminal_event = next(
+                        (
+                            event
+                            for event in terminal_events
+                            if event.payload.get("to") == claim.status
+                        ),
+                        None,
+                    )
+                    if terminal_event is None:
+                        continue
+                    terminal_at = terminal_event.occurred_at
+                    aware_terminal = (
+                        terminal_at.replace(tzinfo=UTC)
+                        if terminal_at.tzinfo is None
+                        else terminal_at
+                    )
+                    aware_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now
+                    if aware_now - aware_terminal > timedelta(days=365):
+                        continue
+                matches.append(
+                    {
+                        "claim_id": claim.id,
+                        "status": claim.status,
+                        "terminal": claim.status in terminal_states,
+                        "terminal_at": terminal_at,
+                        "created_at": claim.created_at,
+                    }
+                )
+            return matches
 
     @staticmethod
     def _validate_write(write: FieldWrite, actor: str) -> FieldDefinition:

@@ -32,6 +32,21 @@ fields:
   policy.sum_insured:
     value_type: money
     pii_class: none
+  policy.period_start:
+    value_type: date
+    pii_class: none
+  policy.period_end:
+    value_type: date
+    pii_class: none
+  policy.endorsement_ref:
+    value_type: string
+    pii_class: none
+  policy.premium_paid:
+    value_type: bool
+    pii_class: none
+  policy.excess_protector:
+    value_type: bool
+    pii_class: none
   assessment.parts_replaced:
     value_type: bool
     pii_class: none

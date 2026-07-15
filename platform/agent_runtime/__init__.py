@@ -47,13 +47,18 @@ class AgentRuntime:
         action: Action,
         claim_id: str | None,
         actor: str,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         return self.gate.execute_or_stage(
             capability_id=capability_id,
             action=action,
             claim_id=claim_id,
             actor=actor,
+            run_id=run_id,
         )
+
+    def execute_staged(self, action: Action) -> Any:
+        return self.gate.execute_staged(action)
 
     def register_step(self, capability_id: str, step_id: str, fn: Any) -> None:
         self.runner.register_step(capability_id, step_id, fn)
