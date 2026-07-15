@@ -53,7 +53,6 @@ class TemplateRegistry:
         except KeyError as error:
             raise LookupError(f"Unknown template id {template_id!r}") from error
 
-
 @dataclass(frozen=True)
 class RenderResult:
     """Metadata for one immutable rendered artifact."""
@@ -188,7 +187,6 @@ def load_template_registry(
             raise PackLoadError(f"Live template {template_id} must not declare blocked_on")
         else:
             blocked_on = ()
-
         calc_slots = row.get("calc_slots", {})
         if not isinstance(calc_slots, dict) or not all(
             isinstance(variable, str)

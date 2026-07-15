@@ -14,6 +14,14 @@ digest:
     status: pending_capture
     blocked_on: open-item-6
 rules:
+  - id: terminal_inbound
+    event_type: terminal.inbound_received
+    audience: assigned_officer
+    channels: [in_app, email]
+    template:
+      id: staff.terminal_inbound
+      status: pending_capture
+      blocked_on: open-item-6
   - id: sla_breached
     event_type: sla.breached
     audience: assigned_officer

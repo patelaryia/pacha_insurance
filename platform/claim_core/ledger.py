@@ -25,6 +25,7 @@ ACTION_MAP = {
     "review.resolved": "review.resolved",
     "authz.denied": "authz.denied",
     "claim.created": "claim.created",
+    "claim.assigned": "claim.assigned",
     "document.received": "document.received",
     "document.extracted": "document.extracted",
     "document.rejected": "document.rejected",

@@ -626,6 +626,69 @@ class TemplateGrader(Grader):
         return RawGrade("pass", {"code": "TEMPLATE_VALID"})
 
 
+class CommunicationGrader(Grader):
+    """Apply deterministic AR-3 recipient, registry, and verification checks."""
+
+    def __init__(self, harness: Any) -> None:
+        super().__init__(harness, "G-COMM", "artifact", "critical")
+
+    def grade(self, subject: dict[str, Any], actor: str) -> RawGrade:
+        claim_id = subject.get("claim_id")
+        template_id = subject.get("template_id")
+        recipients = subject.get("to_party_ids")
+        if (
+            not isinstance(claim_id, str)
+            or not isinstance(template_id, str)
+            or not isinstance(recipients, list)
+            or not recipients
+            or not all(isinstance(value, str) for value in recipients)
+        ):
+            return RawGrade("error", {"code": "INVALID_SUBJECT_REF"})
+        try:
+            claim, _fields, _blocked = self.harness.claim_service.hydrate_claim(
+                claim_id, actor, paths=[]
+            )
+            pack_id, separator, version = claim.pack_version.partition("@")
+            if not separator:
+                raise LookupError("malformed pack pin")
+            definition = self.harness.runtime.template_registry(pack_id, version).get(
+                template_id
+            )
+            with self.harness.engine.connect() as connection:
+                party_ids = {
+                    str(value)
+                    for value in connection.execute(
+                        text("SELECT id FROM parties WHERE claim_id = :claim_id"),
+                        {"claim_id": claim_id},
+                    ).scalars()
+                }
+            if set(recipients) - party_ids:
+                return RawGrade("fail", {"code": "RECIPIENT_OUTSIDE_CLAIM"})
+            if definition.status == "pending_capture":
+                return RawGrade("pass", {"code": "REGISTERED_PENDING_TEMPLATE"})
+            _claim, fields, _blocked = self.harness.claim_service.hydrate_claim(
+                claim_id,
+                actor,
+                paths=definition.required_fields,
+            )
+        except Exception as error:  # noqa: BLE001 - visible deterministic failure
+            return RawGrade(
+                "fail",
+                {"code": "TEMPLATE_OR_CLAIM_MISSING", "error_type": type(error).__name__},
+            )
+        rank = {"extracted": 0, "system_confirmed": 1, "human_verified": 2}
+        invalid = [
+            path
+            for path in definition.required_fields
+            if path not in fields
+            or rank.get(fields[path].verification_state, -1)
+            < rank[definition.min_verification]
+        ]
+        if invalid:
+            return RawGrade("fail", {"code": "MERGE_FIELD_INVALID", "paths": invalid})
+        return RawGrade("pass", {"code": "COMMUNICATION_VALID"})
+
+
 class GraderRegistry:
     """Closed grader catalog with live and pending entries."""
 
@@ -662,7 +725,7 @@ class GraderRegistry:
                 "artifact",
                 "critical",
                 status="pending",
-                blocked_on="PRD-06 outbound communication producer",
+                blocked_on="AR-3 runtime not installed",
             ),
             PendingGrader(
                 harness,
@@ -674,6 +737,11 @@ class GraderRegistry:
             ),
         ]
         self._entries = {entry.grader_id: entry for entry in entries}
+
+    def activate_gcomm(self) -> None:
+        """Install deterministic G-COMM when its AR-3 producer is available."""
+
+        self._entries["G-COMM"] = CommunicationGrader(self._entries["G-COMM"].harness)
 
     def ids(self) -> list[str]:
         return list(self._entries)

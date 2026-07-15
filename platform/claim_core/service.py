@@ -26,6 +26,7 @@ from claim_core.fsm import ClaimState, ClaimStateMachine, TransitionResult
 from claim_core.models import (
     Claim,
     ClaimField,
+    Communication,
     ConsistencyResult,
     DocIntelSample,
     Document,
@@ -146,6 +147,67 @@ class ClaimService:
                 actor="agent:doc_intel",
                 correlation_id=new_ulid(),
             )
+
+    def record_inbound_communication(
+        self,
+        *,
+        graph_message_id: str,
+        claim_id: str | None,
+        thread_id: str | None,
+        from_addr: str,
+        to_addrs: list[str],
+        subject: str,
+        body_text: str,
+    ) -> tuple[Communication, bool]:
+        """Persist one queryable inbound message, idempotent on its Graph id."""
+
+        if self._blob_store is None:
+            raise RuntimeError("blob store is not configured")
+        with self._sessions() as session:
+            existing = session.scalar(
+                select(Communication).where(
+                    Communication.graph_message_id == graph_message_id
+                )
+            )
+            if existing is not None:
+                session.expunge(existing)
+                return existing, False
+        if claim_id is not None:
+            with self._sessions() as session:
+                self._claim_or_error(session, claim_id)
+        body_key = f"communications/inbound/{graph_message_id}"
+        self._blob_store.put(body_key, body_text.encode("utf-8"))
+        row = Communication(
+            id=new_ulid(),
+            claim_id=claim_id,
+            direction="inbound",
+            channel="email",
+            graph_message_id=graph_message_id,
+            thread_id=thread_id,
+            from_addr=from_addr,
+            to_addrs=list(to_addrs),
+            subject=subject,
+            body_s3_key=body_key,
+            sent_by=None,
+            occurred_at=self._clock(),
+        )
+        try:
+            with self._sessions.begin() as session:
+                session.add(row)
+                session.flush()
+                session.expunge(row)
+        except IntegrityError:
+            with self._sessions() as session:
+                existing = session.scalar(
+                    select(Communication).where(
+                        Communication.graph_message_id == graph_message_id
+                    )
+                )
+                if existing is None:
+                    raise
+                session.expunge(existing)
+                return existing, False
+        return row, True
 
     def create_claim(self, request: ClaimCreate, actor: str) -> Claim:
         now = self._clock()

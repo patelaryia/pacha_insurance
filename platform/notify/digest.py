@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -53,7 +53,14 @@ class DigestService:
         self.config = config
         self.writer = writer
 
-    def _summary(self, actor: str, claim_ids: list[str]) -> dict[str, Any]:
+    def _summary(
+        self,
+        actor: str,
+        claim_ids: list[str],
+        *,
+        archive_start: datetime,
+        archive_end: datetime,
+    ) -> dict[str, Any]:
         with self.app.state.engine.connect() as connection:
             state_rows = connection.execute(
                 text("SELECT status FROM claims WHERE assigned_to = :actor"),
@@ -66,6 +73,14 @@ class DigestService:
                     "WHERE assigned_to = :actor AND status = 'open'"
                 ),
                 {"actor": actor},
+            ).scalar_one()
+            archived_mail = connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM events WHERE type = 'mail.archived' "
+                    "AND claim_id IS NULL AND occurred_at >= :start "
+                    "AND occurred_at < :end"
+                ),
+                {"start": archive_start, "end": archive_end},
             ).scalar_one()
             if claim_ids:
                 placeholders = ",".join(f":claim_{index}" for index in range(len(claim_ids)))
@@ -83,6 +98,7 @@ class DigestService:
                 clock_counts = {}
         return {
             "open_review_items": int(open_reviews),
+            "archived_mail": int(archived_mail),
             "sla": {
                 "warned": int(clock_counts.get("warned", 0)),
                 "breached": int(clock_counts.get("breached", 0)),
@@ -94,7 +110,13 @@ class DigestService:
         if now.tzinfo is None:
             now = now.replace(tzinfo=UTC)
         digest = self.config["digest"]
-        eat_date = now.astimezone(ZoneInfo(digest["timezone"])).date().isoformat()
+        timezone = ZoneInfo(digest["timezone"])
+        local_date = now.astimezone(timezone).date()
+        eat_date = local_date.isoformat()
+        archive_start = datetime.combine(local_date, time.min, tzinfo=timezone).astimezone(
+            UTC
+        )
+        archive_end = archive_start + timedelta(days=1)
         with self.app.state.engine.connect() as connection:
             assignments = connection.execute(
                 text(
@@ -117,7 +139,12 @@ class DigestService:
                 source_payload={
                     "digest_date": eat_date,
                     "owned_claim_ids": claim_ids,
-                    "summary": self._summary(actor, claim_ids),
+                    "summary": self._summary(
+                        actor,
+                        claim_ids,
+                        archive_start=archive_start,
+                        archive_end=archive_end,
+                    ),
                 },
                 channels=tuple(digest["channels"]),
                 template=dict(digest["template"]),

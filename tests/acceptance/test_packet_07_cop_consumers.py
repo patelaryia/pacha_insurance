@@ -22,7 +22,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 MOTOR_PACK = REPO / "packs" / "motor"
 
 MOTOR_TEMPLATE_IDS = {
-    "T-01", "T-02", "T-02b", "T-03", "T-04", "T-05", "T-06",
+    "T-01", "T-02", "T-02b", "T-03", "T-04", "T-05", "T-06", "T-06a",
     "T-06r-broker", "T-06r-client", "T-07", "T-08", "T-08b",
     "T-09", "T-10", "T-11", "T-12", "T-13",
 }
