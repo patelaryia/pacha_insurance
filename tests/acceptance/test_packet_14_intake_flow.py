@@ -554,6 +554,34 @@ def test_photos_only_missing_narrative_adds_incident_description_item(tmp_path):
     assert ids == [*BASE_CHECKLIST_IDS, "incident_description"]
 
 
+def test_no_estimate_claim_completes_triage_with_visible_blocked_r02(tmp_path):
+    """Register #149: the ordinary intake holds no estimate at S8. R-02 stays a
+    visible blocked_on_inputs rule run; triage still completes INTIMATED→TRIAGED
+    with no invented exception — the estimate arrives later via PRD-06 chase."""
+
+    env = _build(tmp_path, "no-estimate-triage", model=_clean_model())
+    _set_level(env.app, "intake.claim_creation", "L3")
+    _start_clean_intimation(env)
+    claim_id = _claims(env.app)[0]["id"]
+    _approve_ack(env, claim_id)
+    _resolve_coverage(env, claim_id)
+
+    assert env.client.get(f"/claims/{claim_id}", headers=_h(OFFICER_A)).json()[
+        "status"] == "TRIAGED"
+    r02 = _rows(
+        env.app,
+        "SELECT status FROM rule_runs WHERE claim_id = :c AND rule_id = 'R-02'",
+        c=claim_id,
+    )
+    assert r02 and r02[0]["status"] == "blocked_on_inputs"
+    open_exceptions = [
+        item for item in _items(env.app, claim_id=claim_id, type="EXCEPTION")
+        if item["status"] == "open"
+    ]
+    assert open_exceptions == []
+    assert _runs(env.app)[0]["status"] == "completed"
+
+
 # --- Launch-level governance (S1) ---------------------------------------------------
 
 
