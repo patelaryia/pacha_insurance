@@ -32,6 +32,9 @@ ACTION_MAP = {
     "pii.decrypted": "pii.decrypt",
     "autonomy.promoted": "autonomy.promoted",
     "autonomy.demoted": "autonomy.demoted",
+    "notify.sent": "notify.sent",
+    "notify.staged": "notify.staged",
+    "sla.escalated": "sla.escalated",
 }
 
 EventRecorder = Callable[..., Event]

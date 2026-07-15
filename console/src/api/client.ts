@@ -5,6 +5,11 @@ import type {
   ReviewFilters,
   ReviewItem,
   ResolutionAction,
+  LedgerRow,
+  PortfolioTile,
+  SlaClockRow,
+  CapabilityRow,
+  PackRow,
 } from "./types";
 import { parseLossless, stringifyLossless, toBigInt, toSafeNumber } from "../lib/json";
 
@@ -119,5 +124,98 @@ export class ConsoleApiClient implements ConsoleApi {
   async getDocument(documentUrl: string): Promise<ArrayBuffer> {
     const response = await this.request(documentUrl);
     return response.arrayBuffer();
+  }
+
+  async getSlaBoard(): Promise<{ clocks: SlaClockRow[] }> {
+    return (await this.json(await this.request("/console/ops/sla-board"))) as {
+      clocks: SlaClockRow[];
+    };
+  }
+
+  async escalateClocks(clockIds: string[]): Promise<{
+    results: Array<{
+      clock_id: string;
+      outcome: "escalated" | "blocked_on_inputs";
+      blocked_on?: string;
+    }>;
+  }> {
+    return (await this.json(await this.request("/console/ops/sla-board/escalate", {
+      method: "POST",
+      body: stringifyLossless({ clock_ids: clockIds }),
+    }))) as {
+      results: Array<{
+        clock_id: string;
+        outcome: "escalated" | "blocked_on_inputs";
+        blocked_on?: string;
+      }>;
+    };
+  }
+
+  async getPortfolio(): Promise<{ tiles: PortfolioTile[] }> {
+    return (await this.json(await this.request("/console/ops/portfolio"))) as {
+      tiles: PortfolioTile[];
+    };
+  }
+
+  seriesCsvUrl(seriesId: string): string {
+    return `${this.baseUrl}/console/ops/portfolio/${encodeURIComponent(seriesId)}.csv`;
+  }
+
+  async searchLedger(params: {
+    actor?: string;
+    action?: string;
+    claim_id?: string;
+    after_seq?: number;
+    limit?: number;
+  }): Promise<{ rows: LedgerRow[] }> {
+    const query = new URLSearchParams(
+      Object.entries(params)
+        .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
+        .map(([key, value]) => [key, String(value)]),
+    );
+    return (await this.json(await this.request(`/console/ops/ledger?${query}`))) as {
+      rows: LedgerRow[];
+    };
+  }
+
+  async getPacks(): Promise<{
+    packs: PackRow[];
+    adapter_health?: { status: string; owner: string };
+    user_roles?: Record<string, unknown>;
+  }> {
+    return (await this.json(await this.request("/console/ops/packs"))) as {
+      packs: PackRow[];
+      adapter_health?: { status: string; owner: string };
+      user_roles?: Record<string, unknown>;
+    };
+  }
+
+  async getCapabilities(): Promise<{ capabilities: CapabilityRow[] }> {
+    return (await this.json(await this.request("/console/ops/capabilities"))) as {
+      capabilities: CapabilityRow[];
+    };
+  }
+
+  async promoteCapability(
+    id: string,
+    body: { to_level: number | string; sign_offs: Array<Record<string, string>> },
+  ): Promise<Record<string, unknown>> {
+    return (await this.json(await this.request(
+      `/console/ops/capabilities/${encodeURIComponent(id)}/promote`,
+      { method: "POST", body: stringifyLossless(body) },
+    ))) as Record<string, unknown>;
+  }
+
+  async listNotifications(): Promise<{ items: Array<Record<string, unknown>> }> {
+    return (await this.json(await this.request(
+      "/console/ops/notifications?scope=mine",
+    ))) as { items: Array<Record<string, unknown>> };
+  }
+
+  async markNotificationRead(id: string): Promise<Record<string, unknown>> {
+    return (await this.json(await this.request(
+      `/console/ops/notifications/${encodeURIComponent(id)}/read`,
+      { method: "POST" },
+    ))) as Record<string, unknown>;
   }
 }

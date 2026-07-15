@@ -19,7 +19,7 @@ export const REVIEW_TYPES = [
 ] as const;
 
 export type ReviewType = (typeof REVIEW_TYPES)[number];
-export type ReviewScope = "mine" | "pool";
+export type ReviewScope = "mine" | "pool" | "band";
 
 export interface ReviewItem {
   id: string;
@@ -90,6 +90,49 @@ export interface Citation {
   document_url: string;
 }
 
+export interface SlaClockRow {
+  clock_id: string;
+  claim_id: string;
+  definition_id: string;
+  state: string;
+  started_at?: string;
+  breach_at: string | null;
+  escalate_to_role: string;
+}
+
+export interface PortfolioTile {
+  series_id: string;
+  status: "live" | "pending_capture" | "unavailable";
+  data: unknown;
+}
+
+export interface LedgerRow {
+  seq: number;
+  action: string;
+  actor: string;
+  claim_id: string | null;
+  row_hash: string;
+  before_hash?: string | null;
+  after_hash?: string | null;
+}
+
+export interface CapabilityRow {
+  id: string;
+  current_level: string;
+  max_level: string;
+  pass_rate_window: number;
+  consecutive_approvals: number;
+  runs_to_promotion: number | null;
+  sampling_rate: number;
+  promotion_evidence?: Record<string, unknown>;
+}
+
+export interface PackRow {
+  id: string;
+  version: string;
+  entries: Array<Record<string, unknown>>;
+}
+
 export interface ConsoleApi {
   listReviews(filters: ReviewFilters): Promise<ReviewItem[]>;
   resolveReview(
@@ -103,4 +146,33 @@ export interface ConsoleApi {
   getClaim360(claimId: string): Promise<Claim360>;
   getCitation(claimId: string, fieldPath: string): Promise<Citation>;
   getDocument?(documentUrl: string): Promise<ArrayBuffer>;
+  getSlaBoard?(): Promise<{ clocks: SlaClockRow[] }>;
+  escalateClocks?(clockIds: string[]): Promise<{
+    results: Array<{
+      clock_id: string;
+      outcome: "escalated" | "blocked_on_inputs";
+      blocked_on?: string;
+    }>;
+  }>;
+  getPortfolio?(): Promise<{ tiles: PortfolioTile[] }>;
+  seriesCsvUrl?(seriesId: string): string;
+  searchLedger?(params: {
+    actor?: string;
+    action?: string;
+    claim_id?: string;
+    after_seq?: number;
+    limit?: number;
+  }): Promise<{ rows: LedgerRow[] }>;
+  getPacks?(): Promise<{
+    packs: PackRow[];
+    adapter_health?: { status: string; owner: string };
+    user_roles?: Record<string, unknown>;
+  }>;
+  getCapabilities?(): Promise<{ capabilities: CapabilityRow[] }>;
+  promoteCapability?(
+    id: string,
+    body: { to_level: number | string; sign_offs: Array<Record<string, string>> },
+  ): Promise<Record<string, unknown>>;
+  listNotifications?(): Promise<{ items: Array<Record<string, unknown>> }>;
+  markNotificationRead?(id: string): Promise<Record<string, unknown>>;
 }

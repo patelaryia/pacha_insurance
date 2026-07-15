@@ -35,6 +35,7 @@ CONSOLE_ROLES = frozenset(
         "auditor",
     }
 )
+OPS_INGRESS_ROLES = CONSOLE_ROLES | {"admin"}
 GUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -231,7 +232,7 @@ class ConsoleIngressMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         headers = Headers(scope=request.scope)
         # Register #100 retires the network actor transport for the whole app as
-        # soon as console ingress is installed.  Checking this before the route
+        # soon as console ingress is installed. Checking this before the route
         # allow-list prevents legacy claim/event endpoints becoming a spoofing
         # side door while machine ingress remains an infra-owned concern.
         if "x-actor" in headers:
@@ -258,7 +259,10 @@ class ConsoleIngressMiddleware(BaseHTTPMiddleware):
         role = self.roles.get(actor)
         if role is None:
             return _error(403, "FORBIDDEN_ROLE", "Actor has no configured role")
-        if path.startswith("/reviews") or path.startswith("/console/"):
+        if path.startswith("/console/ops/"):
+            if role not in OPS_INGRESS_ROLES:
+                return _error(403, "FORBIDDEN_ROLE", "Role has no operations access")
+        elif path.startswith("/reviews") or path.startswith("/console/"):
             if role not in CONSOLE_ROLES:
                 return _error(403, "FORBIDDEN_ROLE", "Role has no S-1/S-2 access")
         request.scope["headers"] = [
@@ -295,6 +299,7 @@ def install_console(
     queue.service.authorizer.roles = dict(configured_roles)
     app.state.console_identities = checked_identities
     app.state.console_roles = configured_roles
+    app.state.console_verifier = effective_verifier
     app.include_router(build_console_router(app))
     app.add_middleware(
         ConsoleIngressMiddleware,

@@ -30,6 +30,7 @@ DECLINE_APPROVAL_STATUS_VALUES = frozenset(
         "PACK_READY",
     }
 )
+BAND_QUEUE_TYPES = frozenset({"PACK_REVIEW", "EX_GRATIA", "DRAFT_RELEASE"})
 
 
 class ReviewService:
@@ -194,8 +195,10 @@ class ReviewService:
         claim_id: str | None,
     ) -> list[dict[str, Any]]:
         role = self._read_role(actor)
-        if scope not in {"mine", "pool"}:
-            raise ClaimCoreError(422, "VALUE_TYPE_MISMATCH", "scope must be mine or pool")
+        if scope not in {"mine", "pool", "band"}:
+            raise ClaimCoreError(
+                422, "VALUE_TYPE_MISMATCH", "scope must be mine, pool, or band"
+            )
         with self.sessions() as session:
             query = select(ReviewItem)
             if scope == "mine" and role != "auditor":
@@ -203,6 +206,12 @@ class ReviewService:
                     ReviewItem.claim_id.in_(
                         select(CLAIMS.c.id).where(CLAIMS.c.assigned_to == actor)
                     )
+                )
+            elif scope == "band":
+                if role not in self.authorizer.bands:
+                    return []
+                query = query.where(
+                    ReviewItem.type.in_(BAND_QUEUE_TYPES), ReviewItem.status == "open"
                 )
             if type_name is not None:
                 query = query.where(ReviewItem.type == type_name)
@@ -213,6 +222,23 @@ class ReviewService:
             items = list(session.scalars(query.order_by(ReviewItem.created_at, ReviewItem.id)))
             for item in items:
                 session.expunge(item)
+        if scope == "band":
+            eligible = []
+            for item in items:
+                contract = self.contracts.get(item.type)
+                if role not in contract.authorised_roles:
+                    continue
+                amount = self._band_amount(item, contract.band_amount_path, actor)
+                if (
+                    self.authorizer.resolve_band_code(
+                        actor=actor,
+                        contract=contract,
+                        band_amount=amount,
+                    )
+                    is None
+                ):
+                    eligible.append(item)
+            items = eligible
         return [self.serialise(item) for item in items]
 
     def get_item(self, review_id: str, *, actor: str) -> dict[str, Any]:
