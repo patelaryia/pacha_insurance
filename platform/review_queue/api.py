@@ -23,7 +23,7 @@ def build_router(service: ReviewService) -> APIRouter:
 
     @router.get("/reviews")
     def list_reviews(
-        scope: Literal["mine", "pool"] = Query(default="mine"),
+        scope: Literal["mine", "pool", "band"] = Query(default="mine"),
         type_name: str | None = Query(default=None, alias="type"),
         status: str | None = None,
         claim_id: str | None = None,

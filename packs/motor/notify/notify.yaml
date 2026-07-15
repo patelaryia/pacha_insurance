@@ -1,0 +1,50 @@
+version: 1
+staff_domain_allowlist:
+  - mayfair.co.ke
+email_transport:
+  status: pending_capture
+  blocked_on: open-item-1
+digest:
+  timezone: Africa/Nairobi
+  hour: 8
+  minute: 0
+  channels: [in_app, email]
+  template:
+    id: staff.daily_digest
+    status: pending_capture
+    blocked_on: open-item-6
+rules:
+  - id: sla_breached
+    event_type: sla.breached
+    audience: assigned_officer
+    channels: [in_app, email]
+    template:
+      id: staff.sla_breached
+      status: pending_capture
+      blocked_on: open-item-6
+  - id: projection_diverged
+    event_type: projection.diverged
+    audience: assigned_officer
+    channels: [in_app, email]
+    template:
+      id: staff.projection_diverged
+      status: pending_capture
+      blocked_on: open-item-6
+  - id: grader_failed_critical
+    event_type: grader.failed
+    when:
+      severity: critical
+    audience: role:claims_manager
+    channels: [in_app, email]
+    template:
+      id: staff.grader_failed_critical
+      status: pending_capture
+      blocked_on: open-item-6
+  - id: autonomy_demoted
+    event_type: autonomy.demoted
+    audience: role:claims_manager
+    channels: [in_app, email]
+    template:
+      id: staff.autonomy_demoted
+      status: pending_capture
+      blocked_on: open-item-6

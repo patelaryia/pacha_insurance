@@ -1,0 +1,20 @@
+version: 1
+timezone: Africa/Nairobi
+approval_workspace:
+  t03_threshold_cents: 4_000_000_00
+  t03_status: pending_capture
+  t03_blocked_on: open-item-6
+aging_buckets:
+  - {id: 0_7_days, min_days: 0, max_days: 7}
+  - {id: 8_30_days, min_days: 8, max_days: 30}
+  - {id: 31_90_days, min_days: 31, max_days: 90}
+  - {id: 91_plus_days, min_days: 91, max_days: null}
+series:
+  - {id: open_claims_by_state, status: live, window: point_in_time}
+  - {id: sla_breaches, status: live, window: point_in_time}
+  - {id: per_officer_queue_depth, status: live, window: point_in_time}
+  - {id: aging_histogram, status: live, window: point_in_time}
+  - {id: savings_mtd_ytd, status: live, window: eat_calendar}
+  - {id: autonomy_rate_trend, status: pending_capture, window: pending_capture}
+  - {id: no_touch_trend, status: pending_capture, window: pending_capture}
+  - {id: median_handling_trend, status: pending_capture, window: pending_capture}

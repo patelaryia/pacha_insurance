@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -363,6 +364,46 @@ class SlaDefinitionRow(Base):
     escalate_to_role: Mapped[str] = mapped_column(Text, nullable=False)
     calendar: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class Notification(Base):
+    """Rebuildable staff-notification projection with durable read state."""
+
+    __tablename__ = "notifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "recipient",
+            "event_id",
+            "channel",
+            name="uq_notifications_recipient_event_channel",
+        ),
+        CheckConstraint(
+            "channel IN ('in_app', 'email')", name="ck_notifications_channel"
+        ),
+        CheckConstraint(
+            "status IN ('sent', 'staged', 'read')", name="ck_notifications_status"
+        ),
+        {
+            "comment": (
+                "Rebuildable projection of staff notifications; read status is mutable."
+            )
+        },
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, comment="ULID")
+    recipient: Mapped[str] = mapped_column(
+        Text, nullable=False, comment="staff actor, user:<ULID>"
+    )
+    rule_id: Mapped[str] = mapped_column(Text, nullable=False)
+    event_id: Mapped[str] = mapped_column(
+        Text, nullable=False, comment="source event id or deterministic digest key"
+    )
+    claim_id: Mapped[str | None] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PlatformState(Base):

@@ -13,6 +13,7 @@ from review_queue.api import build_router
 from review_queue.auth import install_console
 from review_queue.contracts import ContractRegistry
 from review_queue.models import ReviewItem
+from review_queue.ops_api import build_ops_router
 from review_queue.projection import ReviewProjection
 from review_queue.rbac import Authorizer, load_authority_matrix, load_roles
 from review_queue.service import ReviewService
@@ -69,4 +70,15 @@ def build_review_queue(
     return queue
 
 
-__all__ = ["ReviewQueue", "build_review_queue", "install_console"]
+def install_ops(app: Any) -> Any:
+    """Install the pinned S-3–S-6 operations API after queue construction."""
+
+    if not hasattr(app.state, "review_queue"):
+        raise ValueError("build_review_queue must run before install_ops")
+    if not hasattr(app.state, "notify"):
+        raise ValueError("build_notify must run before install_ops")
+    app.include_router(build_ops_router(app))
+    return app
+
+
+__all__ = ["ReviewQueue", "build_review_queue", "install_console", "install_ops"]

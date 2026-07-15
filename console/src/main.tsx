@@ -10,7 +10,11 @@ import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-
 
 import { ConsoleApiClient } from "./api/client";
 import { Claim360Page } from "./pages/Claim360Page";
+import { AdminPage } from "./pages/AdminPage";
+import { ApprovalsPage } from "./pages/ApprovalsPage";
+import { PortfolioPage } from "./pages/PortfolioPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
+import { SlaBoardPage } from "./pages/SlaBoardPage";
 import "./styles.css";
 
 function required(name: keyof ImportMetaEnv): string {
@@ -75,6 +79,10 @@ async function bootstrap() {
             <Route path="/" element={<Navigate to="/queue" replace />} />
             <Route path="/queue" element={<ReviewQueuePage api={api} />} />
             <Route path="/claims/:claimId" element={<ClaimRoute />} />
+            <Route path="/approvals" element={<ApprovalsPage api={api} />} />
+            <Route path="/portfolio" element={<PortfolioPage api={api} />} />
+            <Route path="/sla-board" element={<SlaBoardPage api={api} />} />
+            <Route path="/admin" element={<AdminPage api={api} />} />
           </Routes>
         </BrowserRouter>
       </QueryClientProvider>
