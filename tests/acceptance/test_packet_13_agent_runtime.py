@@ -10,6 +10,7 @@ and the classifier is the injected seam.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import pathlib
 from datetime import UTC, datetime
@@ -77,9 +78,18 @@ def _emit(app, event_type: str, payload: dict, claim_id: str | None = None) -> s
         return event.id
 
 
+def _decode(row: dict) -> dict:
+    if isinstance(row.get("payload"), str):
+        row["payload"] = json.loads(row["payload"])
+    return row
+
+
 def _rows(app, sql: str, **params) -> list[dict]:
     with app.state.engine.connect() as connection:
-        return [dict(row) for row in connection.execute(text(sql), params).mappings()]
+        return [
+            _decode(dict(row))
+            for row in connection.execute(text(sql), params).mappings()
+        ]
 
 
 def _events(app, event_type: str) -> list[dict]:
@@ -126,13 +136,13 @@ def _capability(app, capability_id: str) -> dict:
 
 
 def _build(tmp_path, name: str, *, clock=None):
-    from agent_runtime import build_agent_runtime
     from fastapi.testclient import TestClient
-    from intake_agent import build_intake_agent
 
+    from agent_runtime import build_agent_runtime
     from claim_core import create_app
     from cop_runtime import build_cop_runtime
     from eval_harness import build_eval_harness
+    from intake_agent import build_intake_agent
     from review_queue import build_review_queue
 
     url = os.environ.get("DATABASE_URL", f"sqlite:///{tmp_path}/{name}.db")
@@ -191,10 +201,11 @@ def _seed_thread(app, claim_id: str, thread_id: str) -> None:
         connection.execute(
             text(
                 "INSERT INTO communications (id, claim_id, direction, channel,"
-                " graph_message_id, thread_id, from_addr, subject, body_s3_key)"
+                " graph_message_id, thread_id, from_addr, subject, body_s3_key,"
+                " occurred_at)"
                 " VALUES (:id, :claim_id, 'inbound', 'email', :message_id,"
                 " :thread_id, 'amina@example.co.ke', 'Claim intimation',"
-                " :body_key)"
+                " :body_key, :occurred_at)"
             ),
             {
                 "id": new_ulid(),
@@ -202,6 +213,7 @@ def _seed_thread(app, claim_id: str, thread_id: str) -> None:
                 "message_id": f"seed-{thread_id}",
                 "thread_id": thread_id,
                 "body_key": f"seed/{thread_id}",
+                "occurred_at": datetime.now(UTC),
             },
         )
 
@@ -228,7 +240,9 @@ def _mail(
             {
                 "filename": "photo.png",
                 "mime": "image/png",
-                "content_b64": base64.b64encode(b"fake-image-bytes").decode("ascii"),
+                "content_b64": base64.b64encode(
+                    f"fake-image-bytes-{message_id}".encode()
+                ).decode("ascii"),
             }
         ],
     }
@@ -361,9 +375,9 @@ def test_gate_l3_samples_and_l4_executes(env):
 
 
 def test_blocked_grade_forces_draft_at_l4(tmp_path):
-    from agent_runtime import Action, build_agent_runtime
     from fastapi.testclient import TestClient
 
+    from agent_runtime import Action, build_agent_runtime
     from claim_core import create_app
     from cop_runtime import build_cop_runtime
     from eval_harness import build_eval_harness
