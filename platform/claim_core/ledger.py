@@ -36,6 +36,8 @@ ACTION_MAP = {
     "notify.sent": "notify.sent",
     "notify.staged": "notify.staged",
     "sla.escalated": "sla.escalated",
+    "chase.init": "chase.init",
+    "fraud.signal": "fraud.signal",
 }
 
 EventRecorder = Callable[..., Event]

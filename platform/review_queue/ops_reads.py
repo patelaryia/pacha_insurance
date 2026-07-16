@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import statistics
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ LIVE_SERIES = frozenset(
         "per_officer_queue_depth",
         "aging_histogram",
         "savings_mtd_ytd",
+        "intimation_to_acknowledgement",
     }
 )
 
@@ -161,6 +163,24 @@ class OpsReadService:
                         mtd += value
         return {"mtd": mtd, "ytd": ytd}
 
+    def _intimation_to_acknowledgement(self) -> dict[str, int | float | None]:
+        with self.app.state.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT started_at, stopped_at FROM sla_clocks "
+                    "WHERE definition_id = 'acknowledge' AND stopped_at IS NOT NULL "
+                    "ORDER BY stopped_at, id"
+                )
+            )
+            minutes = [
+                (_aware(stopped) - _aware(started)).total_seconds() / 60
+                for started, stopped in rows
+            ]
+        return {
+            "count": len(minutes),
+            "median_minutes": None if not minutes else statistics.median(minutes),
+        }
+
     def series_data(self, series_id: str) -> Any:
         readers = {
             "open_claims_by_state": self._open_claims_by_state,
@@ -168,6 +188,7 @@ class OpsReadService:
             "per_officer_queue_depth": self._queue_depth,
             "aging_histogram": self._aging_histogram,
             "savings_mtd_ytd": self._savings,
+            "intimation_to_acknowledgement": self._intimation_to_acknowledgement,
         }
         reader = readers.get(series_id)
         return None if reader is None else reader()

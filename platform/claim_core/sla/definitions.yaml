@@ -3,12 +3,13 @@ definitions:
   - id: acknowledge
     name: Acknowledge claim
     start_event: claim.created
-    stop_event: null
+    stop_event: email.sent
+    stop_filter: {template_id: T-06a}
     warn_after: 30m
     breach_after: 2h
     escalate_to_role: pending_capture
     calendar: 24x7
-    status: pending_capture
+    status: live
   - id: doc_item_age
     name: Document item age
     start_event: pending_capture

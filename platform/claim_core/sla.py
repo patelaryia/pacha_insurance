@@ -27,6 +27,7 @@ class SlaDefinition:
     name: str
     start_event: str
     stop_event: str | None
+    stop_filter: dict[str, object]
     warn_after: Duration | None
     breach_after: Duration | None
     escalate_to_role: str
@@ -56,6 +57,7 @@ def load_definitions(path: str | Path) -> dict[str, SlaDefinition]:
             name=item["name"],
             start_event=item["start_event"],
             stop_event=item.get("stop_event"),
+            stop_filter=dict(item.get("stop_filter") or {}),
             warn_after=_parse_duration(item.get("warn_after")),
             breach_after=_parse_duration(item.get("breach_after")),
             escalate_to_role=item["escalate_to_role"],
@@ -159,15 +161,22 @@ class SlaEngine:
             correlation_id=event.correlation_id,
         )
 
-    def _stop_open(self, session: Session, event: Event) -> None:
+    def _stop_open(
+        self,
+        session: Session,
+        event: Event,
+        *,
+        definition_id: str | None = None,
+    ) -> None:
         if event.claim_id is None:
             return
-        clocks = session.scalars(
-            select(SlaClock).where(
-                SlaClock.claim_id == event.claim_id,
-                SlaClock.stopped_at.is_(None),
-            )
+        query = select(SlaClock).where(
+            SlaClock.claim_id == event.claim_id,
+            SlaClock.stopped_at.is_(None),
         )
+        if definition_id is not None:
+            query = query.where(SlaClock.definition_id == definition_id)
+        clocks = session.scalars(query)
         now = _aware(event.occurred_at)
         for row in clocks:
             row.stopped_at = now
@@ -189,20 +198,22 @@ class SlaEngine:
             for definition in self.definitions.values():
                 if event.type == definition.start_event:
                     self._start(session, event, definition)
-            should_stop = any(
-                definition.stop_event == event.type
-                for definition in self.definitions.values()
-                if definition.stop_event is not None
-            )
+                if (
+                    definition.stop_event == event.type
+                    and all(
+                        event.payload.get(key) == value
+                        for key, value in definition.stop_filter.items()
+                    )
+                ):
+                    self._stop_open(session, event, definition_id=definition.id)
+            should_stop_all = False
             if event.type == "claim.status_changed":
                 target = event.payload.get("to")
                 try:
-                    should_stop = should_stop or STATE_METADATA[
-                        ClaimState(target)
-                    ].suppresses_activity
+                    should_stop_all = STATE_METADATA[ClaimState(target)].suppresses_activity
                 except (KeyError, ValueError):
                     pass
-            if should_stop:
+            if should_stop_all:
                 self._stop_open(session, event)
 
     def evaluate(self, now: datetime | None = None) -> int:

@@ -10,7 +10,7 @@ from claim_core.dictionary import (
 from claim_core.errors import ClaimCoreError, HumanOverrideProtected
 from claim_core.fsm import STATE_METADATA, ClaimState, ClaimStateMachine
 from claim_core.models import Base, Document, Notification
-from claim_core.schemas import FieldWrite, FieldWriteResult
+from claim_core.schemas import ClaimCreate, FieldWrite, FieldWriteResult
 from claim_core.service import ClaimService, new_ulid
 from claim_core.storage import BlobStore, LocalBlobStore
 
@@ -20,6 +20,7 @@ __all__ = [
     "LocalBlobStore",
     "ClaimService",
     "ClaimCoreError",
+    "ClaimCreate",
     "ClaimState",
     "ClaimStateMachine",
     "Document",

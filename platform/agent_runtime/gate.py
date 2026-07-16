@@ -117,6 +117,16 @@ class AutonomyGate:
             raise ValueError(f"executor {action_type!r} is already registered or invalid")
         self._executors[action_type] = fn
 
+    def execute_staged(self, action: Action) -> Any:
+        """Execute an action that has already passed the gate and human approval."""
+
+        if _is_funds_transfer(action.type):
+            raise ValueError(f"funds-transfer action {action.type!r} is forbidden")
+        executor = self._executors.get(action.type)
+        if executor is None:
+            raise ExecutionRefused("executor_not_registered")
+        return executor(action)
+
     def _capability(self, capability_id: str) -> tuple[str, dict[str, Any]]:
         with self.app.state.engine.connect() as connection:
             row = connection.execute(
@@ -199,19 +209,22 @@ class AutonomyGate:
         action: Action,
         claim_id: str | None,
         actor: str,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Apply the exact L0–L4 semantics and return a stable outcome mapping."""
 
         if _is_funds_transfer(action.type):
             raise ValueError(f"funds-transfer action {action.type!r} is forbidden")
         level, _policy = self._capability(capability_id)
-        run_id = self.runner.record_action_start(
-            agent=self._agent_name(actor),
-            capability_id=capability_id,
-            claim_id=claim_id,
-            action_type=action.type,
-            autonomy_level=level,
-        )
+        owns_run = run_id is None
+        if run_id is None:
+            run_id = self.runner.record_action_start(
+                agent=self._agent_name(actor),
+                capability_id=capability_id,
+                claim_id=claim_id,
+                action_type=action.type,
+                autonomy_level=level,
+            )
         blocked = self._grade_blocked(action, capability_id, claim_id, actor)
         effective_level = "L1" if blocked else level
 
@@ -235,7 +248,8 @@ class AutonomyGate:
                 "review_type": None,
                 "sampled": False,
             }
-            self.runner.finish_action(run_id, status="completed", outcome=outcome)
+            if owns_run:
+                self.runner.finish_action(run_id, status="completed", outcome=outcome)
             return outcome
 
         if effective_level in {"L1", "L2"}:
@@ -259,7 +273,8 @@ class AutonomyGate:
                 "review_type": review_type,
                 "sampled": False,
             }
-            self.runner.finish_action(run_id, status="awaiting_review", outcome=outcome)
+            if owns_run:
+                self.runner.finish_action(run_id, status="awaiting_review", outcome=outcome)
             return outcome
 
         executor = self._executors.get(action.type)
@@ -280,7 +295,8 @@ class AutonomyGate:
                 "review_type": "EXCEPTION",
                 "sampled": False,
             }
-            self.runner.finish_action(run_id, status="blocked", outcome=outcome, error=error)
+            if owns_run:
+                self.runner.finish_action(run_id, status="blocked", outcome=outcome, error=error)
             return outcome
         try:
             executor(action)
@@ -292,12 +308,13 @@ class AutonomyGate:
                 "sampled": False,
                 "reason": error.reason,
             }
-            self.runner.finish_action(
-                run_id,
-                status="blocked",
-                outcome=outcome,
-                error={"code": "EXECUTION_REFUSED", "reason": error.reason},
-            )
+            if owns_run:
+                self.runner.finish_action(
+                    run_id,
+                    status="blocked",
+                    outcome=outcome,
+                    error={"code": "EXECUTION_REFUSED", "reason": error.reason},
+                )
             return outcome
 
         sampled = False
@@ -315,7 +332,8 @@ class AutonomyGate:
             "review_type": None,
             "sampled": sampled,
         }
-        self.runner.finish_action(run_id, status="completed", outcome=outcome)
+        if owns_run:
+            self.runner.finish_action(run_id, status="completed", outcome=outcome)
         return outcome
 
 

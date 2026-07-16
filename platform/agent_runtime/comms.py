@@ -121,6 +121,7 @@ class CommunicationsService:
         attachments: tuple[Any, ...],
         capability_id: str,
         actor: str,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Apply registration, G-COMM, send window, rendering, and AR-2."""
 
@@ -211,6 +212,7 @@ class CommunicationsService:
             ),
             claim_id=claim_id,
             actor=actor,
+            run_id=run_id,
         )
         return {
             "status": outcome["status"],

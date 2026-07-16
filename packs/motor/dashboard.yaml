@@ -15,6 +15,7 @@ series:
   - {id: per_officer_queue_depth, status: live, window: point_in_time}
   - {id: aging_histogram, status: live, window: point_in_time}
   - {id: savings_mtd_ytd, status: live, window: eat_calendar}
+  - {id: intimation_to_acknowledgement, status: live, window: eat_calendar}
   - {id: autonomy_rate_trend, status: pending_capture, window: pending_capture}
   - {id: no_touch_trend, status: pending_capture, window: pending_capture}
   - {id: median_handling_trend, status: pending_capture, window: pending_capture}

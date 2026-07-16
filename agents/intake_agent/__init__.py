@@ -9,15 +9,25 @@ import yaml
 
 from intake_agent.assigner import ClaimAssigner
 from intake_agent.classifier import MailboxClassifier
+from intake_agent.flow import IntakeFlow, TerminalMoneyConsumer
 from intake_agent.router import EmailRouter
+from intake_agent.triage import ModeATriage
 
 
 class IntakeAgent:
     """Application-owned handle exposing the two deterministic consumers."""
 
-    def __init__(self, router: EmailRouter, assigner: ClaimAssigner) -> None:
+    def __init__(
+        self,
+        router: EmailRouter,
+        assigner: ClaimAssigner,
+        flow: IntakeFlow,
+        terminal_money: TerminalMoneyConsumer,
+    ) -> None:
         self.router = router
         self.assigner = assigner
+        self.flow = flow
+        self.terminal_money = terminal_money
 
 
 def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
@@ -31,6 +41,8 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
     self_addresses = configured.get("self_addresses")
     sample_rate = configured.get("archive_sample_rate")
     classifier = configured.get("classifier")
+    checklist = configured.get("checklist_base_items")
+    checklist_doc_types = configured.get("checklist_doc_types")
     if (
         not isinstance(self_addresses, list)
         or not all(isinstance(value, str) and value for value in self_addresses)
@@ -38,6 +50,17 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
         or isinstance(sample_rate, bool)
         or not 0 <= sample_rate <= 100
         or not isinstance(classifier, dict)
+        or not isinstance(checklist, list)
+        or not all(isinstance(value, str) and value for value in checklist)
+        or len(checklist) != len(set(checklist))
+        or not isinstance(checklist_doc_types, dict)
+        or set(checklist_doc_types) != set(checklist)
+        or not all(
+            isinstance(values, list)
+            and bool(values)
+            and all(isinstance(value, str) and value for value in values)
+            for values in checklist_doc_types.values()
+        )
     ):
         raise ValueError("intake agent config contains invalid values")
     thresholds = classifier.get("thresholds")
@@ -71,10 +94,19 @@ def build_intake_agent(
     effective_classifier = classifier or MailboxClassifier(app, configured)
     router = EmailRouter(app, effective_classifier, configured)
     assigner = ClaimAssigner(app, officer_pool)
-    handle = IntakeAgent(router, assigner)
+    triage = ModeATriage(app)
+    flow = IntakeFlow(app, configured, triage)
+    terminal_money = TerminalMoneyConsumer(
+        app, configured.get("money_relevant_doc_types")
+    )
+    handle = IntakeAgent(router, assigner, flow, terminal_money)
     app.state.intake_agent = handle
     app.state.dispatcher.register_consumer("intake_router", router.consume)
     app.state.dispatcher.register_consumer("intake_assigner", assigner.consume)
+    app.state.dispatcher.register_consumer("intake_flow", flow.consume)
+    app.state.dispatcher.register_consumer(
+        "intake_terminal_money", terminal_money.consume
+    )
     return handle
 
 

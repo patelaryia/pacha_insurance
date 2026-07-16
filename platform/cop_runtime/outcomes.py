@@ -123,10 +123,22 @@ class OutcomeExecutor:
             self._record_review(result, actor=actor, payload=payload)
             return OutcomeResult("route_review", payload)
         if action == "propose_decline":
+            exception = outcome.get("exception")
+            context_paths = (
+                exception.get("context_fields", [])
+                if isinstance(exception, dict)
+                else []
+            )
             payload = {
                 "type": "DRAFT_RELEASE",
                 "subtype": "decline_draft",
                 "draft_template": outcome.get("draft_template"),
+                "capability_id": "triage.decline_draft",
+                "context_fields": [
+                    {"path": path, "status": "pending_field_registration"}
+                    for path in context_paths
+                    if isinstance(path, str)
+                ],
                 "rule_id": result.rule_id,
                 "rule_run_id": result.rule_run_id,
             }

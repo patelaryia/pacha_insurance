@@ -59,6 +59,7 @@ def prepare_commit(
                     "page": field["page"],
                     "bbox": citation["bbox"],
                     "anchor_text": field["anchor_text"],
+                    "citation_mode": "anchor_text",
                 }
             writes.append(
                 FieldWrite(
