@@ -25,6 +25,8 @@ capabilities:
   - {id: pack.note_draft, max_level: L3, policy: {}}
   - {id: pack.route, max_level: L4, policy: {}}
   - {id: chase.checklist, max_level: L4, policy: {}}
+  - {id: chase.reminder, max_level: L4, initial_level: L1, policy: {}}
+  - {id: chase.rerequest, max_level: L4, initial_level: L1, policy: {}}
   - {id: repair.authorize, max_level: L3, policy: {}}
   - {id: repair.invoice_match, max_level: L4, policy: {}}
   - {id: repair.completion_detect, max_level: L4, policy: {}}

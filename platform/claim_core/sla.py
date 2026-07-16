@@ -28,6 +28,7 @@ class SlaDefinition:
     start_event: str
     stop_event: str | None
     stop_filter: dict[str, object]
+    key_field: str | None
     warn_after: Duration | None
     breach_after: Duration | None
     escalate_to_role: str
@@ -58,6 +59,7 @@ def load_definitions(path: str | Path) -> dict[str, SlaDefinition]:
             start_event=item["start_event"],
             stop_event=item.get("stop_event"),
             stop_filter=dict(item.get("stop_filter") or {}),
+            key_field=item.get("key_field"),
             warn_after=_parse_duration(item.get("warn_after")),
             breach_after=_parse_duration(item.get("breach_after")),
             escalate_to_role=item["escalate_to_role"],
@@ -66,6 +68,10 @@ def load_definitions(path: str | Path) -> dict[str, SlaDefinition]:
         )
         if definition.calendar not in {"24x7", "send_window", "business"}:
             raise ValueError(f"invalid SLA calendar {definition.calendar!r}")
+        if definition.key_field is not None and (
+            not isinstance(definition.key_field, str) or not definition.key_field
+        ):
+            raise ValueError(f"invalid SLA key_field {definition.key_field!r}")
         definitions[definition.id] = definition
     return definitions
 
@@ -166,7 +172,7 @@ class SlaEngine:
         session: Session,
         event: Event,
         *,
-        definition_id: str | None = None,
+        definition: SlaDefinition | None = None,
     ) -> None:
         if event.claim_id is None:
             return
@@ -174,11 +180,21 @@ class SlaEngine:
             SlaClock.claim_id == event.claim_id,
             SlaClock.stopped_at.is_(None),
         )
-        if definition_id is not None:
-            query = query.where(SlaClock.definition_id == definition_id)
+        if definition is not None:
+            query = query.where(SlaClock.definition_id == definition.id)
         clocks = session.scalars(query)
         now = _aware(event.occurred_at)
         for row in clocks:
+            if definition is not None and definition.key_field is not None:
+                stop_key = event.payload.get(definition.key_field)
+                started = session.get(Event, row.started_by_event)
+                start_key = (
+                    started.payload.get(definition.key_field)
+                    if started is not None and isinstance(started.payload, dict)
+                    else None
+                )
+                if stop_key is None or start_key != stop_key:
+                    continue
             row.stopped_at = now
             row.stopped_by_event = event.id
             row.state = "stopped"
@@ -205,7 +221,7 @@ class SlaEngine:
                         for key, value in definition.stop_filter.items()
                     )
                 ):
-                    self._stop_open(session, event, definition_id=definition.id)
+                    self._stop_open(session, event, definition=definition)
             should_stop_all = False
             if event.type == "claim.status_changed":
                 target = event.payload.get("to")

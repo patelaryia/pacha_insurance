@@ -89,6 +89,9 @@ fields:
   salvage.keys_held:
     value_type: bool
     pii_class: none
+  logbook.bank_interest.present:
+    value_type: bool
+    pii_class: none
   salvage.election:
     value_type: enum
     pii_class: none

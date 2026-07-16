@@ -1,0 +1,24 @@
+version: 1
+items:
+  claim_form: {kind: document, doc_type: claim_form, physical: false}
+  logbook_copy: {kind: document, doc_type: logbook, physical: false}
+  dl_copy: {kind: document, doc_type: driving_licence, physical: false}
+  kra_pin: {kind: document, doc_type: kra_pin_cert, physical: false}
+  police_abstract: {kind: document, doc_type: police_abstract, physical: false}
+  repair_estimate: {kind: document, doc_type: repair_estimate, physical: false}
+  photos: {kind: document, doc_type: photo_damage, physical: false}
+  incident_description:
+    kind: field_request
+    target_path: loss.narrative
+    physical: false
+  logbook_original: {kind: physical, physical: true}
+  keys_physical: {kind: physical, physical: true}
+  kra_pin_cert: {kind: document, doc_type: kra_pin_cert, physical: false}
+  bank_discharge_letter:
+    kind: document
+    doc_type: bank_discharge_letter
+    physical: false
+  cert_of_incorporation:
+    kind: document
+    doc_type: cert_of_incorporation
+    physical: false

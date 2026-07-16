@@ -42,7 +42,6 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
     sample_rate = configured.get("archive_sample_rate")
     classifier = configured.get("classifier")
     checklist = configured.get("checklist_base_items")
-    checklist_doc_types = configured.get("checklist_doc_types")
     if (
         not isinstance(self_addresses, list)
         or not all(isinstance(value, str) and value for value in self_addresses)
@@ -53,14 +52,6 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
         or not isinstance(checklist, list)
         or not all(isinstance(value, str) and value for value in checklist)
         or len(checklist) != len(set(checklist))
-        or not isinstance(checklist_doc_types, dict)
-        or set(checklist_doc_types) != set(checklist)
-        or not all(
-            isinstance(values, list)
-            and bool(values)
-            and all(isinstance(value, str) and value for value in values)
-            for values in checklist_doc_types.values()
-        )
     ):
         raise ValueError("intake agent config contains invalid values")
     thresholds = classifier.get("thresholds")
@@ -71,6 +62,26 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
     ):
         raise ValueError("classifier boundaries must match PRD-05 §5.2")
     return configured
+
+
+def _load_checklist_registry(path: Path, base_items: list[str]) -> dict[str, dict[str, Any]]:
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ValueError(f"invalid checklist item registry: {error}") from error
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("version") != 1 or not isinstance(items, dict):
+        raise ValueError("checklist item registry requires version 1 and items")
+    missing = set(base_items) - set(items)
+    if missing:
+        raise ValueError(f"checklist item registry omits base items: {sorted(missing)}")
+    for item_id in base_items:
+        row = items[item_id]
+        if not isinstance(row, dict) or row.get("kind") != "document":
+            raise ValueError(f"base checklist item {item_id!r} must be a document")
+        if not isinstance(row.get("doc_type"), str) or not row["doc_type"]:
+            raise ValueError(f"base checklist item {item_id!r} requires doc_type")
+    return {str(key): dict(value) for key, value in items.items()}
 
 
 def build_intake_agent(
@@ -86,6 +97,10 @@ def build_intake_agent(
         raise RuntimeError("build_intake_agent requires build_agent_runtime")
     repo = Path(__file__).resolve().parents[2]
     configured = _load_config(repo / "packs" / "motor" / "intake" / "intake.yaml", config)
+    configured["checklist_registry"] = _load_checklist_registry(
+        repo / "packs" / "motor" / "checklists" / "items.yaml",
+        configured["checklist_base_items"],
+    )
     if officers is None:
         roles = dict(app.state.review_queue.roles)
         officer_pool = [actor for actor, role in roles.items() if role == "claims_officer"]

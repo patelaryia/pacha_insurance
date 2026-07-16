@@ -122,6 +122,7 @@ class CommunicationsService:
         capability_id: str,
         actor: str,
         run_id: str | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Apply registration, G-COMM, send window, rendering, and AR-2."""
 
@@ -167,6 +168,17 @@ class CommunicationsService:
             "attachments": list(attachments),
             "template_status": definition.status,
         }
+        context = dict(action_payload or {})
+        reserved = set(payload) | {
+            "body",
+            "blocked_on",
+            "signable",
+            "blob_key",
+            "placeholders_pending",
+        }
+        if set(context) & reserved:
+            raise ValueError("communication action payload may not override AR-3 fields")
+        payload.update(context)
         if definition.status == "pending_capture":
             payload.update(
                 {

@@ -210,6 +210,30 @@ class ClaimService:
                 return existing, False
         return row, True
 
+    def link_inbound_communication(self, graph_message_id: str, claim_id: str) -> None:
+        """Link one previously routed intimation to its newly created claim."""
+
+        with self._sessions.begin() as session:
+            self._claim_or_error(session, claim_id)
+            row = session.scalar(
+                select(Communication).where(
+                    Communication.graph_message_id == graph_message_id
+                )
+            )
+            if row is None:
+                raise ClaimCoreError(
+                    404,
+                    "COMMUNICATION_NOT_FOUND",
+                    "Inbound communication was not found",
+                )
+            if row.claim_id not in {None, claim_id}:
+                raise ClaimCoreError(
+                    409,
+                    "COMMUNICATION_ALREADY_LINKED",
+                    "Inbound communication is already linked to another claim",
+                )
+            row.claim_id = claim_id
+
     def create_claim(self, request: ClaimCreate, actor: str) -> Claim:
         now = self._clock()
         claim = Claim(

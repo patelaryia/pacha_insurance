@@ -37,6 +37,15 @@ ACTION_MAP = {
     "notify.staged": "notify.staged",
     "sla.escalated": "sla.escalated",
     "chase.init": "chase.init",
+    "chase.item_requested": "chase.item_requested",
+    "chase.item_received": "chase.item_received",
+    "chase.item_verified": "chase.item_verified",
+    "chase.item_rejected": "chase.item_rejected",
+    "chase.item_waived": "chase.item_waived",
+    "chase.item_snoozed": "chase.item_snoozed",
+    "chase.reminder_sent": "chase.reminder_sent",
+    "chase.complete": "chase.complete",
+    "chase.cancelled": "chase.cancelled",
     "fraud.signal": "fraud.signal",
 }
 
