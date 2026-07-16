@@ -12,7 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import yaml
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from claim_core import ClaimCoreError
 
@@ -24,6 +24,9 @@ LIVE_SERIES = frozenset(
         "aging_histogram",
         "savings_mtd_ytd",
         "intimation_to_acknowledgement",
+        "chase_doc_type_cycle",
+        "chase_broker_league",
+        "chase_cycle_time",
     }
 )
 
@@ -181,6 +184,135 @@ class OpsReadService:
             "median_minutes": None if not minutes else statistics.median(minutes),
         }
 
+    def _chase_item_doc_types(self) -> dict[str, str]:
+        payload = yaml.safe_load(
+            (self.repo / "packs/motor/checklists/items.yaml").read_text(encoding="utf-8")
+        )
+        items = payload.get("items") if isinstance(payload, dict) else {}
+        return {
+            str(item_id): str(row["doc_type"])
+            for item_id, row in items.items()
+            if isinstance(row, dict) and isinstance(row.get("doc_type"), str)
+        }
+
+    def _has_chase_tables(self) -> bool:
+        names = set(inspect(self.app.state.engine).get_table_names())
+        return {"chase_checklists", "chase_items"} <= names
+
+    def _chase_doc_type_cycle(self) -> dict[str, dict[str, int | float | None]]:
+        if not self._has_chase_tables():
+            return {}
+        doc_types = self._chase_item_doc_types()
+        values: dict[str, list[float]] = {}
+        with self.app.state.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT item_id, requested_at, verified_at FROM chase_items "
+                    "WHERE requested_at IS NOT NULL AND verified_at IS NOT NULL "
+                    "ORDER BY item_id, verified_at, id"
+                )
+            )
+            for item_id, requested_at, verified_at in rows:
+                doc_type = doc_types.get(str(item_id))
+                if doc_type is None:
+                    continue
+                minutes = (
+                    _aware(verified_at) - _aware(requested_at)
+                ).total_seconds() / 60
+                values.setdefault(doc_type, []).append(max(0, minutes))
+        return {
+            doc_type: {
+                "median_minutes": statistics.median(minutes),
+                "count": len(minutes),
+            }
+            for doc_type, minutes in sorted(values.items())
+        }
+
+    def _chase_broker_league(self) -> dict[str, dict[str, int | float | None]]:
+        if not self._has_chase_tables():
+            return {}
+        samples: dict[str, list[tuple[float, float]]] = {}
+        with self.app.state.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT cc.id, p.email, ci.requested_at, ci.received_at, "
+                    "ci.reminder_count FROM chase_checklists cc "
+                    "JOIN chase_items ci ON ci.checklist_id = cc.id "
+                    "JOIN parties p ON p.claim_id = cc.claim_id AND p.role = 'broker' "
+                    "WHERE ci.requested_at IS NOT NULL AND ci.received_at IS NOT NULL "
+                    "ORDER BY cc.id, ci.received_at, ci.id"
+                )
+            )
+            for _checklist_id, email, requested_at, received_at, reminders in rows:
+                if not isinstance(email, str) or "@" not in email:
+                    continue
+                domain = email.rsplit("@", 1)[1].casefold()
+                response_minutes = max(
+                    0,
+                    (_aware(received_at) - _aware(requested_at)).total_seconds() / 60,
+                )
+                samples.setdefault(domain, []).append(
+                    (response_minutes, float(reminders or 0))
+                )
+        return {
+            domain: {
+                "median_first_response_minutes": statistics.median(
+                    sample[0] for sample in rows
+                ),
+                "mean_reminder_count": statistics.fmean(sample[1] for sample in rows),
+                "count": len(rows),
+            }
+            for domain, rows in sorted(samples.items())
+        }
+
+    def _chase_cycle_time(self) -> dict[str, dict[str, Any]]:
+        if not self._has_chase_tables():
+            return {}
+        starts: dict[str, Any] = {}
+        completions: dict[str, Any] = {}
+        checklist_claims: dict[str, str] = {}
+        with self.app.state.engine.connect() as connection:
+            for checklist_id, claim_id, started_at in connection.execute(
+                text(
+                    "SELECT cc.id, cc.claim_id, MIN(ci.requested_at) "
+                    "FROM chase_checklists cc JOIN chase_items ci "
+                    "ON ci.checklist_id = cc.id WHERE ci.requested_at IS NOT NULL "
+                    "GROUP BY cc.id, cc.claim_id"
+                )
+            ):
+                checklist_claims[str(checklist_id)] = str(claim_id)
+                starts[str(checklist_id)] = started_at
+            for raw, occurred_at in connection.execute(
+                text(
+                    "SELECT payload, occurred_at FROM events "
+                    "WHERE type = 'chase.complete' ORDER BY seq"
+                )
+            ):
+                payload = raw
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                if isinstance(payload, dict) and isinstance(
+                    payload.get("checklist_id"), str
+                ):
+                    completions[payload["checklist_id"]] = occurred_at
+        data = {}
+        for checklist_id, completed_at in completions.items():
+            started_at = starts.get(checklist_id)
+            claim_id = checklist_claims.get(checklist_id)
+            if started_at is None or claim_id is None:
+                continue
+            data[checklist_id] = {
+                "claim_id": claim_id,
+                "minutes": max(
+                    0,
+                    (_aware(completed_at) - _aware(started_at)).total_seconds() / 60,
+                ),
+            }
+        return data
+
     def series_data(self, series_id: str) -> Any:
         readers = {
             "open_claims_by_state": self._open_claims_by_state,
@@ -189,6 +321,9 @@ class OpsReadService:
             "aging_histogram": self._aging_histogram,
             "savings_mtd_ytd": self._savings,
             "intimation_to_acknowledgement": self._intimation_to_acknowledgement,
+            "chase_doc_type_cycle": self._chase_doc_type_cycle,
+            "chase_broker_league": self._chase_broker_league,
+            "chase_cycle_time": self._chase_cycle_time,
         }
         reader = readers.get(series_id)
         return None if reader is None else reader()

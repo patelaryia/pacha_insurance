@@ -1,0 +1,12 @@
+version: 1
+cadence_days: [3, 7, 12]
+repeat_days: 7
+reminder_cap: 6
+inbound_defer: {window_hours: 24, defer_hours: 48}
+cc_insured_from_reminder: 2
+tick_interval_minutes: 15
+reject_reasons:
+  illegible: document content could not be validated
+  wrong_vehicle: vehicle details conflict with the claim
+  expired: document is expired
+  wrong_document: document type does not match the requested item

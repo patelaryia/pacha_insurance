@@ -16,6 +16,9 @@ series:
   - {id: aging_histogram, status: live, window: point_in_time}
   - {id: savings_mtd_ytd, status: live, window: eat_calendar}
   - {id: intimation_to_acknowledgement, status: live, window: eat_calendar}
+  - {id: chase_doc_type_cycle, status: live, window: eat_calendar}
+  - {id: chase_broker_league, status: live, window: eat_calendar}
+  - {id: chase_cycle_time, status: live, window: eat_calendar}
   - {id: autonomy_rate_trend, status: pending_capture, window: pending_capture}
   - {id: no_touch_trend, status: pending_capture, window: pending_capture}
   - {id: median_handling_trend, status: pending_capture, window: pending_capture}

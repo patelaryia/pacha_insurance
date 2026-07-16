@@ -240,10 +240,10 @@ class Env:
 
 
 def _build(tmp_path, name: str, *, model: TaskModel) -> Env:
-    from chase_agent import build_chase_agent
     from fastapi.testclient import TestClient
 
     from agent_runtime import build_agent_runtime
+    from chase_agent import build_chase_agent
     from claim_core import create_app
     from cop_runtime import build_cop_runtime
     from doc_intel.engine import build_engine

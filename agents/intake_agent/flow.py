@@ -167,6 +167,9 @@ class IntakeFlow:
             ClaimCreate(lob="motor", pack_version=self.pack_version),
             actor=ACTOR,
         )
+        self.app.state.claim_service.link_inbound_communication(
+            str(action.payload["graph_message_id"]), claim.id
+        )
         self.app.state.agent_runtime.runner.set_claim_id(run_id, claim.id)
         return claim.id
 
@@ -461,7 +464,8 @@ class IntakeFlow:
             {
                 "id": item_id,
                 "already_received": bool(
-                    set(self.config["checklist_doc_types"][item_id]) & held_types
+                    self.config["checklist_registry"][item_id]["doc_type"]
+                    in held_types
                 ),
             }
             for item_id in self.config["checklist_base_items"]

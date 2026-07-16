@@ -9,14 +9,6 @@ checklist_base_items:
   - police_abstract
   - repair_estimate
   - photos
-checklist_doc_types:
-  claim_form: [claim_form]
-  logbook_copy: [logbook]
-  dl_copy: [driving_licence]
-  kra_pin: [kra_pin_cert]
-  police_abstract: [police_abstract]
-  repair_estimate: [repair_estimate]
-  photos: [photo_damage]
 money_relevant_doc_types: pending_capture
 classifier:
   tier: MODEL_LIGHT
