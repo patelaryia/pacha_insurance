@@ -530,8 +530,14 @@ def test_console_promote_keeps_packet_08_fail_closed_semantics(env):
     capabilities = client.get(
         "/console/ops/capabilities", headers=_bearer("cm-token")
     ).json()["capabilities"]
-    l0 = [row for row in capabilities if row["current_level"] == "L0"]
-    assert l0, "PACKET-08 seeds L0 capabilities"
+    # Owner-amended for PACKET-16: permanent-L0-max capabilities (e.g.
+    # assessment.mode_shadow) now exist; the #78 shadow-exit probe needs an
+    # L0 row with promotion headroom, not merely the first L0 row.
+    l0 = [
+        row for row in capabilities
+        if row["current_level"] == "L0" and row["max_level"] != "L0"
+    ]
+    assert l0, "PACKET-08 seeds L0 capabilities with promotion headroom"
     capability_id = l0[0]["id"]
     response = client.post(
         f"/console/ops/capabilities/{capability_id}/promote",

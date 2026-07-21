@@ -218,7 +218,9 @@ class ReminderEngine:
                         result["escalated"] += 1
             if not sendable:
                 continue
-            requester, tone = self.checklist.requester(claim_id)
+            requester, tone = self.checklist.requester(
+                claim_id, checklist.requester_party_id
+            )
             if requester is None:
                 self.checklist._exception_once(
                     claim_id=claim_id,
@@ -229,7 +231,10 @@ class ReminderEngine:
                 continue
             recipients = [requester]
             next_index = max(item.reminder_count for item in sendable) + 1
-            if next_index >= int(self.config["cc_insured_from_reminder"]):
+            if (
+                checklist.purpose != "assessor_report"
+                and next_index >= int(self.config["cc_insured_from_reminder"])
+            ):
                 insured = self.checklist.insured_party(claim_id)
                 if insured is not None and insured not in recipients:
                     recipients.append(insured)

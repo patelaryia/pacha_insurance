@@ -11,6 +11,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shutil
 
 import pytest
@@ -359,10 +360,14 @@ def test_contract_registry_ships_seventeen_four_part_contracts():
             "edit_approve",
             "reject",
         ], type_name
-        assert contract["resolution_schema"] == f"{type_name}@1", type_name
+        # Owner-amended for PACKET-16 (#197): schemas are versioned TYPE@N;
+        # the named version's file must exist, and @1 remains for replay.
+        schema_ref = contract["resolution_schema"]
+        assert re.fullmatch(rf"{re.escape(type_name)}@[1-9][0-9]*", schema_ref), type_name
         assert contract["authorised_roles"], type_name
-        schema_path = REVIEW_PACK / "schemas" / f"{type_name}@1.json"
+        schema_path = REVIEW_PACK / "schemas" / f"{schema_ref}.json"
         assert schema_path.exists(), type_name
+        assert (REVIEW_PACK / "schemas" / f"{type_name}@1.json").exists(), type_name
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         required = set(schema.get("required", []))
         assert {"capability_id", "diff"} <= required, type_name

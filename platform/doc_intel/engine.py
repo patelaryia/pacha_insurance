@@ -283,6 +283,21 @@ class DocIntelEngine:
             raise RuntimeError(f"stage {stage} has no durable output")
         return json.loads(self.blob_store.get(key))
 
+    def extraction_output(self, document_id: str) -> dict[str, Any] | None:
+        """Return the persisted EXTRACT output through the curated PRD-01 boundary."""
+
+        rows = self._stage_rows(document_id)
+        stage = rows.get("EXTRACT")
+        if (
+            stage is None
+            or stage.status != "succeeded"
+            or stage.output_ref is None
+            or not self.blob_store.exists(stage.output_ref)
+        ):
+            return None
+        value = json.loads(self.blob_store.get(stage.output_ref))
+        return value if isinstance(value, dict) else None
+
     def _model_wrapper(self, document_id: str) -> ModelWrapper:
         """Restore the durable per-document spend accumulator before a model call."""
 

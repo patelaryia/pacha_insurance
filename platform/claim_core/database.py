@@ -54,7 +54,13 @@ def initialise_database(engine: Engine) -> None:
 
     # Optional packages share Base but own their build-time table activation.
     # Import order must not make create_app() silently install a later packet.
-    optional_tables = {"agent_runs", "chase_checklists", "chase_items"}
+    optional_tables = {
+        "agent_runs",
+        "chase_checklists",
+        "chase_items",
+        "savings_ledger",
+        "vendors",
+    }
     core_tables = [
         table for table in Base.metadata.sorted_tables if table.name not in optional_tables
     ]

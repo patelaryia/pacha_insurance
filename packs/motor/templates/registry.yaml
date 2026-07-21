@@ -89,6 +89,15 @@ templates:
     locale: en-KE
     status: pending_capture
     blocked_on: ["register 61: client tone variant capture"]
+  - id: T-06r-assessor
+    version: 1.0.0
+    channel: email
+    body_ref: null
+    required_fields: []
+    min_verification: human_verified
+    locale: en-KE
+    status: pending_capture
+    blocked_on: ["open item 6: assessor reminder tone capture"]
   - id: T-07
     version: 1.0.0
     channel: pdf

@@ -1,0 +1,8 @@
+version: 1
+standard_fees:
+  physical: 638000
+  desk: 0
+  reinspection: 290000
+vendors: []
+status: pending_capture
+blocked_on: ["register 186: assessor firm seeds and per-firm schedules"]

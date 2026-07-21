@@ -62,23 +62,28 @@ data (§7.3 Path A verbatim).
      §7.2 observed KES 6,380 / 0 / 2,900). Real assessor-firm rows are
      `pending_capture` (embed seeding); the §7.2 ❓ per-firm fee schedule
      stays open (proposed #186). `config["vendors"]` override mirrors the
-     intake config pattern; seeding is an idempotent upsert by id.
+     intake config pattern; seeding is an idempotent, pack-authoritative
+     upsert by id, including `active`.
      Auto-rotation is **out of scope until data exists** (§7.2 verbatim) —
      no selection heuristic anywhere.
    - **Read route `GET /vendors?kind=`** — active vendors for the console
      picker; `X-Actor` with a mapped role required.
 2. **Estimate-verified trigger (§7.3, proposed #182):** consumer on
    `field.updated` for path `assessment.estimate_total` with a committed
-   verification state (default floor per #56). On first qualifying commit:
+   verification state (default floor per #56), plus
+   `claim.status_changed→TRIAGED` replay for an estimate already committed
+   during intimation. On first qualifying eligible trigger:
    - FSM advance, stepwise and event-per-hop: `TRIAGED → AWAITING_DOCS →
      IN_ASSESSMENT` (the `AWAITING_DOCS → IN_ASSESSMENT` edge is the
      PRD-00 "estimate received" guard edge; no PRD assigns the
      `TRIAGED → AWAITING_DOCS` hop — narrowest owner is this trigger,
-     proposed #182). From `AWAITING_DOCS`, one hop. Already
+     proposed #182). `INTIMATED` defers silently until the TRIAGED event;
+     this is the normal estimate-at-intimation lifecycle, not an exception.
+     From `AWAITING_DOCS`, one hop. Already
      `IN_ASSESSMENT`+: no transition. Suppressed/terminal states
      (`suppresses_activity`): no action, mirror of chase suppression.
-     Any other state: `EXCEPTION{assessment_out_of_sequence}` with the
-     four-part contract — never a silent skip.
+     Any genuinely unexpected live state:
+     `EXCEPTION{assessment_out_of_sequence}` with the four-part contract.
    - **Path A:** evaluate R-06 via the existing cop_runtime.
      `blocked_on_inputs` (Q-02) → verdict `undetermined`, rule_run id
      recorded. Then stage the mode item as a governed
@@ -88,17 +93,19 @@ data (§7.3 Path A verbatim).
      (`photo_damage` document ids), and the estimate document id. Ceiling
      stays **max L2 per guide §6** — PRD-07's "max L3" applies only after
      Q-02 lands and is a pack change gated on capture + owner sign-off
-     (proposed #185). Launch level: registered initial (L1 default) — the
-     card is always staged at launch.
+     (proposed #185). Launch level is L2, which stages the typed confirm
+     under AR-2; L1 semantics remain `DRAFT_RELEASE`.
    - **Path B (shadow, L0 permanently until re-decided, §7.3 verbatim):**
      one `MODEL_HEAVY` `structured_call` task `assessment_mode_shadow`,
      inputs {estimate total + line-items document id, damage-photo document
      ids, `loss.narrative`, vehicle age} → `{mode, rationale, confidence}`.
      Vehicle age has **no registered field path** — the input is recorded
-     `null`, never derived (proposed #192). Logged to `agent_runs` at
+     `null`, never derived (proposed #192). One isolated attempt runs per
+     issued card, so a Path-B failure never damages Path A. Logged to
+     `agent_runs` at
      capability `assessment.mode_shadow` (max **L0**, proposed #192),
-     `rationale` redacted in audit payloads (doc_intel
-     `audit_redacted_keys` posture). **Never surfaced:** zero review items,
+     mode and confidence retained, with `rationale` redacted in audit
+     payloads (doc_intel `audit_redacted_keys` posture). **Never surfaced:** zero review items,
      zero events, zero console fields from this path. Weekly Path-B-vs-
      officer comparison needs the PRD-03 corpus machinery — the packet
      ships the labelled pairs only (proposed #193, mirror #36/#55).
@@ -169,7 +176,8 @@ data (§7.3 Path A verbatim).
    `packs/motor/autonomy/policies.yaml` gains
    `{id: assessment.dispatch, max_level: L3, initial_level: L1}` and
    `{id: assessment.mode_shadow, max_level: L0, initial_level: L0}`
-   (`assessment.mode_confirm` row **unchanged** — max L2, #185);
+   and changes `assessment.mode_confirm` to
+   `{max_level: L2, initial_level: L2}` (#185);
    `packs/motor/review/schemas/MODE_CONFIRM@2.json` + the
    `contracts.yaml` MODE_CONFIRM `resolution_schema` bump;
    `packs/motor/templates/registry.yaml` gains `T-06r-assessor`
@@ -290,8 +298,9 @@ owner-committed with this spec). No new CI legs.
 - Shadow: exactly one `structured_call(tier="MODEL_HEAVY", …)` with
   `inputs["task"] == "assessment_mode_shadow"` per issued card;
   `inputs["vehicle_age"] is None`; one `agent_runs` row with
-  `capability_id="assessment.mode_shadow"`, `level="L0"`; **no** review
-  item, event, or claim-read surface carries the shadow output.
+  `capability_id="assessment.mode_shadow"`, `autonomy_level="L0"`; its
+  run outcome retains `{mode, confidence, rationale: "__redacted__"}`;
+  **no** review item, event, or claim-read surface carries the shadow output.
 - `MODE_CONFIRM@2` resolution payload:
   `{"capability_id": "assessment.mode_confirm", "diff": …, "decision":
   {"mode": "desk"|"physical", "vendor_ids": [str, ≥1]}}`. Unknown or
@@ -333,17 +342,20 @@ owner-committed with this spec). No new CI legs.
 
 ## 4. CTO decisions (D-x) and proposed register entries
 
-Builder appends with the implementation PR; entries are **#181–#194**.
+Builder appends with the implementation PR; entries are **#181–#199**.
 
 - **#181 — package naming** (mirror #158): `agents/assessment_agent/`,
   import `assessment_agent`; tables on `claim_core.Base`; migration
   `0012_vendors_assessment`.
 - **#182 — estimate trigger + FSM hop ownership.** "On
   `assessment.estimate_total` verified" realised as the `field.updated`
-  consumer with the #56 default verification floor. No PRD assigns the
+  consumer with the #56 default verification floor, and replay on
+  `claim.status_changed→TRIAGED` when the current estimate was committed
+  while `INTIMATED`. That expected pre-triage state defers silently. No PRD
+  assigns the
   `TRIAGED → AWAITING_DOCS` hop: this trigger owns it, stepwise with an
-  event per hop. Suppressed states → no-op; unexpected states →
-  `EXCEPTION{assessment_out_of_sequence}`. One open card per claim;
+  event per hop. Suppressed states → no-op; genuinely unexpected live
+  states → `EXCEPTION{assessment_out_of_sequence}`. One open card per claim;
   estimate versions while a card is open are no-ops; a post-decision
   version opens a fresh card — never silent.
 - **#183 — MODE_CONFIRM@1 carries no decision.** `MODE_CONFIRM@2` adds
@@ -355,12 +367,15 @@ Builder appends with the implementation PR; entries are **#181–#194**.
   `human`-source from the officer's resolution.
 - **#185 — mode_confirm ceiling conflict.** PRD-07 §7.3 says max L3;
   guide §6 pins "capped L2" while R-06 is blocked. Guide precedence wins:
-  pack row stays `max_level: L2`. Raising to L3 (auto-apply + 10%
+  pack row launches at L2 and stays `max_level: L2`, preserving AR-2's L1
+  `DRAFT_RELEASE` / L2 typed-confirm split. Raising to L3 (auto-apply + 10%
   sampling) requires Q-02 capture, 50 clean confirms, a pack change, and
   owner sign-off.
 - **#186 — vendor seed uncaptured.** Standard fees ship as pack data
   (cents); the real firm list and the §7.2 ❓ per-firm fee schedule await
-  the embed capture; tests seed synthetic vendors via config.
+  the embed capture; tests seed synthetic vendors via config. The pack is
+  source of truth, including activation state; database-only deactivation
+  is overwritten on restart.
 - **#187 — vendor→party bridge.** AR-3 addresses parties, vendors are not
   parties: dispatch idempotently creates/reuses one claim-scoped
   `role='assessor'` party per selected vendor (`emails[0]`,
@@ -378,7 +393,8 @@ Builder appends with the implementation PR; entries are **#181–#194**.
   marker selection); the `items.yaml` `assessor_report` row and the
   matching PACKET-15 protected-constant amendment shipped owner-side in
   the spec commit (precedent #174); reminder tone row `T-06r-assessor`
-  registered `pending_capture` (mirror #163).
+  registered `pending_capture` (mirror #163). The assessor workflow does
+  not add the insured-recipient escalation used by document chase.
 - **#191 — `assessor_turnaround` activation.** Start
   `assessment.dispatched` (staged counts, mirror #160), stop
   `assessment.report_received` (PACKET-17 fires it), `key_field:
@@ -388,16 +404,34 @@ Builder appends with the implementation PR; entries are **#181–#194**.
 - **#192 — shadow path gaps.** Vehicle age has no registered field: the
   shadow input records `null`, never a derived value. Capability
   `assessment.mode_shadow` max L0 **permanently** (§7.3) — a max_level no
-  promotion can pass; `rationale` joins the audit-redaction set.
+  promotion can pass; one isolated shadow attempt is made per issued card,
+  and `rationale` joins the audit-redaction set.
 - **#193 — weekly Path-B agreement eval deferred.** Needs the ≥100-claim
   corpus (item 7) and PRD-03 measurement machinery (mirror #36/#55); this
-  packet ships the labelled pairs (shadow `agent_runs` rows + officer
+  packet ships the labelled pairs (card-linked shadow `agent_runs` rows
+  with mode/confidence and redacted rationale + officer
   `assessment.mode_decided` outcomes). Do not treat packet-16 green as the
   §7.3 agreement-gate discharge.
 - **#194 — event catalog + ACTION_MAP additions** (mirror #170):
   `assessment.mode_item_created`, `assessment.mode_decided`,
   `assessment.dispatched`, and the registered-but-unfired
   `assessment.report_received`; ledger stays single-writer.
+- **#195 — protected fixture column correction.** Binding AR-1 stores
+  `agent_runs.autonomy_level`; the owner-side acceptance fixture reads that
+  column. No runtime `level` alias or schema fork is introduced.
+- **#196 — package-owned resolution validation.** The review queue exposes
+  a fail-closed validator hook so MODE_CONFIRM rejects unknown/inactive
+  vendors with 422 and a missing broker input with 409 before resolution.
+- **#197 — versioned resolution schemas.** Contract rows may name positive
+  `TYPE@N` versions; the loader opens that exact schema while the review-type
+  enum remains closed.
+- **#198 — staged-action mechanics.** The gate carries validated
+  communication co-recipients and string `retry_of` linkage without changing
+  AR-2 level semantics.
+- **#199 — privacy-safe L0 output.** Optional caller-sanitised
+  `Action.log_payload` is persisted only in the L0 run outcome; assessment
+  retains card id, mode and confidence, redacts rationale, and records only
+  safe error metadata for failed shadow attempts.
 
 ## 5. Builder guardrails
 
@@ -420,7 +454,7 @@ Builder appends with the implementation PR; entries are **#181–#194**.
 - **Append-only** — vendors deactivate, never delete; `assessment.mode` /
   `multi_mode` are new versions, never in-place; agents never supersede
   `human_verified` (409).
-- **Autonomy ceilings** — mode_confirm max L2 (guide §6); dispatch max L3
+- **Autonomy ceilings** — mode_confirm initial/max L2 (guide §6); dispatch max L3
   initial L1; shadow max L0; no widening anywhere; approval authority is
   not a capability.
 - **Idempotency** — consumers dedupe on event id; one card per claim per

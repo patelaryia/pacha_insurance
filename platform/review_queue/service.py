@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -46,6 +47,22 @@ class ReviewService:
         self.sessions = sessions
         self.contracts = contracts
         self.authorizer = authorizer
+        self._resolution_validators: dict[
+            str, Callable[[ReviewItem, str, dict[str, Any], str], None]
+        ] = {}
+
+    def register_resolution_validator(
+        self,
+        type_name: str,
+        validator: Callable[[ReviewItem, str, dict[str, Any], str], None],
+    ) -> None:
+        """Install one package-owned fail-closed validator for a review type."""
+
+        if type_name in self._resolution_validators:
+            raise ValueError(f"resolution validator {type_name!r} is already registered")
+        if not callable(validator):
+            raise ValueError(f"resolution validator {type_name!r} must be callable")
+        self._resolution_validators[type_name] = validator
 
     @staticmethod
     def _not_found(review_id: str) -> ClaimCoreError:
@@ -600,6 +617,9 @@ class ReviewService:
         except ValueError as error:
             raise ClaimCoreError(422, "PAYLOAD_INVALID", str(error)) from error
         self._validate_action_payload(action, item.type, payload)
+        validator = self._resolution_validators.get(item.type)
+        if validator is not None:
+            validator(item, action, payload, actor)
         decline_reason = None
         decline_release_recipients: list[str] | None = None
         if (

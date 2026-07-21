@@ -6,6 +6,8 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from agent_runtime.models import AgentRun  # noqa: F401 - registers PACKET-13 metadata
+from assessment_agent.models import SavingsLedger  # noqa: F401 - PACKET-17 metadata
+from assessment_agent.vendors import Vendor  # noqa: F401 - PACKET-16 metadata
 from chase_agent.models import ChaseChecklist, ChaseItem  # noqa: F401 - PACKET-15 metadata
 from claim_core.models import Base
 from doc_intel.stages import DocumentStage  # noqa: F401 - registers Packet-04 metadata

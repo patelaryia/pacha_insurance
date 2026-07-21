@@ -179,6 +179,17 @@ def _pdf(pages: list[str]) -> bytes:
     return document.tobytes()
 
 
+def _report_pdf(lines: list[str]) -> bytes:
+    """A single-page report: every field cites page 1, so all anchor text
+    must live on one page (owner fixture correction, #212)."""
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "\n".join(lines))
+    return document.tobytes()
+
+
 def _decode(row: dict) -> dict:
     for key in ("payload", "evidence", "steps"):
         if isinstance(row.get(key), str):
@@ -517,7 +528,7 @@ def _send_report(env: Env, *, from_addr: str = ALPHA_ADDR,
         body="Report attached for vehicle KBX 123A",
         from_addr=from_addr,
         attachments=(("report.pdf", "application/pdf",
-                      _pdf(pdf_lines or FX1_REPORT_PDF_LINES)),),
+                      _report_pdf(pdf_lines or FX1_REPORT_PDF_LINES)),),
     )
     _advance(env)
 

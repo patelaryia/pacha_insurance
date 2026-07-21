@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "MODE_CONFIRM@2",
+  "type": "object",
+  "required": ["capability_id", "diff", "decision"],
+  "properties": {
+    "capability_id": {"const": "assessment.mode_confirm"},
+    "diff": {"$ref": "#/$defs/diff"},
+    "reason": {"type": "string", "minLength": 1},
+    "decision": {
+      "type": "object",
+      "required": ["mode", "vendor_ids"],
+      "properties": {
+        "mode": {"enum": ["desk", "physical"]},
+        "vendor_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "diff": {
+      "type": "object",
+      "required": ["typed_changes", "prose_change_ratio"],
+      "properties": {
+        "typed_changes": {"type": "array", "items": {"$ref": "#/$defs/change"}},
+        "prose_change_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "corrected_prose_ref": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "change": {
+      "type": "object",
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["money", "date", "party", "enum", "text"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

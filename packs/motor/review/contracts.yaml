@@ -40,7 +40,7 @@ types:
     producing_events: [review.created]
     workspace_layout: mode_confirmation
     resolution_actions: [approve, edit_approve, reject]
-    resolution_schema: MODE_CONFIRM@1
+    resolution_schema: MODE_CONFIRM@2
     authorised_roles: *operational_roles
   NOTE_REVIEW:
     producing_events: [review.created]

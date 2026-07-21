@@ -647,13 +647,14 @@ def test_shadow_runs_at_l0_and_never_surfaces(tmp_path):
     # Vehicle age has no registered path: recorded null, never derived (#192).
     assert shadow_calls[0]["inputs"]["vehicle_age"] is None
 
+    # Owner-corrected for #195: binding AR-1 DDL stores `autonomy_level`.
     runs = _rows(
         env.app,
-        "SELECT id, capability_id, level FROM agent_runs "
+        "SELECT id, capability_id, autonomy_level FROM agent_runs "
         "WHERE capability_id = 'assessment.mode_shadow'",
     )
     assert len(runs) == 1
-    assert runs[0]["level"] == "L0"
+    assert runs[0]["autonomy_level"] == "L0"
 
     # Never surfaced: no review item, event, or claim read carries the output.
     for item in _items(env.app, claim_id=claim_id):

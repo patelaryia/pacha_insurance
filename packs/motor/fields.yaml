@@ -20,6 +20,13 @@ fields:
   assessment.estimate_total:
     value_type: money
     pii_class: none
+  assessment.mode:
+    value_type: enum
+    pii_class: none
+    enum_values: [desk, physical]
+  assessment.multi_mode:
+    value_type: bool
+    pii_class: none
   assessment.agreed_quote:
     value_type: money
     pii_class: none
@@ -82,6 +89,9 @@ fields:
     pii_class: none
   assessment.reinspection_mode:
     value_type: string
+    pii_class: none
+  reserve.total:
+    value_type: money
     pii_class: none
   salvage.logbook_held:
     value_type: bool

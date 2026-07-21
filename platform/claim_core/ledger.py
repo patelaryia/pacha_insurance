@@ -47,6 +47,13 @@ ACTION_MAP = {
     "chase.complete": "chase.complete",
     "chase.cancelled": "chase.cancelled",
     "fraud.signal": "fraud.signal",
+    "assessment.mode_item_created": "assessment.mode_item_created",
+    "assessment.mode_decided": "assessment.mode_decided",
+    "assessment.dispatched": "assessment.dispatched",
+    "assessment.report_received": "assessment.report_received",
+    "assessment.selection_completed": "assessment.selection_completed",
+    "projection.requested": "projection.requested",
+    "savings.recorded": "savings.recorded",
 }
 
 EventRecorder = Callable[..., Event]

@@ -128,42 +128,28 @@ class OpsReadService:
             rows.append({"bucket": bucket["id"], "count": count})
         return rows
 
-    @staticmethod
-    def _savings_value(output: Any) -> int | None:
-        if isinstance(output, int) and not isinstance(output, bool):
-            return output
-        if isinstance(output, dict):
-            value = output.get("savings")
-            if isinstance(value, int) and not isinstance(value, bool):
-                return value
-        return None
-
     def _savings(self) -> dict[str, int]:
         timezone = ZoneInfo(self.config["timezone"])
         now_eat = _aware(self.app.state.clock()).astimezone(timezone)
         mtd = 0
         ytd = 0
+        if not inspect(self.app.state.engine).has_table("savings_ledger"):
+            return {"mtd": mtd, "ytd": ytd}
         with self.app.state.engine.connect() as connection:
             rows = connection.execute(
                 text(
-                    "SELECT output, ts FROM calc_runs "
-                    "WHERE calc_id = 'C-05' AND status = 'executed'"
+                    "SELECT saving, occurred_at FROM savings_ledger "
+                    "WHERE kind = 'assessment_negotiation'"
                 )
             )
-            for output, occurred_at in rows:
-                if isinstance(output, str):
-                    try:
-                        output = json.loads(output)
-                    except json.JSONDecodeError:
-                        continue
-                value = self._savings_value(output)
-                if value is None:
+            for saving, occurred_at in rows:
+                if not isinstance(saving, int) or isinstance(saving, bool):
                     continue
                 occurred_eat = _aware(occurred_at).astimezone(timezone)
                 if occurred_eat.year == now_eat.year:
-                    ytd += value
+                    ytd += saving
                     if occurred_eat.month == now_eat.month:
-                        mtd += value
+                        mtd += saving
         return {"mtd": mtd, "ytd": ytd}
 
     def _intimation_to_acknowledgement(self) -> dict[str, int | float | None]:
