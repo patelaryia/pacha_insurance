@@ -23,7 +23,10 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError(f"invalid vendor registry: {error}") from error
     if not isinstance(payload, dict) or payload.get("version") != 1:
         raise ValueError("vendor registry requires version 1")
-    standard_fees = payload.get("standard_fees")
+    configured = dict(payload)
+    configured.update(dict(override or {}))
+    standard_fees = configured.get("standard_fees")
+    shadow = configured.get("shadow")
     if (
         not isinstance(standard_fees, dict)
         or set(standard_fees) != {"physical", "desk", "reinspection"}
@@ -33,8 +36,48 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
         )
     ):
         raise ValueError("vendor registry requires the three standard fee slots")
-    configured = dict(payload)
-    configured.update(dict(override or {}))
+    if (
+        not isinstance(shadow, dict)
+        or set(shadow)
+        != {
+            "purpose",
+            "prompt_ref",
+            "model_config_ref",
+            "tier",
+            "max_cost_usd",
+            "claim_daily_budget_usd",
+            "claim_lifetime_budget_usd",
+            "platform_daily_budget_usd",
+        }
+        or shadow.get("tier") not in {"MODEL_LIGHT", "MODEL_HEAVY"}
+        or not all(
+            isinstance(shadow.get(key), str) and shadow[key]
+            for key in ("purpose", "prompt_ref", "model_config_ref")
+        )
+        or not shadow["prompt_ref"].rpartition("@")[0]
+        or not shadow["prompt_ref"].rpartition("@")[2].isdigit()
+        or not all(
+            isinstance(shadow.get(key), int | float)
+            and not isinstance(shadow[key], bool)
+            and shadow[key] > 0
+            for key in (
+                "max_cost_usd",
+                "claim_daily_budget_usd",
+                "claim_lifetime_budget_usd",
+                "platform_daily_budget_usd",
+            )
+        )
+    ):
+        raise ValueError("vendor registry requires governed shadow-model configuration")
+    model_path = path.parents[1] / shadow["model_config_ref"]
+    try:
+        model_config = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ValueError(f"invalid shadow model configuration: {error}") from error
+    tiers = model_config.get("tiers") if isinstance(model_config, dict) else None
+    if not isinstance(tiers, dict) or shadow["tier"] not in tiers:
+        raise ValueError("shadow model tier is missing from its referenced configuration")
+    configured["shadow"] = {**shadow, "tiers": tiers}
     configured["vendors"] = validate_vendors(configured.get("vendors"))
     return configured
 
@@ -75,7 +118,10 @@ def build_assessment_agent(
     configured = _load_config(repo / "packs/motor/vendors/vendors.yaml", config)
     Base.metadata.create_all(app.state.engine, tables=[Vendor.__table__])
     vendors = VendorRegistry(app, configured["vendors"])
-    trigger = AssessmentTrigger(app, model_client)
+    trigger = AssessmentTrigger(app, model_client, configured["shadow"])
+    app.state.agent_runtime.register_step(
+        "assessment.mode_shadow", "call_model", trigger.run_shadow
+    )
     dispatch = AssessmentDispatch(app, vendors, trigger)
     cascade = AssessmentCascade(app)
     selection = AssessmentSelection(app, cascade)

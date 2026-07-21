@@ -47,10 +47,51 @@ class AssessmentSelection:
             self.cascade._events(claim_id, "assessment.selection_completed")
         )
 
+    def _unambiguous_reports(
+        self, claim_id: str, reports: list[dict[str, Any]]
+    ) -> list[dict[str, Any]] | None:
+        unique: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        documents_by_party: dict[str, set[str]] = {}
+        for report in reports:
+            party_id = report["assessor_party_id"]
+            document_id = report["document_id"]
+            key = (party_id, document_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(report)
+            documents_by_party.setdefault(party_id, set()).add(document_id)
+        ambiguous = {
+            party_id: sorted(document_ids)
+            for party_id, document_ids in documents_by_party.items()
+            if len(document_ids) > 1
+        }
+        for party_id, document_ids in sorted(ambiguous.items()):
+            self.cascade._review_once(
+                claim_id,
+                item_type="EXCEPTION",
+                subtype="assessment_report_revision_ambiguous",
+                identity={"assessor_party_id": party_id},
+                payload={
+                    "facts": {
+                        "assessor_party_id": party_id,
+                        "document_ids": document_ids,
+                    },
+                    "risk": "multiple report revisions from one firm cannot compete as firms",
+                    "recommendation": "identify the authoritative assessor report revision",
+                    "resolution_schema": "EXCEPTION@1",
+                },
+            )
+        return None if ambiguous else unique
+
     def _eligible_reports(self, claim_id: str) -> list[dict[str, Any]]:
+        reports = self._unambiguous_reports(claim_id, self._reports(claim_id))
+        if reports is None:
+            return []
         return [
             report
-            for report in self._reports(claim_id)
+            for report in reports
             if self.cascade.report_ready(claim_id, report["document_id"])
         ]
 
@@ -112,6 +153,9 @@ class AssessmentSelection:
     def select(self, claim_id: str, reports: list[dict[str, Any]]) -> None:
         if self._selected(claim_id) or not reports:
             return
+        reports = self._unambiguous_reports(claim_id, reports) or []
+        if not reports:
+            return
         rows = [self._comparison_row(claim_id, report) for report in reports]
         comparison = [row for row in rows if row is not None]
         if not comparison:
@@ -148,6 +192,8 @@ class AssessmentSelection:
             return
         dispatched = self._dispatched(claim_id)
         reports = self._reports(claim_id)
+        if self._unambiguous_reports(claim_id, reports) is None:
+            return
         dispatched_ids = {
             row["assessor_party_id"] for row in dispatched
         }

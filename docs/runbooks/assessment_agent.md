@@ -20,6 +20,11 @@ If `EXCEPTION{assessment_out_of_sequence}` appears, inspect the claim timeline. 
 `TRIAGED` and `AWAITING_DOCS` are valid pre-assessment starting states; repair the lifecycle
 state rather than forcing dispatch.
 
+The Path-B call begins only after its durable `assessment.mode_shadow` L0 run exists. Its
+tier, versioned prompt reference, and per-call/claim/platform budgets come from pack data;
+each attempted spend emits `model.called`. `EXCEPTION{budget_exceeded}` leaves Path A and
+the mode card intact but pauses the shadow run for human review.
+
 ## Dispatch and missing inputs
 
 Each selected firm should have one claim-scoped `assessor` party, one open T-11
@@ -63,8 +68,10 @@ Assessor fees are visible in the persisted extraction but are not canonical extr
 targets. C-02 therefore records `blocked_on_inputs` until an officer keys both
 `assessment.assessor_fee` and `assessment.reinspection_fee` from the cited report. The
 subsequent field events automatically re-attempt C-02, append `reserve.total` with calc-run
-provenance, and emit `projection.requested`. Never substitute the vendor registry's standard
-fee.
+provenance, and emit `projection.requested`. Projection deduplication is keyed to the C-02
+input mapping, so correcting either fee appends a new reserve version and projection while
+re-delivery of identical inputs remains a no-op. Never substitute the vendor registry's
+standard fee.
 
 Useful checks:
 
@@ -85,6 +92,9 @@ ids. Approve only when the received evidence is sufficient; rejection leaves sel
 pending. Selection is deterministic: lowest verified agreed quote, then lowest party id on a
 tie. The comparison is durable in `assessment.selection_completed`. A later differing human
 quote remains in force and raises `EXCEPTION{selection_overridden}` for documentation.
+If one firm sends more than one distinct report document, selection fails closed with
+`EXCEPTION{assessment_report_revision_ambiguous}`; do not treat revisions as competing firms
+until an officer-owned authoritative-revision contract is captured.
 
 ## Savings audit
 
@@ -92,6 +102,9 @@ quote remains in force and raises `EXCEPTION{selection_overridden}` for document
 `supplier_substitution` rows are evidence only. The MTD/YTD tile sums header rows exclusively.
 Every row must retain document/calc evidence. Investigate missing citations before treating a
 row as contract-billable, and never reconcile supplier lines arithmetically to the header.
+Supplier rows read only resolved CITE-stage anchors/bboxes. A numerically complete line with
+unresolved provenance is omitted and recorded under header `incomplete_lines` as
+`unresolved_citation`.
 
 ```sql
 SELECT kind, baseline_amount, achieved_amount, saving, evidence

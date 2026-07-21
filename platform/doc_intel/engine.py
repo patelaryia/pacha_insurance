@@ -298,6 +298,21 @@ class DocIntelEngine:
         value = json.loads(self.blob_store.get(stage.output_ref))
         return value if isinstance(value, dict) else None
 
+    def citation_output(self, document_id: str) -> dict[str, Any] | None:
+        """Return persisted CITE output only after provenance resolution completed."""
+
+        rows = self._stage_rows(document_id)
+        stage = rows.get("CITE")
+        if (
+            stage is None
+            or stage.status != "succeeded"
+            or stage.output_ref is None
+            or not self.blob_store.exists(stage.output_ref)
+        ):
+            return None
+        value = json.loads(self.blob_store.get(stage.output_ref))
+        return value if isinstance(value, dict) else None
+
     def _model_wrapper(self, document_id: str) -> ModelWrapper:
         """Restore the durable per-document spend accumulator before a model call."""
 

@@ -140,6 +140,17 @@ class AssessmentCascade:
             if isinstance(row, dict) and isinstance(row.get("name"), str)
         }
 
+    def citation_fields(self, document_id: str) -> dict[str, dict[str, Any]]:
+        output = self.app.state.doc_intel.citation_output(document_id)
+        fields = output.get("fields") if isinstance(output, dict) else None
+        if not isinstance(fields, list):
+            return {}
+        return {
+            str(row["name"]): dict(row)
+            for row in fields
+            if isinstance(row, dict) and isinstance(row.get("name"), str)
+        }
+
     @staticmethod
     def _meets_floor(field: dict[str, Any] | None) -> bool:
         if field is None:
@@ -205,7 +216,7 @@ class AssessmentCascade:
         with self.app.state.engine.connect() as connection:
             row = connection.execute(
                 text(
-                    "SELECT id, output FROM calc_runs WHERE claim_id = :claim_id "
+                    "SELECT id, inputs, output FROM calc_runs WHERE claim_id = :claim_id "
                     "AND calc_id = :calc_id AND status = :status "
                     "ORDER BY ts DESC, id DESC LIMIT 1"
                 ),
@@ -213,21 +224,44 @@ class AssessmentCascade:
             ).mappings().first()
         if row is None:
             return None
-        return {**dict(row), "output": _json(row["output"])}
+        return {
+            **dict(row),
+            "inputs": _json(row["inputs"]),
+            "output": _json(row["output"]),
+        }
 
-    def _projection_exists(self, claim_id: str) -> bool:
-        return bool(self._events(claim_id, "projection.requested"))
+    def _projection_exists(self, claim_id: str, inputs: Any) -> bool:
+        run_ids = {
+            event["payload"].get("calc_run_id")
+            for event in self._events(claim_id, "projection.requested")
+            if isinstance(event.get("payload"), dict)
+            and isinstance(event["payload"].get("calc_run_id"), str)
+        }
+        if not run_ids:
+            return False
+        with self.app.state.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT id, inputs FROM calc_runs WHERE claim_id = :claim_id "
+                    "AND calc_id = 'C-02' AND status = 'executed'"
+                ),
+                {"claim_id": claim_id},
+            ).mappings()
+            return any(
+                row["id"] in run_ids and _json(row["inputs"]) == inputs
+                for row in rows
+            )
 
     def _reserves(self, claim_id: str) -> None:
         if self._current_claim(claim_id).status == "WRITE_OFF":
-            return
-        if self._projection_exists(claim_id):
             return
         result = self.app.state.cop_runtime.execute_calc("C-02", claim_id, ACTOR)
         if result.status != "executed":
             return
         run = self._latest_calc_run(claim_id, "C-02", status="executed")
         if run is None or not isinstance(result.output, int) or isinstance(result.output, bool):
+            return
+        if self._projection_exists(claim_id, run["inputs"]):
             return
         _claim, fields, _blocked = self.app.state.claim_service.hydrate_claim(
             claim_id, ACTOR, paths=["reserve.total"]
@@ -278,9 +312,49 @@ class AssessmentCascade:
         if field is None or not isinstance(field.get("source_ref"), dict):
             return None
         source_ref = field["source_ref"]
-        if not isinstance(source_ref.get("document_id"), str):
+        mode = source_ref.get("citation_mode")
+        if (
+            not isinstance(source_ref.get("document_id"), str)
+            or mode not in {"anchor_text", "vision_bbox"}
+            or not isinstance(source_ref.get("bbox"), list)
+        ):
+            return None
+        if mode == "anchor_text" and not isinstance(source_ref.get("anchor_text"), str):
+            return None
+        if mode == "vision_bbox" and source_ref.get("vision_verified") is not True:
             return None
         return dict(source_ref)
+
+    @staticmethod
+    def _resolved_line_citation(
+        document_id: str, field: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        citation = field.get("citation")
+        mode = field.get("citation_mode")
+        if (
+            field.get("citation_failed") is True
+            or mode not in {"anchor_text", "vision_bbox"}
+            or not isinstance(field.get("page"), int)
+            or not isinstance(citation, dict)
+            or not isinstance(citation.get("bbox"), list)
+        ):
+            return None
+        resolved = {
+            "document_id": document_id,
+            "page": field["page"],
+            "bbox": list(citation["bbox"]),
+            "citation_mode": mode,
+        }
+        if mode == "anchor_text":
+            anchor = field.get("anchor_text")
+            if not isinstance(anchor, str) or not anchor:
+                return None
+            resolved["anchor_text"] = anchor
+        elif citation.get("vision_verified") is not True:
+            return None
+        else:
+            resolved["vision_verified"] = True
+        return resolved
 
     def _savings(self, claim_id: str, document_id: str) -> None:
         if self._header_exists(claim_id):
@@ -306,25 +380,19 @@ class AssessmentCascade:
             or isinstance(achieved, bool)
         ):
             return
-        citations = [
-            citation
-            for citation in (self._citation(estimate[0]), self._citation(agreed))
-            if citation is not None
-        ]
-        if self._citation(agreed) is None:
+        estimate_citation = self._citation(estimate[0])
+        agreed_citation = self._citation(agreed)
+        if estimate_citation is None or agreed_citation is None:
             return
-        extracted = self.extraction_fields(document_id)
-        raw_lines = extracted.get("supplier_lines", {}).get("value", [])
+        citations = [estimate_citation, agreed_citation]
+        cited = self.citation_fields(document_id)
+        line_field = cited.get("supplier_lines", {})
+        raw_lines = line_field.get("value", [])
         if not isinstance(raw_lines, list):
             raw_lines = []
         complete: list[tuple[int, int, dict[str, Any]]] = []
         incomplete: list[dict[str, Any]] = []
-        line_field = extracted.get("supplier_lines", {})
-        line_citation = {
-            key: line_field[key]
-            for key in ("page", "anchor_text", "citation_mode")
-            if key in line_field
-        }
+        line_citation = self._resolved_line_citation(document_id, line_field)
         for index, raw in enumerate(raw_lines):
             if not isinstance(raw, dict):
                 incomplete.append({"index": index, "reason": "invalid_line"})
@@ -338,6 +406,16 @@ class AssessmentCascade:
                         "part": raw.get("part"),
                         "supplier": raw.get("supplier"),
                         "reason": "missing_or_invalid_price",
+                    }
+                )
+                continue
+            if line_citation is None:
+                incomplete.append(
+                    {
+                        "index": index,
+                        "part": raw.get("part"),
+                        "supplier": raw.get("supplier"),
+                        "reason": "unresolved_citation",
                     }
                 )
                 continue

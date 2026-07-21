@@ -10,3 +10,6 @@ step_definitions:
       - {id: acknowledge, expects_events: [rule.evaluated], produces: [review.created]}
       - {id: checklist, expects_events: [review.created], produces: [chase.init]}
       - {id: triage, expects_events: [chase.init], produces: [rule.evaluated]}
+  - capability_id: assessment.mode_shadow
+    steps:
+      - {id: call_model, expects_events: [assessment.mode_item_created], produces: [model.called]}
