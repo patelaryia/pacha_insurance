@@ -12,6 +12,9 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from support.doc_intel import build_doc_intel_engine
+from support.ocr import DeterministicOcrEngine
+
 
 class _AlertSink:
     def __init__(self) -> None:
@@ -177,7 +180,6 @@ def test_model_audit_is_event_first_then_single_writer_ledger(tmp_path):
 
 def test_stage_acquisition_is_atomic_and_crash_recovery_is_explicit(tmp_path, monkeypatch):
     from claim_core.app import create_app
-    from doc_intel.engine import build_engine
     from doc_intel.llm import FakeModelClient
     from doc_intel.stages import StageResult
 
@@ -185,7 +187,7 @@ def test_stage_acquisition_is_atomic_and_crash_recovery_is_explicit(tmp_path, mo
     model = FakeModelClient(
         [{"data": {"ok": True}, "cost_usd": 0.0, "model_id": "fake"}]
     )
-    engine = build_engine(app, model_client=model)
+    engine = build_doc_intel_engine(app, model_client=model, ocr_engine=DeterministicOcrEngine())
     _claim, document = _claim_and_document(app)
     engine._ensure_stages(document.id)
     calls = []
@@ -289,7 +291,6 @@ def test_migration_0005_preserves_pinned_columns_and_builds_active_dialect_index
     from sqlalchemy import create_engine, inspect, text
 
     from claim_core.app import create_app
-    from doc_intel.engine import build_engine
     from doc_intel.llm import FakeModelClient
 
     url = _database_url(tmp_path, "migration")
@@ -329,7 +330,9 @@ def test_migration_0005_preserves_pinned_columns_and_builds_active_dialect_index
     assert "paused" in stage_checks
 
     app = create_app(url)
-    engine = build_engine(app, model_client=FakeModelClient([]))
+    engine = build_doc_intel_engine(
+        app, model_client=FakeModelClient([]), ocr_engine=DeterministicOcrEngine()
+    )
     _claim, document = _claim_and_document(app)
     engine._ensure_stages(document.id)
     with app.state.engine.begin() as connection:
@@ -373,7 +376,6 @@ def test_exact_vision_eligibility_boundary_and_canonical_split_actor(tmp_path):
 
     from claim_core import ClaimCoreError
     from claim_core.app import create_app
-    from doc_intel.engine import build_engine
     from doc_intel.llm import FakeModelClient
     from doc_intel.vision import eligible
 
@@ -387,12 +389,10 @@ def test_exact_vision_eligibility_boundary_and_canonical_split_actor(tmp_path):
     content = pdf.tobytes()
     pdf.close()
 
-    class Ocr:
-        def words(self, _png):
-            return []
-
     app = create_app(_database_url(tmp_path, "actor"))
-    engine = build_engine(app, model_client=FakeModelClient([]), ocr_engine=Ocr())
+    engine = build_doc_intel_engine(
+        app, model_client=FakeModelClient([]), ocr_engine=DeterministicOcrEngine(words=[])
+    )
     _claim, parent = _claim_and_document(app, content)
     app.state.claim_service.set_document_status(parent.id, page_count=2)
     boundaries = [
@@ -432,13 +432,17 @@ def test_native_text_coverage_is_only_word_bbox_area_divided_by_page_area():
 
 def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, monkeypatch):
     from claim_core.app import create_app
-    from doc_intel.engine import build_engine
     from doc_intel.llm import FakeModelClient, ModelUnavailable
     from doc_intel.stages import StageResult
 
     app = create_app(_database_url(tmp_path, "worker"))
     with pytest.raises(RuntimeError, match="alert sink"):
-        build_engine(app, model_client=FakeModelClient([]), runtime_mode="worker")
+        build_doc_intel_engine(
+            app,
+            model_client=FakeModelClient([]),
+            ocr_engine=DeterministicOcrEngine(),
+            runtime_mode="worker",
+        )
 
     class Scheduler:
         def __init__(self):
@@ -448,9 +452,10 @@ def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, m
             self.calls.append((document_id, stage))
 
     scheduler = Scheduler()
-    engine = build_engine(
+    engine = build_doc_intel_engine(
         app,
         model_client=FakeModelClient([]),
+        ocr_engine=DeterministicOcrEngine(),
         runtime_mode="worker",
         stage_scheduler=scheduler,
         alert_sink=_AlertSink(),
@@ -492,7 +497,6 @@ def test_failed_schema_calls_are_included_in_document_cost_sample(tmp_path):
     from claim_core.app import create_app
     from claim_core.models import DocIntelSample, Event
     from doc_intel.anthropic_client import AnthropicModelClient
-    from doc_intel.engine import build_engine
 
     pdf = fitz.open()
     pdf.new_page().insert_text((72, 72), "classification source")
@@ -526,7 +530,9 @@ def test_failed_schema_calls_are_included_in_document_cost_sample(tmp_path):
         ledger=app.state.claim_service,
     )
     alerts = _AlertSink()
-    engine = build_engine(app, model_client=adapter, alert_sink=alerts)
+    engine = build_doc_intel_engine(
+        app, model_client=adapter, ocr_engine=DeterministicOcrEngine(), alert_sink=alerts
+    )
     _claim, document = _claim_and_document(app, content)
     outcome = engine.process_document(document.id)
     assert outcome.stages["CLASSIFY"] == "failed"

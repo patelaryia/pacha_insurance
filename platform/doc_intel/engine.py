@@ -368,6 +368,7 @@ class DocIntelEngine:
                 text_coverage_threshold=float(
                     self.model_config["vision_text_coverage_threshold"]
                 ),
+                page_raster_dpi=int(self.model_config["page_raster_dpi"]),
             )
         except NormaliseError:
             self._emit_once(

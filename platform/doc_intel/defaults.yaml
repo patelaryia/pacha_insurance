@@ -11,3 +11,6 @@ confidence_thresholds:
   other: '0.85'
 classification_confidence_threshold: 0.80
 vision_text_coverage_threshold: 0.05
+# Page raster resolution for NORMALIZE. 300 is the extraction-quality value;
+# lowering it is an extraction decision, not a CI one.
+page_raster_dpi: 300

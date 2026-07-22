@@ -54,12 +54,6 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      # Required by the whole suite, not just the adapter test: DocIntelEngine
-      # falls back to a real TesseractOcrEngine (engine.py) whenever a caller
-      # omits `ocr_engine`, so NORMALIZE shells out to the binary.
-      - name: Install system dependencies (Tesseract OCR, PRD-01)
-        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
-
       - name: Install project dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
@@ -69,7 +63,7 @@ jobs:
       # no extra signal.
       - name: Tests
         run: >-
-          pytest -q -n 2 --durations=30
+          pytest -q -n 2 --durations=30 -m "not real_ocr"
           --junitxml=reports/pytest-sqlite.xml
           --cov --cov-report=term:skip-covered
 
@@ -119,9 +113,6 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Install system dependencies (Tesseract OCR, PRD-01)
-        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
-
       - name: Install project dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
@@ -133,7 +124,7 @@ jobs:
           DATABASE_URL: postgresql+psycopg://pacha:pacha@localhost:5432/pacha_test
           REDIS_URL: redis://localhost:6379/0
         run: >-
-          pytest -q --durations=30
+          pytest -q --durations=30 -m "not real_ocr"
           --junitxml=reports/pytest-postgres.xml
 
       - name: Upload test reports
@@ -143,6 +134,38 @@ jobs:
           name: reports-postgres
           path: reports/
           if-no-files-found: warn
+
+  # The only tests that drive the real binary. Everything else injects
+  # `support.ocr.DeterministicOcrEngine`, and the two jobs above run without
+  # Tesseract installed so a harness that forgets to inject fails there.
+  ocr-smoke:
+    name: ocr smoke (real Tesseract adapter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install system dependencies (Tesseract OCR, PRD-01)
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
+
+      # The marked tests skipif the binary is absent, so prove it is present
+      # here — otherwise a broken install would read as a silent green job.
+      - name: Verify the binary is present
+        run: tesseract --version
+
+      - name: Install project dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Tests
+        run: pytest -q -m real_ocr
 
   console:
     name: console

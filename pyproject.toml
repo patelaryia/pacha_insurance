@@ -15,7 +15,13 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # D-1 (register #18): package dirs, not import roots — `platform` must not shadow stdlib.
-pythonpath = ["platform", "agents", "packs"]
+# `tests` is on the path for `support/` only — the shared test builders. Test
+# modules themselves stay non-packages and are still collected by path.
+pythonpath = ["platform", "agents", "packs", "tests"]
+markers = [
+  "real_ocr: drives the real Tesseract binary; excluded from the two test jobs and run by ocr-smoke",
+  "schema_isolated: needs its own empty database, not the shared truncated worker schema",
+]
 
 # ED-7a coverage boundaries (enforced per-PRD as engine code lands):
 #   in scope >= 80%: platform/*, agents/*
