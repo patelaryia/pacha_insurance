@@ -219,7 +219,8 @@ def test_motor_template_registry_all_pending_capture(harness):
     _, _, runtime = harness
     registry = runtime.template_registry("motor", "1.0.0")
     assert set(registry.ids()) == MOTOR_TEMPLATE_IDS
-    for template_id in MOTOR_TEMPLATE_IDS:
+    assert registry.get("T-01").status == "live"
+    for template_id in MOTOR_TEMPLATE_IDS - {"T-01"}:
         assert registry.get(template_id).status == "pending_capture", template_id
 
 
