@@ -260,6 +260,7 @@ def test_prepare_commit_never_writes_without_citation(tmp_path):
     assert reviews == []
 
 
+@pytest.mark.real_ocr
 @pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract binary absent")
 def test_tesseract_adapter_returns_normalized_word_boxes():
     from PIL import Image, ImageDraw, ImageFont

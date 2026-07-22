@@ -205,6 +205,21 @@ def _native_words(page: fitz.Page) -> tuple[list[dict[str, Any]], float]:
     return words, covered / page_area if page_area else 0.0
 
 
+def _page_raster_dpi(requested: int | None) -> int:
+    """Resolve the NORMALIZE render resolution, failing closed on a bad value.
+
+    A zero or negative DPI would silently produce an unreadable raster, so it
+    raises rather than falling back to the configured default.
+    """
+    if requested is None:
+        return int(DEFAULTS["page_raster_dpi"])
+    if isinstance(requested, bool) or not isinstance(requested, int):
+        raise ValueError(f"page_raster_dpi must be an integer, got {requested!r}")
+    if requested <= 0:
+        raise ValueError(f"page_raster_dpi must be positive, got {requested!r}")
+    return requested
+
+
 def normalise_document(
     *,
     document_id: str,
@@ -214,6 +229,7 @@ def normalise_document(
     blob_store: BlobStore,
     ocr_engine: OcrEngine | None,
     text_coverage_threshold: float | None = None,
+    page_raster_dpi: int | None = None,
 ) -> NormaliseResult:
     """Normalise one immutable original, render pages, and persist word streams."""
 
@@ -224,6 +240,7 @@ def normalise_document(
             if text_coverage_threshold is None
             else text_coverage_threshold
         )
+        raster_dpi = _page_raster_dpi(page_raster_dpi)
         suffix = Path(filename).suffix.casefold()
         email_subject = None
         if mime == "message/rfc822" or suffix == ".eml":
@@ -251,7 +268,8 @@ def normalise_document(
         page_text_coverages = []
         try:
             for page_number, page in enumerate(pdf, start=1):
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), alpha=False)
+                scale = raster_dpi / 72
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
                 png = pixmap.tobytes("png")
                 page_key = f"pages/{document_id}/{page_number}.png"
                 blob_store.put(page_key, png)
