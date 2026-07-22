@@ -64,6 +64,7 @@ jobs:
       - name: Tests
         run: >-
           pytest -q -n 2 --durations=30 -m "not real_ocr"
+          --timeout=300 --timeout-method=thread
           --junitxml=reports/pytest-sqlite.xml
           --cov --cov-report=term:skip-covered
 
@@ -116,15 +117,16 @@ jobs:
       - name: Install project dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
-      # Serial on purpose. Every test resets the shared `public` schema
-      # (tests/conftest.py), so parallel workers would drop each other's tables
-      # mid-test. This job goes parallel once that isolation model is replaced.
+      # Worker count is set from measurement, not assumption — see the PR body.
+      # Each xdist worker now builds its own database (tests/conftest.py), so
+      # parallelism is safe here; whether it is faster is a separate question.
       - name: Tests
         env:
           DATABASE_URL: postgresql+psycopg://pacha:pacha@localhost:5432/pacha_test
           REDIS_URL: redis://localhost:6379/0
         run: >-
           pytest -q --durations=30 -m "not real_ocr"
+          --timeout=300 --timeout-method=thread
           --junitxml=reports/pytest-postgres.xml
 
       - name: Upload test reports

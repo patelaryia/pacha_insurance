@@ -281,6 +281,9 @@ def test_extraction_and_consistency_dedupe_inside_claim_transaction(tmp_path):
         ) == 1
 
 
+# Runs Alembic against DATABASE_URL, so it needs an empty database rather
+# than the shared, already-migrated worker schema.
+@pytest.mark.schema_isolated
 def test_migration_0005_preserves_pinned_columns_and_builds_active_dialect_index(
     tmp_path,
 ):
