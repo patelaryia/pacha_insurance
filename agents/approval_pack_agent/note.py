@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from jinja2 import Environment, StrictUndefined, TemplateError
@@ -22,7 +24,7 @@ from approval_pack_agent.config import (
 from approval_pack_agent.models import NoteDraft
 from approval_pack_agent.resolver import ACTOR, Readiness, _json
 from claim_core import ClaimCoreError, new_ulid
-from doc_intel.llm import ModelWrapper
+from doc_intel.llm import ModelBudgetExceeded, ModelWrapper
 
 NUMERIC_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
 WORD = re.compile(r"\S+")
@@ -388,28 +390,104 @@ class CommentaryGenerator:
             }
         )
 
-    def generate(self, claim_id: str, bundle: dict[str, Any], allowed: list[str]) -> dict[str, Any]:
-        """Generate once, regenerate at most once, then refuse."""
+    @staticmethod
+    def _as_datetime(value: Any) -> datetime | None:
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return None
+        return value if isinstance(value, datetime) else None
+
+    def _spend(self, claim_id: str) -> tuple[Decimal, Decimal, Decimal]:
+        """Sum recorded commentary spend by claim-day, claim-lifetime, platform-day."""
+
+        task = self.config.commentary["task"]
+        today = self.app.state.clock().date()
+        claim_daily = claim_lifetime = platform_daily = Decimal(0)
+        with self.app.state.engine.connect() as connection:
+            rows = list(
+                connection.execute(
+                    text(
+                        "SELECT claim_id, payload, occurred_at FROM events "
+                        "WHERE type = 'model.called'"
+                    )
+                ).mappings()
+            )
+        for row in rows:
+            payload = _json(row["payload"])
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            if not isinstance(detail, dict) or detail.get("task") != task:
+                continue
+            try:
+                cost = Decimal(str(detail.get("cost_usd")))
+            except (ArithmeticError, TypeError, ValueError):
+                continue
+            occurred_at = self._as_datetime(row["occurred_at"])
+            same_day = occurred_at is not None and occurred_at.date() == today
+            if row["claim_id"] == claim_id:
+                claim_lifetime += cost
+                if same_day:
+                    claim_daily += cost
+            if same_day:
+                platform_daily += cost
+        return claim_daily, claim_lifetime, platform_daily
+
+    def _check_budget(self, claim_id: str, *, before_call: bool = False) -> None:
+        """Refuse before or after a call once any configured ceiling is reached."""
 
         commentary = self.config.commentary
+        used = dict(
+            zip(
+                ("claim_daily", "claim_lifetime", "platform_daily"),
+                self._spend(claim_id),
+                strict=True,
+            )
+        )
+        limits = {
+            "claim_daily": Decimal(str(commentary["claim_daily_budget_usd"])),
+            "claim_lifetime": Decimal(str(commentary["claim_lifetime_budget_usd"])),
+            "platform_daily": Decimal(str(commentary["platform_daily_budget_usd"])),
+        }
+        exceeded = sorted(
+            key
+            for key in limits
+            if (used[key] >= limits[key] if before_call else used[key] > limits[key])
+        )
+        if exceeded:
+            raise ModelBudgetExceeded(
+                "pack note commentary budget exceeded: " + ", ".join(exceeded)
+            )
+
+    def generate(self, claim_id: str, bundle: dict[str, Any], allowed: list[str]) -> dict[str, Any]:
+        """Generate once, regenerate at most once, then refuse.
+
+        One wrapper spans both attempts so the configured per-call ceiling is a
+        single budget, not one ceiling per regeneration (AR-4).
+        """
+
+        commentary = self.config.commentary
+        wrapper = ModelWrapper(
+            self.model_client,
+            budget_ceiling_usd=float(commentary["max_cost_usd"]),
+        )
         errors: list[str] = []
         for attempt in range(2):
+            self._check_budget(claim_id, before_call=True)
             inputs = dict(bundle)
             if attempt == 1:
                 inputs["validation_errors"] = list(errors)
-            wrapper = ModelWrapper(
-                self.model_client,
-                budget_ceiling_usd=float(commentary["max_cost_usd"]),
-            )
+            spent_before = wrapper.spent_usd
             result = wrapper.structured_call(
                 tier=commentary["tier"], schema=COMMENTARY_SCHEMA, inputs=inputs
             )
             self._record(
                 claim_id,
-                cost_usd=wrapper.spent_usd,
+                cost_usd=wrapper.spent_usd - spent_before,
                 model_id=result["model_id"],
                 status="completed",
             )
+            self._check_budget(claim_id)
             errors = self.validator.validate(result["data"], allowed)
             if not errors:
                 return result["data"]
@@ -484,6 +562,7 @@ class NoteService:
             "locale": self.config.commentary["locale"],
             "sections": list(self.config.commentary["sections"]),
             "incident_summary_max_words": self.config.commentary["incident_summary_max_words"],
+            "max_input_tokens": self.config.commentary["max_input_tokens"],
             "max_output_tokens": self.config.commentary["max_output_tokens"],
             "verified_fields": dict(verified),
             "consistency_results": [
@@ -676,8 +755,19 @@ class NoteService:
         """Insert one version and supersede only an unsigned earlier draft."""
 
         draft_id = new_ulid()
+        superseded: list[str] = []
         with self.sessions.begin() as session:
             if status == "in_review":
+                superseded = [
+                    str(row[0])
+                    for row in session.execute(
+                        text(
+                            "SELECT id FROM note_drafts WHERE claim_id = :claim_id "
+                            "AND status IN ('draft', 'in_review')"
+                        ),
+                        {"claim_id": claim_id},
+                    )
+                ]
                 session.execute(
                     text(
                         "UPDATE note_drafts SET status = 'superseded' "
@@ -697,7 +787,34 @@ class NoteService:
                     signed_at=None,
                 )
             )
+        self._withdraw_reviews(claim_id, superseded)
         return draft_id
+
+    def _withdraw_reviews(self, claim_id: str, draft_ids: list[str]) -> None:
+        """Close the NOTE_REVIEW of every superseded draft: exactly one stays open."""
+
+        if not draft_ids:
+            return
+        self.app.state.review_queue.backfill(ACTOR)
+        with self.app.state.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT id, payload FROM review_items WHERE claim_id = :claim_id "
+                    "AND type = 'NOTE_REVIEW' AND status = 'open' ORDER BY created_at, id"
+                ),
+                {"claim_id": claim_id},
+            ).mappings()
+            stale = [
+                row["id"]
+                for row in rows
+                if (_json(row["payload"]) or {}).get("note_draft_id") in set(draft_ids)
+            ]
+        for review_id in stale:
+            self.app.state.review_queue.cancel(
+                review_id,
+                actor=ACTOR,
+                reason="a newer approval-note version superseded this draft",
+            )
 
     def refuse(
         self,

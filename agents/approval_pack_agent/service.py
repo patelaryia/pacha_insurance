@@ -8,7 +8,9 @@ writes and appended events.
 from __future__ import annotations
 
 import json
-from threading import Lock
+from collections.abc import Iterator
+from contextlib import contextmanager
+from threading import RLock
 from typing import Any
 
 from sqlalchemy import text
@@ -27,8 +29,12 @@ from approval_pack_agent.merge import MergeEngine
 from approval_pack_agent.note import CommentaryInvalid, NoteInputsInvalid, NoteService
 from approval_pack_agent.resolver import ACTOR, ReadinessEngine, _json
 from claim_core import ClaimCoreError, new_ulid
+from doc_intel.llm import ModelBudgetExceeded
 
-OPERATIONAL_ROLES = frozenset(
+# PACKET-18 §1.2: only these two roles may select sources, upload, or generate.
+MANAGE_ROLES = frozenset({"claims_officer", "claims_manager"})
+# §1.3: the readiness card exposes source ids, so it stays operational/approval only.
+READ_ROLES = frozenset(
     {
         "claims_officer",
         "asst_claims_manager",
@@ -62,17 +68,42 @@ class ApprovalPackService:
         self.merge = MergeEngine(app, config, renderer=html_renderer, store=self.store)
         self.notes = NoteService(app, config, model_client=model_client, store=self.store)
         self.sessions = sessionmaker(bind=app.state.engine, expire_on_commit=False)
-        self._version_lock = Lock()
+        self._claim_lock = RLock()
 
     # -- shared helpers --------------------------------------------------------
 
     def require_role(self, actor: str) -> str:
+        """Authorise a write action: claims officer or claims manager only."""
+
         role = self.app.state.review_queue.service.authorizer.role(actor)
-        if role not in OPERATIONAL_ROLES:
+        if role not in MANAGE_ROLES:
             raise ClaimCoreError(
                 403, "FORBIDDEN_ROLE", "Role cannot manage the approval pack"
             )
         return str(role)
+
+    def require_read_role(self, actor: str) -> str:
+        """Authorise a read of the card, which carries claim source identifiers."""
+
+        role = self.app.state.review_queue.service.authorizer.role(actor)
+        if role not in READ_ROLES:
+            raise ClaimCoreError(
+                403, "FORBIDDEN_ROLE", "Role cannot read the approval pack"
+            )
+        return str(role)
+
+    @contextmanager
+    def _claim_transaction(self, claim_id: str) -> Iterator[Any]:
+        """Serialise one claim's pack writes across processes and threads."""
+
+        with self._claim_lock:
+            with self.sessions.begin() as session:
+                if session.bind is not None and session.bind.dialect.name == "postgresql":
+                    session.execute(
+                        text("SELECT id FROM claims WHERE id = :claim_id FOR UPDATE"),
+                        {"claim_id": claim_id},
+                    )
+                yield session
 
     def _rows(self, sql: str, **params: Any) -> list[dict[str, Any]]:
         with self.app.state.engine.connect() as connection:
@@ -88,6 +119,26 @@ class ApprovalPackService:
         )
         return [{**row, "payload": _json(row["payload"])} for row in rows]
 
+    def _record(
+        self,
+        session: Any,
+        *,
+        claim_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        correlation_id: str | None,
+        actor: str = ACTOR,
+    ) -> str:
+        event = self.app.state.record_event(
+            session,
+            claim_id=claim_id,
+            event_type=event_type,
+            payload=payload,
+            actor=actor,
+            correlation_id=correlation_id,
+        )
+        return event.id
+
     def _emit(
         self,
         *,
@@ -98,15 +149,14 @@ class ApprovalPackService:
         actor: str = ACTOR,
     ) -> str:
         with self.sessions.begin() as session:
-            event = self.app.state.record_event(
+            return self._record(
                 session,
                 claim_id=claim_id,
                 event_type=event_type,
                 payload=payload,
-                actor=actor,
                 correlation_id=correlation_id,
+                actor=actor,
             )
-            return event.id
 
     def _claim_exists(self, claim_id: str) -> None:
         rows = self._rows("SELECT id FROM claims WHERE id = :claim_id", claim_id=claim_id)
@@ -238,8 +288,24 @@ class ApprovalPackService:
 
     # -- generation ------------------------------------------------------------
 
-    def _requested(self, claim_id: str, key: str) -> dict[str, Any] | None:
-        for event in self._events(claim_id, "pack.merge_requested"):
+    def _requested(
+        self, claim_id: str, key: str, *, session: Any | None = None
+    ) -> dict[str, Any] | None:
+        """Find one prior request for this key, optionally under the claim lock."""
+
+        if session is None:
+            events = self._events(claim_id, "pack.merge_requested")
+        else:
+            rows = session.execute(
+                text(
+                    "SELECT id, correlation_id, payload FROM events "
+                    "WHERE claim_id = :claim_id AND type = 'pack.merge_requested' "
+                    "ORDER BY seq"
+                ),
+                {"claim_id": claim_id},
+            ).mappings()
+            events = [{**dict(row), "payload": _json(row["payload"])} for row in rows]
+        for event in events:
             if event["payload"].get("idempotency_key") == key:
                 return event
         return None
@@ -285,11 +351,30 @@ class ApprovalPackService:
         merged = self._merged_event(claim_id, request_event_id)
         if merged is None:
             review_id = self._staged_release(claim_id, request_event_id, "pack.merge")
-            return 202, {
-                "status": "staged",
-                "capability_id": "pack.merge",
-                "review_item_id": review_id,
-            }
+            if review_id is not None:
+                return 202, {
+                    "status": "staged",
+                    "capability_id": "pack.merge",
+                    "review_item_id": review_id,
+                }
+            # The merge ran and refused. Report the visible exception rather than
+            # implying a staged action that does not exist.
+            blocked = [
+                event["payload"]
+                for event in self._events(claim_id, "review.created")
+                if event["correlation_id"] == request_event_id
+                and event["payload"].get("type") == "EXCEPTION"
+            ]
+            raise ClaimCoreError(
+                409,
+                "PACK_GENERATION_BLOCKED",
+                "Approval pack generation stopped before an immutable version was indexed",
+                extra={
+                    "subtypes": sorted(
+                        {str(payload.get("subtype")) for payload in blocked}
+                    ),
+                },
+            )
         payload = merged["payload"]
         body: dict[str, Any] = {
             "status": "merged",
@@ -297,7 +382,7 @@ class ApprovalPackService:
             "pack_event_id": merged["id"],
         }
         draft = self._draft_for(claim_id, merged["id"])
-        if draft is not None and draft["status"] in {"in_review", "superseded"}:
+        if draft is not None and draft["status"] == "in_review":
             review_id = self._note_review_item(claim_id, draft["id"])
             body.update(
                 {
@@ -310,8 +395,11 @@ class ApprovalPackService:
             )
             return 201, body
         if draft is not None:
-            body["note_status"] = "blocked_on_integrity"
+            # `draft` failed its integrity gate; `superseded` was replaced by a
+            # later version. Neither is an open review, so report the real status.
+            body["note_status"] = draft["status"]
             body["note_draft_id"] = draft["id"]
+            body["note_version"] = draft["version"]
             return 201, body
         staged_note = self._staged_release(claim_id, request_event_id, "pack.note_draft")
         if staged_note is not None:
@@ -332,52 +420,61 @@ class ApprovalPackService:
             raise ClaimCoreError(
                 422, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key must be non-empty"
             )
-        existing = self._requested(claim_id, idempotency_key)
-        if existing is not None:
+        # The card is a pure read, so it is computed before the claim is locked;
+        # the fingerprint comparison inside the lock is what makes it safe.
+        readiness = self.readiness.evaluate(claim_id, actor)
+        code: str | None = None
+        replayed = False
+        with self._claim_transaction(claim_id) as session:
+            existing = self._requested(claim_id, idempotency_key, session=session)
+            if existing is not None:
+                replayed = True
+                request_event_id = str(existing["id"])
+            else:
+                if not readiness.ready:
+                    code = "PACK_NOT_READY"
+                elif readiness.fingerprint != fingerprint:
+                    code = "READINESS_STALE"
+                request_event_id = self._record(
+                    session,
+                    claim_id=claim_id,
+                    event_type="pack.merge_requested",
+                    payload={
+                        "idempotency_key": idempotency_key,
+                        "readiness_fingerprint": fingerprint,
+                        "actor": actor,
+                    },
+                    correlation_id=None,
+                    actor=actor,
+                )
+                if code is not None:
+                    self._record(
+                        session,
+                        claim_id=claim_id,
+                        event_type="pack.generation_refused",
+                        payload={
+                            "code": code,
+                            "idempotency_key": idempotency_key,
+                            "blockers": readiness.blockers,
+                        },
+                        correlation_id=request_event_id,
+                        actor=actor,
+                    )
+        if replayed:
             refused = [
                 event
                 for event in self._events(claim_id, "pack.generation_refused")
-                if event["correlation_id"] == existing["id"]
+                if event["correlation_id"] == request_event_id
             ]
             if refused:
-                readiness = self.readiness.evaluate(claim_id, actor)
                 raise ClaimCoreError(
                     409,
                     str(refused[-1]["payload"].get("code", "PACK_NOT_READY")),
                     "Approval pack generation was refused",
                     extra={"readiness": readiness.card()},
                 )
-            return self._response(claim_id, existing["id"])
-
-        readiness = self.readiness.evaluate(claim_id, actor)
-        request_event_id = self._emit(
-            claim_id=claim_id,
-            event_type="pack.merge_requested",
-            payload={
-                "idempotency_key": idempotency_key,
-                "readiness_fingerprint": fingerprint,
-                "actor": actor,
-            },
-            correlation_id=None,
-            actor=actor,
-        )
-        code = None
-        if not readiness.ready:
-            code = "PACK_NOT_READY"
-        elif readiness.fingerprint != fingerprint:
-            code = "READINESS_STALE"
+            return self._response(claim_id, request_event_id)
         if code is not None:
-            self._emit(
-                claim_id=claim_id,
-                event_type="pack.generation_refused",
-                payload={
-                    "code": code,
-                    "idempotency_key": idempotency_key,
-                    "blockers": readiness.blockers,
-                },
-                correlation_id=request_event_id,
-                actor=actor,
-            )
             raise ClaimCoreError(
                 409,
                 code,
@@ -417,8 +514,6 @@ class ApprovalPackService:
         claim_id = str(payload["claim_id"])
         request_event_id = str(payload["request_event_id"])
         actor = str(payload["actor"])
-        if self._merged_event(claim_id, request_event_id) is not None:
-            return
         readiness = self.readiness.evaluate(claim_id, actor)
         if not readiness.ready or readiness.fingerprint != payload["readiness_fingerprint"]:
             self._emit(
@@ -433,14 +528,16 @@ class ApprovalPackService:
                 actor=actor,
             )
             return
-        with self._version_lock:
-            with self.sessions.begin() as session:
-                if session.bind is not None and session.bind.dialect.name == "postgresql":
-                    session.execute(
-                        text("SELECT id FROM claims WHERE id = :claim_id FOR UPDATE"),
-                        {"claim_id": claim_id},
-                    )
-                version = self._next_pack_version(claim_id)
+        failure: ConversionFailed | None = None
+        integrity: Any = None
+        merged: dict[str, Any] | None = None
+        merged_event_id: str | None = None
+        # Version allocation, the build, the critical grade, and the append are one
+        # locked unit: two workers can never index the same version (register #220).
+        with self._claim_transaction(claim_id) as session:
+            if self._merged_event(claim_id, request_event_id) is not None:
+                return
+            version = self._next_pack_version(claim_id)
             try:
                 merged = self.merge.build(
                     claim_id=claim_id,
@@ -449,37 +546,59 @@ class ApprovalPackService:
                     rendered_at=self.app.state.clock(),
                 )
             except ConversionFailed as error:
-                self.notes.refuse(
-                    claim_id,
-                    subtype="pack_conversion_failed",
-                    facts={"code": error.code, "detail": error.detail},
-                    risk="the approval pack cannot be assembled from the resolved sources",
-                    recommendation="repair or reselect the named source and regenerate",
-                    correlation_id=request_event_id,
+                failure = error
+            else:
+                integrity = self.app.state.eval_harness.grade(
+                    "G-TPL",
+                    {
+                        "claim_id": claim_id,
+                        "template_id": "PACK-MERGED",
+                        "artifact_kind": "merged_pack",
+                        "blob_key": merged["blob_key"],
+                        "sha256": merged["sha256"],
+                        "manifest": merged["manifest"],
+                        "manifest_version": merged["manifest_version"],
+                        "readiness_fingerprint": merged["readiness_fingerprint"],
+                        "capability_id": "pack.merge",
+                    },
+                    actor="agent:eval",
                 )
-                return
-            merged_event_id = self._emit(
-                claim_id=claim_id,
-                event_type="pack.merged",
-                payload=merged,
+                if integrity.result == "pass":
+                    merged_event_id = self._record(
+                        session,
+                        claim_id=claim_id,
+                        event_type="pack.merged",
+                        payload=merged,
+                        correlation_id=request_event_id,
+                        actor=actor,
+                    )
+        if failure is not None:
+            self.notes.refuse(
+                claim_id,
+                subtype="pack_conversion_failed",
+                facts={"code": failure.code, "detail": failure.detail},
+                risk="the approval pack cannot be assembled from the resolved sources",
+                recommendation="repair or reselect the named source and regenerate",
                 correlation_id=request_event_id,
-                actor=actor,
             )
-        self.app.state.eval_harness.grade(
-            "G-TPL",
-            {
-                "claim_id": claim_id,
-                "template_id": "PACK-MERGED",
-                "artifact_kind": "merged_pack",
-                "blob_key": merged["blob_key"],
-                "sha256": merged["sha256"],
-                "manifest": merged["manifest"],
-                "manifest_version": merged["manifest_version"],
-                "source_event_id": merged_event_id,
-                "capability_id": "pack.merge",
-            },
-            actor="agent:eval",
-        )
+            return
+        if merged_event_id is None:
+            # A critical grade that is not `pass` stops the pack here. The orphaned
+            # immutable bytes are never promoted into the event index (§1.5).
+            self.notes.refuse(
+                claim_id,
+                subtype="pack_integrity_failed",
+                facts={
+                    "grader_id": "G-TPL",
+                    "grader_run_id": integrity.grader_run_id,
+                    "result": integrity.result,
+                    "detail": integrity.detail,
+                },
+                risk="a merged pack that fails its critical grader cannot back an approval note",
+                recommendation="inspect the failed grader run and regenerate the pack",
+                correlation_id=request_event_id,
+            )
+            return
         self.app.state.agent_runtime.execute_or_stage(
             capability_id="pack.note_draft",
             action=Action(
@@ -532,6 +651,21 @@ class ApprovalPackService:
                 facts={"validation_errors": error.errors, "note_version": version},
                 risk="unverifiable approval-note prose cannot reach a human signer",
                 recommendation="review the cited inputs and regenerate the approval pack",
+                correlation_id=merged_event_id,
+            )
+            return
+        except ModelBudgetExceeded as error:
+            # AR-4: a breached ceiling is a visible exception, never a silent skip.
+            self.notes.refuse(
+                claim_id,
+                subtype="budget_exceeded",
+                facts={
+                    "task": self.config.commentary["task"],
+                    "detail": str(error),
+                    "note_version": version,
+                },
+                risk="the governed model budget cannot fund this approval-note draft",
+                recommendation="review the commentary model budget before regenerating",
                 correlation_id=merged_event_id,
             )
             return
@@ -612,7 +746,7 @@ class ApprovalPackService:
     def versions(self, claim_id: str, actor: str) -> list[dict[str, Any]]:
         """Return the append-only merged-version index for one claim."""
 
-        self.require_role(actor)
+        self.require_read_role(actor)
         return [
             {
                 "event_id": event["id"],
@@ -629,7 +763,7 @@ class ApprovalPackService:
     def note_drafts(self, claim_id: str, actor: str) -> list[dict[str, Any]]:
         """Return every retained note version for one claim."""
 
-        self.require_role(actor)
+        self.require_read_role(actor)
         return [
             {
                 "id": row["id"],

@@ -9,6 +9,13 @@ T-03 and ICON paste-assist belong to PACKET-19. Resolving this packet's `NOTE_RE
 returns `409 NOTE_REVIEW_UI_NOT_BUILT`, changes no row, and emits no FSM transition — that
 is the expected launch behaviour, not a defect.
 
+## Who may do what
+
+Only a claims officer or a claims manager may select sources, upload an item, or
+request generation; every other role receives `403 FORBIDDEN_ROLE`. The readiness card
+carries claim source identifiers, so it is readable by the operational and approval roles
+but never by an auditor and never from a portal route.
+
 ## Resolving manifest ambiguity
 
 `GET /claims/{id}/approval-pack/readiness` always returns exactly 13 ordered items. An item
@@ -63,6 +70,21 @@ errors. The second creates `EXCEPTION{note_commentary_invalid}` with the four-pa
 creates no note draft, and leaves the claim `RESERVED`. Fix the cited claim input — never
 edit the model's prose by hand to make it pass.
 
+## Failed merged-pack grade
+
+The merged pack is graded by critical G-TPL before its `pack.merged` event is appended. A
+result other than `pass` stops the request: no version is indexed, no note is drafted, the
+claim stays `RESERVED`, and one `EXCEPTION{pack_integrity_failed}` opens. The request
+returns `409 PACK_GENERATION_BLOCKED` naming the exception subtypes (register #240). The
+bytes written before the grade are orphaned by design and are never promoted.
+
+## Model budget
+
+Commentary generation and its single regeneration share one per-call ceiling, and the
+claim-day, claim-lifetime and platform-day budgets in `commentary.yaml` are checked before
+and after every attempt. A breach creates `EXCEPTION{budget_exceeded}`, drafts no note, and
+leaves the claim `RESERVED`. Raise the pack budget rather than retrying the request.
+
 ## Failed grader
 
 If G-TPL or G-NOTE returns anything other than `pass`, the candidate is persisted as
@@ -75,9 +97,12 @@ to account for every number in the commentary.
 
 ## Regenerating safely
 
-Use a new `Idempotency-Key` with a fresh readiness fingerprint. Regeneration creates pack
-version N+1 and note version N+1, marks only an unsigned `draft`/`in_review` predecessor
-`superseded`, and never touches a signed row or any stored bytes. With a fixed clock and
+Use a new `Idempotency-Key` with a fresh readiness fingerprint. Reusing a key is a true
+replay: the request event, the staged action and the indexed version are all allocated once
+under the claim lock, so a duplicate submission can never create a second pack. Regeneration
+creates pack version N+1 and note version N+1, marks only an unsigned `draft`/`in_review`
+predecessor `superseded`, cancels that predecessor's NOTE_REVIEW so exactly one stays open
+(register #239), and never touches a signed row or any stored bytes. With a fixed clock and
 unchanged sources the rebuilt bytes are identical, because converted sources are
 content-addressed and reused (register #227).
 
@@ -97,6 +122,13 @@ are the read surface PACKET-19 consumes without reinterpretation. PACKET-19 owns
 autosave, signature, `PACK_READY→IN_APPROVAL`, authority routing and T-03, and must resolve
 the >4M chairman/MD contradiction (#235) before asserting that scenario. No draft carrying a
 blocked slot or a failed grader may ever be signed.
+
+## Generated OpenAPI
+
+`python tools/openapi_snapshot.py` rewrites `docs/openapi/approval_pack.json`; the
+`--check` form fails when the committed artifact is stale and runs in the unit suite. The
+surface is exactly six routes: readiness, source selection, item upload, generation, and the
+two read-only PACKET-19 feeds. There is no sign, route, or approve endpoint.
 
 ## Dependencies
 

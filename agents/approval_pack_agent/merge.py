@@ -118,9 +118,13 @@ class MergeEngine:
             return convert_passthrough(content)
         if conversion != "html_to_pdf":
             raise ConversionFailed("conversion_unsupported", conversion)
+        # The rendered artifact carries a visible EAT timestamp header, so the
+        # render time is part of its identity. Reusing a cached conversion from a
+        # different render time would print a stale header (register #227).
         material = {
             "conversion": conversion,
             "policy": self.config.render_policy.digest_material(),
+            "rendered_at": utc_rfc3339(rendered_at),
             "source_sha256": source.sha256,
         }
         key, cached = self._cached(claim_id, conversion, material)

@@ -23,6 +23,7 @@ ACTION_MAP = {
     "claim.status_changed": "fsm.transition",
     "review.created": "review.action",
     "review.resolved": "review.resolved",
+    "review.cancelled": "review.cancelled",
     "authz.denied": "authz.denied",
     "claim.created": "claim.created",
     "claim.assigned": "claim.assigned",

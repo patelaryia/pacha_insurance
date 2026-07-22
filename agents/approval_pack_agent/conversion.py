@@ -18,6 +18,7 @@ from approval_pack_agent.config import (
     HtmlRenderPolicy,
     canonical_json,
     eat_date,
+    eat_timestamp,
 )
 
 A4_WIDTH = 595.0
@@ -165,7 +166,21 @@ def convert_passthrough(content: bytes) -> Converted:
 
 
 def _timestamp_header(policy: HtmlRenderPolicy, rendered_at: datetime) -> str:
-    return policy.timestamp_header_format.format(timestamp=eat_date(rendered_at))
+    """Build the visible EAT header from the UTC-internal render time."""
+
+    return policy.timestamp_header_format.format(timestamp=eat_timestamp(rendered_at))
+
+
+def stamped_html(html: str, *, policy: HtmlRenderPolicy, rendered_at: datetime) -> str:
+    """Prepend the binding timestamp header to the archived source document.
+
+    The renderer protocol carries only (html, policy), so the header is injected
+    here. It is the sole element permitted to differ between two builds of the
+    same source at different render times (register #227).
+    """
+
+    header = _escape(_timestamp_header(policy, rendered_at))
+    return f'<div data-pacha-render-header="1">{header}</div>\n{html}'
 
 
 def _plaintext_fallback(
@@ -208,8 +223,9 @@ def convert_html(
 
     if not html.strip():
         raise ConversionFailed("invalid_archive", "archived communication body is empty")
+    stamped = stamped_html(html, policy=policy, rendered_at=rendered_at)
     try:
-        result = renderer.render(html, policy=policy)
+        result = renderer.render(stamped, policy=policy)
     except (TimeoutError, RuntimeError, OSError) as error:
         reason = FALLBACK_REASONS.get(type(error), "html_renderer_crash")
         content = _plaintext_fallback(archive, policy=policy, rendered_at=rendered_at)
@@ -329,4 +345,5 @@ __all__ = [
     "is_pdf",
     "page_count",
     "sha256_hex",
+    "stamped_html",
 ]

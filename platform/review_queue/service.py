@@ -572,6 +572,39 @@ class ReviewService:
             item.resolution_payload = null()
             item.resolution_schema_version = None
 
+    def cancel(self, review_id: str, *, actor: str, reason: str) -> dict[str, Any]:
+        """Withdraw one open item that a newer producer version superseded.
+
+        This is not a human decision: it records no resolution and grants no
+        approval. Only the package that produced the item may withdraw it.
+        """
+
+        if not isinstance(reason, str) or not reason.strip():
+            raise ClaimCoreError(422, "PAYLOAD_INVALID", "Cancellation requires a reason")
+        with self.sessions.begin() as session:
+            item = self._item(session, review_id, lock=True)
+            if item.status != "open":
+                raise ClaimCoreError(409, "ALREADY_RESOLVED", "Review item is no longer open")
+            item.status = "cancelled"
+            item.resolved_at = self.app.state.clock()
+            claim_id = item.claim_id
+            item_type = item.type
+            subtype = item.subtype
+            self.app.state.record_event(
+                session,
+                claim_id=claim_id,
+                event_type="review.cancelled",
+                payload={
+                    "review_id": review_id,
+                    "type": item_type,
+                    "subtype": subtype,
+                    "reason": reason,
+                },
+                actor=actor,
+                correlation_id=review_id,
+            )
+        return {"id": review_id, "status": "cancelled"}
+
     def resolve(
         self,
         review_id: str,

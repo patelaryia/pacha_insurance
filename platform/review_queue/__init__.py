@@ -29,6 +29,11 @@ class ReviewQueue:
     def backfill(self, actor: str) -> None:
         self._projection.backfill(actor)
 
+    def cancel(self, review_id: str, *, actor: str, reason: str) -> dict[str, object]:
+        """Withdraw one superseded open item without recording a human decision."""
+
+        return self.service.cancel(review_id, actor=actor, reason=reason)
+
     @property
     def roles(self) -> MappingProxyType[str, str]:
         """Read-only organisation roles used by the installed console."""

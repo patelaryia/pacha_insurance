@@ -70,6 +70,13 @@ def eat_date(value: datetime) -> str:
     return aware.astimezone(EAT).date().isoformat()
 
 
+def eat_timestamp(value: datetime) -> str:
+    """Render a stored UTC instant as its East African Time wall clock."""
+
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return aware.astimezone(EAT).strftime("%Y-%m-%d %H:%M")
+
+
 def utc_rfc3339(value: datetime) -> str:
     """Render a stored instant as a UTC RFC3339 string."""
 
@@ -121,6 +128,8 @@ class HtmlRenderPolicy:
             "page": self.page,
             "print_css_enabled": self.print_css_enabled,
             "timeout_seconds": self.timeout_seconds,
+            "timestamp_header_format": self.timestamp_header_format,
+            "timestamp_time_zone": self.timestamp_time_zone,
             "viewport_height_px": self.viewport_height_px,
             "viewport_width_px": self.viewport_width_px,
         }
@@ -375,6 +384,7 @@ __all__ = [
     "PackConfigError",
     "canonical_json",
     "eat_date",
+    "eat_timestamp",
     "load_config",
     "money_display",
     "utc_rfc3339",

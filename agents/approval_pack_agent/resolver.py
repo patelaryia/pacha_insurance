@@ -31,6 +31,8 @@ VERIFICATION_FLOOR = "human_verified"
 BLOCKING_EXCEPTION_SUBTYPES = frozenset(
     {
         "pack_source_ambiguous",
+        "pack_integrity_failed",
+        "budget_exceeded",
         "assessment_report_revision_ambiguous",
         "note_integrity_failed",
         "note_commentary_invalid",

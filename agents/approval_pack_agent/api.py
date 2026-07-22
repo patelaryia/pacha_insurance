@@ -39,7 +39,7 @@ def build_router(service: Any) -> APIRouter:
     def read_readiness(
         claim_id: str, x_actor: str = Header(alias="X-Actor")
     ) -> dict[str, Any]:
-        service.require_role(x_actor)
+        service.require_read_role(x_actor)
         return service.readiness.evaluate(claim_id, x_actor).card()
 
     @router.put("/manifest/{item_id}/sources")
