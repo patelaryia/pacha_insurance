@@ -13,9 +13,83 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
-    name: ci
+  # Ruff and the two invariant guards are pure-AST and need neither the project
+  # dependencies nor a database, so they must not queue behind the test suites.
+  # A PR that breaks ED-8 or AR-2 now says so in seconds, not after both suites.
+  lint:
+    name: lint and invariant guards
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lint tooling
+        run: pip install ruff
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: ED-8 money-float lint
+        run: python tools/ci/money_float_lint.py
+
+      - name: AR-2 banned-call check
+        run: python tools/ci/banned_calls.py
+
+  test-sqlite:
+    name: tests (SQLite default)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # Required by the whole suite, not just the adapter test: DocIntelEngine
+      # falls back to a real TesseractOcrEngine (engine.py) whenever a caller
+      # omits `ocr_engine`, so NORMALIZE shells out to the binary.
+      - name: Install system dependencies (Tesseract OCR, PRD-01)
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
+
+      - name: Install project dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # Two workers, not `-n auto`: a GitHub runner is 4 shared vCPU and the
+      # gain flattens past two. Coverage is collected here only — the two
+      # suites exercise the same code, so measuring both doubles the cost for
+      # no extra signal.
+      - name: Tests
+        run: >-
+          pytest -q -n 2 --durations=30
+          --junitxml=reports/pytest-sqlite.xml
+          --cov --cov-report=term:skip-covered
+
+      - name: ED-7a coverage boundaries
+        run: |
+          python -m coverage json -o reports/coverage.json
+          python tools/ci/coverage_guard.py reports/coverage.json
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-sqlite
+          path: reports/
+          if-no-files-found: warn
+
+  test-postgres:
+    name: tests (PostgreSQL 16, ED-3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -27,6 +101,7 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U pacha" --health-interval 5s
           --health-timeout 5s --health-retries 10
+      # D-10: the suite expects Redis to be reachable on the PostgreSQL tier.
       redis:
         image: redis:7
         ports: ["6379:6379"]
@@ -39,49 +114,58 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install system dependencies (Tesseract OCR, PRD-01)
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr
 
-      - name: Install tooling
-        run: pip install ruff pytest pytest-cov
-
       - name: Install project dependencies
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+        run: pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Ruff lint
-        run: ruff check .
-
-      - name: ED-8 money-float lint
-        run: python tools/ci/money_float_lint.py
-
-      - name: AR-2 banned-call check
-        run: python tools/ci/banned_calls.py
-
-      - name: Tests (SQLite default)
-        run: pytest -q
-
-      - name: Tests (PostgreSQL 16, ED-3)
+      # Serial on purpose. Every test resets the shared `public` schema
+      # (tests/conftest.py), so parallel workers would drop each other's tables
+      # mid-test. This job goes parallel once that isolation model is replaced.
+      - name: Tests
         env:
           DATABASE_URL: postgresql+psycopg://pacha:pacha@localhost:5432/pacha_test
           REDIS_URL: redis://localhost:6379/0
-        run: pytest -q
+        run: >-
+          pytest -q --durations=30
+          --junitxml=reports/pytest-postgres.xml
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-postgres
+          path: reports/
+          if-no-files-found: warn
+
+  console:
+    name: console
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
 
       - name: Install console dependencies
         working-directory: console
         run: npm ci
 
+      # `npm run build` already runs `npm run lint` (console/package.json), so a
+      # separate lint step type-checks both tsconfigs a second time for nothing.
       - name: Console lint and production build
         working-directory: console
-        run: |
-          npm run lint
-          npm run build
+        run: npm run build
 
       - name: Console protected acceptance and coverage
         working-directory: console
