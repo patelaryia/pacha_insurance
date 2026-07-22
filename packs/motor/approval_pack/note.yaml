@@ -1,0 +1,155 @@
+# PRD-08 §8.4 T-01 slot map (register #5/#229/#230).
+# Build the slot, never the value: only C-08 carries the PRD-mandated
+# `PENDING CAPTURE` text; every other unresolved slot is structurally
+# blocked_on_inputs and renders a visible BLOCKED ON INPUTS marker.
+version: 1
+
+computed_slots:
+  - amount_payable
+  - repair_amount
+  - assessed_amount
+  - estimate
+  - excess
+  - pav
+  - percent_si
+  - percent_pav
+  - garage
+  - loss_location
+  - third_party_count
+  - excess_protector
+  - duty_paid
+  - recovery_register_flag
+  - subrogation
+
+verification_slots:
+  - driver_age_experience
+  - driver_is_insured
+  - logbook_verification
+  - narrative_photo_consistency
+
+commentary_slots:
+  - incident_summary
+  - excess_vs_max
+  - savings_narrative
+
+blocked_marker: BLOCKED ON INPUTS
+
+slots:
+  amount_payable:
+    label: Amount payable
+    locked: true
+    status: pending_capture
+    placeholder: PENDING CAPTURE
+    blocker: "register #5 / PRD-08 §8.4: C-08 payable formula uncaptured"
+  repair_amount:
+    label: Repair amount
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: repair-amount source uncaptured"
+  assessed_amount:
+    label: Assessed amount
+    locked: true
+    status: active
+    source: claim_field
+    field_path: assessment.agreed_quote
+    value_type: money
+  estimate:
+    label: Estimate
+    locked: true
+    status: active
+    source: claim_field
+    field_path: assessment.estimate_total
+    value_type: money
+  excess:
+    label: Excess
+    locked: true
+    status: active
+    source: claim_field
+    field_path: policy.excess_amount
+    value_type: money
+  pav:
+    label: Pre-accident value
+    locked: true
+    status: active
+    source: claim_field
+    field_path: assessment.pav
+    value_type: money
+  percent_si:
+    label: Percentage of sum insured
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: percentage formula and rounding uncaptured"
+  percent_pav:
+    label: Percentage of pre-accident value
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: percentage formula and rounding uncaptured"
+  garage:
+    label: Garage
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: garage source and display contract uncaptured"
+  loss_location:
+    label: Loss location
+    locked: true
+    status: active
+    source: claim_field
+    field_path: loss.location
+    value_type: string
+  third_party_count:
+    label: Third parties
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: third-party count source uncaptured"
+  excess_protector:
+    label: Excess protector
+    locked: true
+    status: active
+    source: claim_field
+    field_path: policy.excess_protector
+    value_type: bool
+  duty_paid:
+    label: Duty paid
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: duty-paid source uncaptured"
+  recovery_register_flag:
+    label: Recovery register
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: recovery register source uncaptured"
+  subrogation:
+    label: Subrogation
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #229: subrogation flag and basis uncaptured"
+
+verification:
+  driver_age_experience:
+    label: Driver age and experience
+    locked: true
+    check_ids: [CC-2]
+  driver_is_insured:
+    label: Driver is the insured
+    locked: true
+    status: blocked_on_inputs
+    blocker: "register #230: driver party-match producer uncaptured"
+  logbook_verification:
+    label: Logbook verification
+    locked: true
+    check_ids: [CC-1, CC-4]
+  narrative_photo_consistency:
+    label: Narrative and photograph consistency
+    locked: true
+    check_ids: [CC-5]
+
+commentary:
+  incident_summary:
+    label: Incident summary
+    locked: false
+  excess_vs_max:
+    label: Excess against maximum liability
+    locked: false
+  savings_narrative:
+    label: Savings narrative
+    locked: false

@@ -58,6 +58,7 @@ def initialise_database(engine: Engine) -> None:
         "agent_runs",
         "chase_checklists",
         "chase_items",
+        "note_drafts",
         "savings_ledger",
         "vendors",
     }

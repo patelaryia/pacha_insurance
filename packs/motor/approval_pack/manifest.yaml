@@ -1,0 +1,130 @@
+# PRD-08 §8.3 approval-pack manifest (motor v1, register #221/#222/#223/#224).
+# Every item carries exactly {id, order, label, source_kinds, selector,
+# repeatable, conversion, required, waivable}; `doc_types` exists only for the
+# auto_doc_type selector. All 13 rows are required and non-waivable until an
+# item-specific waiver authority and evidence contract is captured (#222).
+version: 1
+items:
+  - id: policy_document
+    order: 1
+    label: Policy document/schedule
+    source_kinds: [document]
+    selector: explicit
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: intimation_email
+    order: 2
+    label: Intimation email
+    source_kinds: [communication]
+    selector: explicit
+    repeatable: false
+    conversion: html_to_pdf
+    required: true
+    waivable: false
+  - id: claim_form
+    order: 3
+    label: Claim form
+    source_kinds: [document]
+    selector: auto_doc_type
+    doc_types: [claim_form]
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: logbook
+    order: 4
+    label: Logbook
+    source_kinds: [document]
+    selector: auto_doc_type
+    doc_types: [logbook]
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: driving_licence
+    order: 5
+    label: Driving licence
+    source_kinds: [document]
+    selector: auto_doc_type
+    doc_types: [driving_licence]
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: kra_pin_cert
+    order: 6
+    label: KRA PIN certificate
+    source_kinds: [document]
+    selector: auto_doc_type
+    doc_types: [kra_pin_cert]
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: photos
+    order: 7
+    label: Damage photographs
+    source_kinds: [document]
+    selector: auto_doc_type
+    doc_types: [photo_damage]
+    repeatable: true
+    conversion: photos_2up
+    required: true
+    waivable: false
+  - id: repair_estimate
+    order: 8
+    label: Repair estimate
+    source_kinds: [document]
+    selector: auto_doc_type
+    doc_types: [repair_estimate]
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: assessor_engagement_email
+    order: 9
+    label: Assessor engagement email
+    source_kinds: [communication]
+    selector: explicit
+    repeatable: false
+    conversion: html_to_pdf
+    required: true
+    waivable: false
+  - id: assessor_report
+    order: 10
+    label: Assessor report
+    source_kinds: [document]
+    selector: selected_assessor_report
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: supplier_quotes
+    order: 11
+    label: Supplier quotes
+    source_kinds: [communication, document]
+    selector: explicit
+    repeatable: true
+    conversion: source_default
+    required: true
+    waivable: false
+  - id: assessor_payment_request
+    order: 12
+    label: Assessor payment request
+    source_kinds: [projection_readback, upload]
+    selector: projection_or_upload
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false
+  - id: claim_details_report
+    order: 13
+    label: Claim details report
+    source_kinds: [projection_readback, upload]
+    selector: projection_or_upload
+    repeatable: false
+    conversion: passthrough
+    required: true
+    waivable: false

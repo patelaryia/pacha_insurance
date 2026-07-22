@@ -1,0 +1,58 @@
+{#- PRD-08 §8.4 T-01 approval note, review artifact.
+    Rendered under StrictUndefined by approval_pack_agent: every slot object is
+    supplied complete, so a missing input refuses instead of leaving a blank. -#}
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Approval note — {{ vehicle_reg }}</title>
+</head>
+<body>
+<h1>Claim approval note</h1>
+<p class="claim-ref">Vehicle {{ vehicle_reg }} · loss {{ loss_date }}</p>
+
+<h2>Computed and merged figures</h2>
+<table class="computed">
+<tbody>
+{%- for slot in computed_section %}
+<tr data-slot="{{ slot.slot }}" data-state="{{ slot.state }}">
+<th scope="row">{{ slot.label }}</th>
+<td class="value">{{ slot.display }}</td>
+<td class="citation">{{ slot.citation_marker }}</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+
+<h2>Verification</h2>
+<table class="verification">
+<tbody>
+{%- for slot in verification_section %}
+<tr data-slot="{{ slot.slot }}" data-state="{{ slot.state }}">
+<th scope="row">{{ slot.label }}</th>
+<td class="value">{{ slot.display }}</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+
+<h2>Commentary</h2>
+{%- for slot in commentary_section %}
+<div class="commentary" data-slot="{{ slot.slot }}">
+<h3>{{ slot.label }}</h3>
+<p>{{ slot.content }}</p>
+</div>
+{%- endfor %}
+
+<h2>Outstanding blockers</h2>
+<ul class="blockers">
+{%- for blocker in blockers %}
+<li data-slot="{{ blocker.slot }}">{{ blocker.detail }}</li>
+{%- endfor %}
+</ul>
+
+<p class="signature-state">Signable: {{ signable_display }}</p>
+<h2>Sources</h2>
+<p class="pack-ref">Merged pack version {{ merged_pack_version }}, digest {{ merged_pack_sha256 }}.</p>
+</body>
+</html>

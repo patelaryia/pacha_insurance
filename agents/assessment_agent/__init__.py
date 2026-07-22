@@ -9,6 +9,7 @@ import yaml
 
 from assessment_agent.cascade import AssessmentCascade
 from assessment_agent.dispatch import AssessmentDispatch
+from assessment_agent.models import SavingsLedger
 from assessment_agent.report import AssessmentReport
 from assessment_agent.selection import AssessmentSelection
 from assessment_agent.trigger import AssessmentTrigger
@@ -82,6 +83,12 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
     return configured
 
 
+def savings_tables() -> tuple[Any, ...]:
+    """Expose the PRD-07 savings ledger to packages that read it."""
+
+    return (SavingsLedger.__table__,)
+
+
 class AssessmentAgent:
     """Application-owned handle for assessment trigger and dispatch services."""
 
@@ -141,4 +148,4 @@ def build_assessment_agent(
     return agent
 
 
-__all__ = ["AssessmentAgent", "build_assessment_agent"]
+__all__ = ["AssessmentAgent", "build_assessment_agent", "savings_tables"]

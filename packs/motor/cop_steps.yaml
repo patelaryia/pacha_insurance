@@ -13,3 +13,10 @@ step_definitions:
   - capability_id: assessment.mode_shadow
     steps:
       - {id: call_model, expects_events: [assessment.mode_item_created], produces: [model.called]}
+  - capability_id: pack.merge
+    steps:
+      - {id: resolve_manifest, expects_events: [pack.merge_requested], produces: [pack.merged]}
+  - capability_id: pack.note_draft
+    steps:
+      - {id: generate_commentary, expects_events: [pack.merged], produces: [model.called]}
+      - {id: grade_and_queue, expects_events: [model.called], produces: [pack.note_drafted]}

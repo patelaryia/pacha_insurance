@@ -1,0 +1,63 @@
+# PRD-08 §8.4 commentary generation contract (register #231).
+# Budgets sit inside the PRD-03 note-commentary ceiling recorded for G-NOTE in
+# packs/motor/eval/harness.yaml.
+version: 1
+task: pack_note_commentary
+tier: MODEL_HEAVY
+prompt_ref: pack.note_commentary@v1
+max_input_tokens: 6000
+max_output_tokens: 900
+max_cost_usd: 0.18
+claim_daily_budget_usd: 1.50
+claim_lifetime_budget_usd: 6.00
+platform_daily_budget_usd: 120.00
+locale: en-GB
+incident_summary_max_words: 80
+sections:
+  - incident_summary
+  - excess_vs_max
+  - savings_narrative
+# Liability is an approver's decision, never the model's (PRD-08 §8.4).
+forbidden_terms:
+  - liable
+  - liability
+  - at fault
+  - fault of
+  - negligent
+  - negligence
+  - blame
+  - culpable
+  - guilty
+  - responsible for the accident
+# Deterministic British-English assertions only: each key is an American
+# spelling that must never appear, mapped to its required British form.
+american_spellings:
+  authorize: authorise
+  authorized: authorised
+  authorization: authorisation
+  recognize: recognise
+  recognized: recognised
+  minimize: minimise
+  minimized: minimised
+  organize: organise
+  organized: organised
+  analyze: analyse
+  analyzed: analysed
+  apologize: apologise
+  color: colour
+  favor: favour
+  labor: labour
+  neighbor: neighbour
+  center: centre
+  meter: metre
+  liter: litre
+  defense: defence
+  offense: offence
+  license: licence
+  traveling: travelling
+  traveled: travelled
+  canceled: cancelled
+  fulfill: fulfil
+  enrollment: enrolment
+  tire: tyre
+  tires: tyres

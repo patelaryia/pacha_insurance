@@ -54,6 +54,12 @@ ACTION_MAP = {
     "assessment.selection_completed": "assessment.selection_completed",
     "projection.requested": "projection.requested",
     "savings.recorded": "savings.recorded",
+    "template.rendered": "template.rendered",
+    "pack.sources_selected": "pack.sources_selected",
+    "pack.item_uploaded": "pack.item_uploaded",
+    "pack.generation_refused": "pack.generation_refused",
+    "pack.merged": "pack.merged",
+    "pack.note_drafted": "pack.note_drafted",
 }
 
 EventRecorder = Callable[..., Event]

@@ -8,8 +8,8 @@ model_graders:
     task: g_note_grade
     tier: MODEL_HEAVY
     prompt_ref: g_note_grade@1
-    rubric_ref: T-01@pending_capture
-    required_section_ids: []
+    rubric_ref: T-01@1
+    required_section_ids: [incident_summary, excess_vs_max, savings_narrative]
     max_cost_usd: 0.18
 
 weekly:

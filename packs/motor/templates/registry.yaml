@@ -1,13 +1,25 @@
 templates:
+  # PACKET-18: the T-01 body and its ten active fields are captured. The payable
+  # figure itself stays open item 5 and renders PENDING CAPTURE inside the body,
+  # so the note can never be signed while C-08 is uncaptured.
   - id: T-01
     version: 1.0.0
     channel: pdf
-    body_ref: null
-    required_fields: []
+    body_ref: templates/T-01.j2
+    required_fields:
+      - vehicle.reg
+      - loss.date
+      - loss.location
+      - loss.narrative
+      - assessment.estimate_total
+      - assessment.agreed_quote
+      - assessment.pav
+      - policy.sum_insured
+      - policy.excess_amount
+      - policy.excess_protector
     min_verification: human_verified
     locale: en-KE
-    status: pending_capture
-    blocked_on: ["open item 5 and PRD-08 §8.4: payable formula, body, and fields"]
+    status: live
   - id: T-02
     version: 1.0.0
     channel: pdf
