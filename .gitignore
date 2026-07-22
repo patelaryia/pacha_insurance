@@ -7,7 +7,9 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .coverage
+coverage.json
 htmlcov/
+reports/
 
 # Node / frontend (console/)
 node_modules/
