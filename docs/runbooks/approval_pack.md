@@ -82,8 +82,11 @@ bytes written before the grade are orphaned by design and are never promoted.
 
 Commentary generation and its single regeneration share one per-call ceiling, and the
 claim-day, claim-lifetime and platform-day budgets in `commentary.yaml` are checked before
-and after every attempt. A breach creates `EXCEPTION{budget_exceeded}`, drafts no note, and
-leaves the claim `RESERVED`. Raise the pack budget rather than retrying the request.
+and after every attempt under a platform-wide budget lock. The configured maximum call cost
+is checked after provider billing, exact provider token usage is preferred, and a conservative
+UTF-8 upper bound is used when an injected provider supplies no usage. A breach creates
+`EXCEPTION{budget_exceeded}`, drafts no note, and leaves the claim `RESERVED`. Raise the pack
+budget rather than retrying the request.
 
 ## Failed grader
 
@@ -102,7 +105,10 @@ replay: the request event, the staged action and the indexed version are all all
 under the claim lock, so a duplicate submission can never create a second pack. Regeneration
 creates pack version N+1 and note version N+1, marks only an unsigned `draft`/`in_review`
 predecessor `superseded`, cancels that predecessor's NOTE_REVIEW so exactly one stays open
-(register #239), and never touches a signed row or any stored bytes. With a fixed clock and
+(register #239), and never touches a signed row or any stored bytes. Cancellation is allowed
+only for `NOTE_REVIEW/approval_note` by the actor on its originating `review.created` event;
+the `review.cancelled` event carries the stable source-event id so projection rebuilds retain
+the cancellation. With a fixed clock and
 unchanged sources the rebuilt bytes are identical, because converted sources are
 content-addressed and reused (register #227).
 

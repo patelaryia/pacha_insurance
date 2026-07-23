@@ -10,6 +10,8 @@ from __future__ import annotations
 import io
 import json
 import pathlib
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -470,6 +472,58 @@ def test_repeated_request_key_appends_one_request_event_and_one_staged_action(tm
     assert len(staged) == 1
 
 
+def test_concurrent_identical_source_selection_appends_once(tmp_path):
+    env = _build(tmp_path, "source-idem", model=_model())
+    seeded = _seed(env, "SI")
+    claim_id = seeded["claim_id"]
+    sources = [{"kind": "document", "id": seeded["documents"]["quote"]}]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: env.service.select_sources(
+                    claim_id, "policy_document", sources, OFFICER
+                ),
+                range(2),
+            )
+        )
+
+    assert sorted(result["recorded"] for result in results) == [False, True]
+    selections = [
+        _payload(event)
+        for event in _events(env.app, "pack.sources_selected", claim_id)
+        if _payload(event).get("item_id") == "policy_document"
+    ]
+    assert len(selections) == 2  # initial seed plus one replacement
+
+
+def test_generation_recomputes_readiness_while_holding_the_claim_lock(tmp_path):
+    env = _build(tmp_path, "readiness-lock", model=_model())
+    seeded = _seed(env, "RL")
+    original_transaction = env.service._claim_transaction
+    original_evaluate = env.service.readiness.evaluate
+    state = {"inside": False, "observed": False}
+
+    @contextmanager
+    def tracked_transaction(claim_id):
+        with original_transaction(claim_id) as session:
+            state["inside"] = True
+            try:
+                yield session
+            finally:
+                state["inside"] = False
+
+    def tracked_evaluate(claim_id, actor):
+        state["observed"] = state["observed"] or state["inside"]
+        return original_evaluate(claim_id, actor)
+
+    env.service._claim_transaction = tracked_transaction
+    env.service.readiness.evaluate = tracked_evaluate
+    response = _generate(env, seeded, key="locked-read")
+    assert response.status_code == 202
+    assert state == {"inside": False, "observed": True}
+
+
 def test_version_allocation_is_serialised_under_the_claim_lock(tmp_path):
     env = _build(tmp_path, "versions", model=_model(commentary=[], gnote=[]))
     seeded = _seed(env, "V")
@@ -484,6 +538,37 @@ def test_version_allocation_is_serialised_under_the_claim_lock(tmp_path):
     decoded = [_payload(event) for event in _events(env.app, "pack.merged", claim_id)]
     assert [payload["version"] for payload in decoded] == [1, 2]
     assert len({payload["blob_key"] for payload in decoded}) == 2
+
+
+def test_duplicate_completed_merge_is_a_noop_after_readiness_changes(tmp_path):
+    from agent_runtime import Action
+
+    env = _build(tmp_path, "merge-replay", model=_model())
+    seeded = _seed(env, "MR")
+    claim_id = seeded["claim_id"]
+    _set_level(env, "pack.merge", "L3")
+    assert _generate(env, seeded, key="original").status_code == 201
+
+    request = _events(env.app, "pack.merge_requested", claim_id)[0]
+    request_payload = _payload(request)
+    env.client.put(
+        f"/claims/{claim_id}/approval-pack/manifest/policy_document/sources",
+        json={"sources": [{"kind": "document", "id": seeded["documents"]["quote"]}]},
+        headers=_h(),
+    )
+    env.service.execute_merge(
+        Action(
+            type="pack.merge",
+            payload={
+                "claim_id": claim_id,
+                "request_event_id": request["id"],
+                "readiness_fingerprint": request_payload["readiness_fingerprint"],
+                "actor": OFFICER,
+            },
+        )
+    )
+    assert len(_events(env.app, "pack.merged", claim_id)) == 1
+    assert _events(env.app, "pack.generation_refused", claim_id) == []
 
 
 # --- PRD-03 §3.3 critical grader gating ----------------------------------------------
@@ -580,6 +665,41 @@ def test_claim_lifetime_budget_refuses_before_the_call(tmp_path):
     assert "budget_exceeded" in subtypes
 
 
+def test_single_call_over_max_cost_is_recorded_and_blocked(tmp_path):
+    env = _build(tmp_path, "budget-single", model=_model(cost_usd=0.19))
+    seeded = _seed(env, "BS")
+    claim_id = seeded["claim_id"]
+    _set_level(env, "pack.merge", "L3")
+    _set_level(env, "pack.note_draft", "L3")
+
+    response = _generate(env, seeded)
+    assert response.status_code == 201
+    assert response.json()["note_status"] == "blocked_on_exception"
+    assert "budget_exceeded" in {
+        item["subtype"] for item in _reviews(env.app, claim_id, "EXCEPTION")
+    }
+    calls = _events(env.app, "model.called", claim_id)
+    assert any(_payload(event)["detail"]["cost_usd"] == 0.19 for event in calls)
+
+
+def test_input_token_ceiling_is_enforced_before_the_model_call(tmp_path):
+    env = _build(tmp_path, "budget-token", model=_model())
+    seeded = _seed(env, "BT")
+    claim_id = seeded["claim_id"]
+    _set_level(env, "pack.merge", "L3")
+    _set_level(env, "pack.note_draft", "L3")
+    env.service.config.commentary["max_input_tokens"] = 1
+
+    _generate(env, seeded)
+    assert [
+        call for call in env.model.calls
+        if call["inputs"].get("task") == "pack_note_commentary"
+    ] == []
+    assert "budget_exceeded" in {
+        item["subtype"] for item in _reviews(env.app, claim_id, "EXCEPTION")
+    }
+
+
 # --- §1.9 exactly one open review -----------------------------------------------------
 
 
@@ -620,6 +740,69 @@ def test_regeneration_leaves_exactly_one_open_note_review(tmp_path):
     assert second.json()["note_review_item_id"] == open_review["id"]
 
 
+def test_late_older_note_action_cannot_supersede_the_newer_pack_note(tmp_path):
+    from agent_runtime import Action
+
+    env = _build(
+        tmp_path,
+        "note-order",
+        model=_model(
+            commentary=[_commentary(), _commentary()],
+            gnote=[_g_note_clean(), _g_note_clean()],
+        ),
+    )
+    seeded = _seed(env, "NO")
+    claim_id = seeded["claim_id"]
+    _set_level(env, "pack.merge", "L3")
+    # Leave note drafting at L1 so both captured actions can be delivered in
+    # deliberately reversed order.
+    assert _generate(env, seeded, key="one").status_code == 201
+    seeded["readiness"] = env.client.get(
+        f"/claims/{claim_id}/approval-pack/readiness", headers=_h()
+    ).json()
+    assert _generate(env, seeded, key="two").status_code == 201
+
+    staged = [
+        _payload(item)["action"]
+        for item in _reviews(env.app, claim_id, "DRAFT_RELEASE")
+        if _payload(item).get("capability_id") == "pack.note_draft"
+    ]
+    assert len(staged) == 2
+    staged.sort(key=lambda action: action["payload"]["merged_event_id"])
+    # Resolve event order from the immutable merged index, then execute newest first.
+    merged_order = {
+        event["id"]: _payload(event)["version"]
+        for event in _events(env.app, "pack.merged", claim_id)
+    }
+    staged.sort(
+        key=lambda action: merged_order[action["payload"]["merged_event_id"]],
+        reverse=True,
+    )
+    for captured in staged:
+        env.service.execute_note_draft(
+            Action(type=captured["type"], payload=dict(captured["payload"]))
+        )
+
+    drafts = _rows(
+        env.app,
+        "SELECT version, status, body FROM note_drafts WHERE claim_id = :c ORDER BY version",
+        c=claim_id,
+    )
+    decoded = [
+        {
+            **row,
+            "body": json.loads(row["body"]) if isinstance(row["body"], str) else row["body"],
+        }
+        for row in drafts
+    ]
+    assert [row["body"]["merged_pack"]["version"] for row in decoded] == [2, 1]
+    assert [row["status"] for row in decoded] == ["in_review", "superseded"]
+    env.app.state.review_queue.backfill("agent:approval_pack")
+    assert [item["status"] for item in _reviews(env.app, claim_id, "NOTE_REVIEW")] == [
+        "open"
+    ]
+
+
 def test_cancelled_review_is_ledgered_and_cannot_be_cancelled_twice(tmp_path):
     env = _build(
         tmp_path,
@@ -656,6 +839,72 @@ def test_cancelled_review_is_ledgered_and_cannot_be_cancelled_twice(tmp_path):
             cancelled["id"], actor="agent:approval_pack", reason="repeat"
         )
     assert error.value.code == "ALREADY_RESOLVED"
+
+
+def test_only_originating_producer_may_cancel_an_approval_note(tmp_path):
+    env = _build(tmp_path, "cancel-owner", model=_model())
+    seeded = _seed(env, "CO")
+    claim_id = seeded["claim_id"]
+    _set_level(env, "pack.merge", "L3")
+    _set_level(env, "pack.note_draft", "L3")
+    _generate(env, seeded)
+    review = _reviews(env.app, claim_id, "NOTE_REVIEW")[0]
+
+    from claim_core import ClaimCoreError
+
+    with pytest.raises(ClaimCoreError) as error:
+        env.app.state.review_queue.cancel(
+            review["id"], actor="agent:not-the-producer", reason="unauthorised"
+        )
+    assert error.value.code == "FORBIDDEN_ROLE"
+    assert _reviews(env.app, claim_id, "NOTE_REVIEW")[0]["status"] == "open"
+
+
+def test_draft_release_cannot_use_the_note_supersession_cancel_path(tmp_path):
+    env = _build(tmp_path, "cancel-type", model=_model())
+    seeded = _seed(env, "CT")
+    response = _generate(env, seeded)
+    assert response.status_code == 202
+
+    from claim_core import ClaimCoreError
+
+    with pytest.raises(ClaimCoreError) as error:
+        env.app.state.review_queue.cancel(
+            response.json()["review_item_id"],
+            actor="agent:approval_pack",
+            reason="not a note supersession",
+        )
+    assert error.value.code == "CANCELLATION_NOT_ALLOWED"
+
+
+def test_review_projection_replays_cancellation_from_the_event_spine(tmp_path):
+    env = _build(
+        tmp_path,
+        "cancel-rebuild",
+        model=_model(
+            commentary=[_commentary(), _commentary()],
+            gnote=[_g_note_clean(), _g_note_clean()],
+        ),
+    )
+    seeded = _seed(env, "CB")
+    claim_id = seeded["claim_id"]
+    _set_level(env, "pack.merge", "L3")
+    _set_level(env, "pack.note_draft", "L3")
+    _generate(env, seeded, key="one")
+    seeded["readiness"] = env.client.get(
+        f"/claims/{claim_id}/approval-pack/readiness", headers=_h()
+    ).json()
+    _generate(env, seeded, key="two")
+    assert [item["status"] for item in _reviews(env.app, claim_id, "NOTE_REVIEW")] == [
+        "cancelled", "open",
+    ]
+
+    with env.app.state.engine.begin() as connection:
+        connection.execute(text("DELETE FROM review_items"))
+    env.app.state.review_queue.backfill("agent:approval_pack")
+    assert [item["status"] for item in _reviews(env.app, claim_id, "NOTE_REVIEW")] == [
+        "cancelled", "open",
+    ]
 
 
 # --- §1.4 / #227 render timestamp -----------------------------------------------------

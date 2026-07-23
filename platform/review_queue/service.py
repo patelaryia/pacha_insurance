@@ -581,6 +581,27 @@ class ReviewService:
 
         if not isinstance(reason, str) or not reason.strip():
             raise ClaimCoreError(422, "PAYLOAD_INVALID", "Cancellation requires a reason")
+        # Producer cancellation is an internal lifecycle operation, not a new
+        # approval authority.  Match the immutable actor on the originating
+        # review.created event before taking the mutable projection-row lock.
+        with self.sessions() as read_session:
+            candidate = self._item(read_session, review_id)
+            producer = read_session.execute(
+                text(
+                    "SELECT actor FROM events WHERE id = :source_event_id "
+                    "AND type = 'review.created'"
+                ),
+                {"source_event_id": candidate.source_event_id},
+            ).scalar()
+            read_session.expunge(candidate)
+        if candidate.type != "NOTE_REVIEW" or candidate.subtype != "approval_note":
+            raise ClaimCoreError(
+                409,
+                "CANCELLATION_NOT_ALLOWED",
+                "Only a superseded approval-note review may be cancelled",
+            )
+        if producer != actor:
+            self._deny(candidate, actor, "FORBIDDEN_ROLE")
         with self.sessions.begin() as session:
             item = self._item(session, review_id, lock=True)
             if item.status != "open":
@@ -598,6 +619,7 @@ class ReviewService:
                     "review_id": review_id,
                     "type": item_type,
                     "subtype": subtype,
+                    "source_event_id": item.source_event_id,
                     "reason": reason,
                 },
                 actor=actor,

@@ -68,7 +68,7 @@ class ApprovalPackService:
         self.merge = MergeEngine(app, config, renderer=html_renderer, store=self.store)
         self.notes = NoteService(app, config, model_client=model_client, store=self.store)
         self.sessions = sessionmaker(bind=app.state.engine, expire_on_commit=False)
-        self._claim_lock = RLock()
+        self._claim_locks = tuple(RLock() for _ in range(64))
 
     # -- shared helpers --------------------------------------------------------
 
@@ -93,17 +93,42 @@ class ApprovalPackService:
         return str(role)
 
     @contextmanager
-    def _claim_transaction(self, claim_id: str) -> Iterator[Any]:
-        """Serialise one claim's pack writes across processes and threads."""
+    def _claim_guard(self, claim_id: str, *, row_lock: bool) -> Iterator[Any]:
+        """Serialise one claim's pack work across processes and threads.
 
-        with self._claim_lock:
+        The advisory lock covers every approval-pack writer, including work that
+        uses a separate transaction through another package.  Merge allocation
+        additionally takes the binding claim-row lock from register #220.
+        """
+
+        claim_lock = self._claim_locks[hash(claim_id) % len(self._claim_locks)]
+        with claim_lock:
             with self.sessions.begin() as session:
                 if session.bind is not None and session.bind.dialect.name == "postgresql":
+                    session.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            "hashtextextended(:claim_id, 18))"
+                        ),
+                        {"claim_id": claim_id},
+                    )
+                if (
+                    row_lock
+                    and session.bind is not None
+                    and session.bind.dialect.name == "postgresql"
+                ):
                     session.execute(
                         text("SELECT id FROM claims WHERE id = :claim_id FOR UPDATE"),
                         {"claim_id": claim_id},
                     )
                 yield session
+
+    @contextmanager
+    def _claim_transaction(self, claim_id: str) -> Iterator[Any]:
+        """Take the claim serialisation guard and the binding claim-row lock."""
+
+        with self._claim_guard(claim_id, row_lock=True) as session:
+            yield session
 
     def _rows(self, sql: str, **params: Any) -> list[dict[str, Any]]:
         with self.app.state.engine.connect() as connection:
@@ -220,26 +245,35 @@ class ApprovalPackService:
             if not owned:
                 # A source belonging to another claim is indistinguishable from absent.
                 raise ClaimCoreError(404, "SOURCE_NOT_FOUND", "Source was not found")
-        events = [
-            event
-            for event in self._events(claim_id, "pack.sources_selected")
-            if event["payload"].get("item_id") == item_id
-        ]
-        prior = events[-1] if events else None
-        if prior is not None and prior["payload"].get("sources") == references:
-            return {"item_id": item_id, "sources": references, "recorded": False}
-        self._emit(
-            claim_id=claim_id,
-            event_type="pack.sources_selected",
-            payload={
-                "item_id": item_id,
-                "sources": references,
-                "actor": actor,
-                "prior_event_id": None if prior is None else prior["id"],
-            },
-            correlation_id=None,
-            actor=actor,
-        )
+        with self._claim_transaction(claim_id) as session:
+            rows = session.execute(
+                text(
+                    "SELECT id, payload FROM events WHERE claim_id = :claim_id "
+                    "AND type = 'pack.sources_selected' ORDER BY seq"
+                ),
+                {"claim_id": claim_id},
+            ).mappings()
+            events = [
+                {**dict(row), "payload": _json(row["payload"])}
+                for row in rows
+                if (_json(row["payload"]) or {}).get("item_id") == item_id
+            ]
+            prior = events[-1] if events else None
+            if prior is not None and prior["payload"].get("sources") == references:
+                return {"item_id": item_id, "sources": references, "recorded": False}
+            self._record(
+                session,
+                claim_id=claim_id,
+                event_type="pack.sources_selected",
+                payload={
+                    "item_id": item_id,
+                    "sources": references,
+                    "actor": actor,
+                    "prior_event_id": None if prior is None else prior["id"],
+                },
+                correlation_id=None,
+                actor=actor,
+            )
         return {"item_id": item_id, "sources": references, "recorded": True}
 
     def upload_item(
@@ -264,21 +298,23 @@ class ApprovalPackService:
         blob_key = f"approval-packs/{claim_id}/uploads/{item_id}/{digest}.pdf"
         self.store.put_immutable(blob_key, content, retention=self.config.retention)
         received_at = utc_rfc3339(self.app.state.clock())
-        self._emit(
-            claim_id=claim_id,
-            event_type="pack.item_uploaded",
-            payload={
-                "item_id": item_id,
-                "upload_id": upload_id,
-                "blob_key": blob_key,
-                "filename": filename,
-                "mime": mime,
-                "sha256": digest,
-                "received_at": received_at,
-            },
-            correlation_id=None,
-            actor=actor,
-        )
+        with self._claim_transaction(claim_id) as session:
+            self._record(
+                session,
+                claim_id=claim_id,
+                event_type="pack.item_uploaded",
+                payload={
+                    "item_id": item_id,
+                    "upload_id": upload_id,
+                    "blob_key": blob_key,
+                    "filename": filename,
+                    "mime": mime,
+                    "sha256": digest,
+                    "received_at": received_at,
+                },
+                correlation_id=None,
+                actor=actor,
+            )
         return {
             "item_id": item_id,
             "upload_id": upload_id,
@@ -420,9 +456,7 @@ class ApprovalPackService:
             raise ClaimCoreError(
                 422, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key must be non-empty"
             )
-        # The card is a pure read, so it is computed before the claim is locked;
-        # the fingerprint comparison inside the lock is what makes it safe.
-        readiness = self.readiness.evaluate(claim_id, actor)
+        readiness = None
         code: str | None = None
         replayed = False
         with self._claim_transaction(claim_id) as session:
@@ -431,6 +465,9 @@ class ApprovalPackService:
                 replayed = True
                 request_event_id = str(existing["id"])
             else:
+                # PACKET-18 §1.5/#225: the canonical card and fingerprint are
+                # recomputed only after the claim lock is held.
+                readiness = self.readiness.evaluate(claim_id, actor)
                 if not readiness.ready:
                     code = "PACK_NOT_READY"
                 elif readiness.fingerprint != fingerprint:
@@ -461,6 +498,7 @@ class ApprovalPackService:
                         actor=actor,
                     )
         if replayed:
+            readiness = self.readiness.evaluate(claim_id, actor)
             refused = [
                 event
                 for event in self._events(claim_id, "pack.generation_refused")
@@ -514,28 +552,49 @@ class ApprovalPackService:
         claim_id = str(payload["claim_id"])
         request_event_id = str(payload["request_event_id"])
         actor = str(payload["actor"])
-        readiness = self.readiness.evaluate(claim_id, actor)
-        if not readiness.ready or readiness.fingerprint != payload["readiness_fingerprint"]:
-            self._emit(
-                claim_id=claim_id,
-                event_type="pack.generation_refused",
-                payload={
-                    "code": "READINESS_STALE",
-                    "idempotency_key": None,
-                    "blockers": readiness.blockers,
-                },
-                correlation_id=request_event_id,
-                actor=actor,
-            )
-            return
         failure: ConversionFailed | None = None
         integrity: Any = None
         merged: dict[str, Any] | None = None
         merged_event_id: str | None = None
+        stale = False
         # Version allocation, the build, the critical grade, and the append are one
         # locked unit: two workers can never index the same version (register #220).
         with self._claim_transaction(claim_id) as session:
+            # Duplicate delivery is a no-op even if the claim changed after the
+            # original successful execution.
             if self._merged_event(claim_id, request_event_id) is not None:
+                return
+            readiness = self.readiness.evaluate(claim_id, actor)
+            if (
+                not readiness.ready
+                or readiness.fingerprint != payload["readiness_fingerprint"]
+            ):
+                existing_refusal = session.execute(
+                    text(
+                        "SELECT id FROM events WHERE claim_id = :claim_id "
+                        "AND type = 'pack.generation_refused' "
+                        "AND correlation_id = :request_event_id LIMIT 1"
+                    ),
+                    {
+                        "claim_id": claim_id,
+                        "request_event_id": request_event_id,
+                    },
+                ).scalar()
+                if existing_refusal is None:
+                    self._record(
+                        session,
+                        claim_id=claim_id,
+                        event_type="pack.generation_refused",
+                        payload={
+                            "code": "READINESS_STALE",
+                            "idempotency_key": None,
+                            "blockers": readiness.blockers,
+                        },
+                        correlation_id=request_event_id,
+                        actor=actor,
+                    )
+                stale = True
+            if stale:
                 return
             version = self._next_pack_version(claim_id)
             try:
@@ -621,96 +680,106 @@ class ApprovalPackService:
         claim_id = str(payload["claim_id"])
         merged_event_id = str(payload["merged_event_id"])
         actor = str(payload["actor"])
-        if self._draft_for(claim_id, merged_event_id) is not None:
-            return
-        merged = next(
-            (
-                event
-                for event in self._events(claim_id, "pack.merged")
-                if event["id"] == merged_event_id
-            ),
-            None,
-        )
-        if merged is None:
-            return
-        readiness = self.readiness.evaluate(claim_id, actor)
-        version = self.notes._next_version(claim_id)
-        try:
-            candidate = self.notes.build_candidate(
-                claim_id=claim_id,
-                actor=actor,
-                readiness=readiness,
-                merged_event_id=merged_event_id,
-                merged_payload=merged["payload"],
-                version=version,
+        # The advisory claim guard spans allocation, model work, persistence and
+        # hand-off without holding a row lock that would deadlock the canonical
+        # claim FSM transaction.
+        with self._claim_guard(claim_id, row_lock=False):
+            if self._draft_for(claim_id, merged_event_id) is not None:
+                return
+            merged_events = self._events(claim_id, "pack.merged")
+            merged = next(
+                (event for event in merged_events if event["id"] == merged_event_id),
+                None,
             )
-        except CommentaryInvalid as error:
-            self.notes.refuse(
-                claim_id,
-                subtype="note_commentary_invalid",
-                facts={"validation_errors": error.errors, "note_version": version},
-                risk="unverifiable approval-note prose cannot reach a human signer",
-                recommendation="review the cited inputs and regenerate the approval pack",
-                correlation_id=merged_event_id,
+            if merged is None:
+                return
+            merged_version = int(merged["payload"]["version"])
+            superseded_before_draft = any(
+                int(event["payload"].get("version", 0)) > merged_version
+                for event in merged_events
             )
-            return
-        except ModelBudgetExceeded as error:
-            # AR-4: a breached ceiling is a visible exception, never a silent skip.
-            self.notes.refuse(
-                claim_id,
-                subtype="budget_exceeded",
-                facts={
-                    "task": self.config.commentary["task"],
-                    "detail": str(error),
-                    "note_version": version,
-                },
-                risk="the governed model budget cannot fund this approval-note draft",
-                recommendation="review the commentary model budget before regenerating",
-                correlation_id=merged_event_id,
-            )
-            return
-        except NoteInputsInvalid as error:
-            self.notes.refuse(
-                claim_id,
-                subtype="note_inputs_invalid",
-                facts={"detail": str(error), "note_version": version},
-                risk="a rendered figure would lack resolved provenance",
-                recommendation="verify and cite the named field before regenerating",
-                correlation_id=merged_event_id,
-            )
-            return
-        integrity = self.notes.grade(claim_id, candidate)
-        body = {**candidate.body, "integrity": integrity}
-        if integrity["g_tpl_result"] != "pass" or integrity["g_note_result"] != "pass":
+            readiness = self.readiness.evaluate(claim_id, actor)
+            version = self.notes._next_version(claim_id)
+            try:
+                candidate = self.notes.build_candidate(
+                    claim_id=claim_id,
+                    actor=actor,
+                    readiness=readiness,
+                    merged_event_id=merged_event_id,
+                    merged_payload=merged["payload"],
+                    version=version,
+                )
+            except CommentaryInvalid as error:
+                self.notes.refuse(
+                    claim_id,
+                    subtype="note_commentary_invalid",
+                    facts={"validation_errors": error.errors, "note_version": version},
+                    risk="unverifiable approval-note prose cannot reach a human signer",
+                    recommendation="review the cited inputs and regenerate the approval pack",
+                    correlation_id=merged_event_id,
+                )
+                return
+            except ModelBudgetExceeded as error:
+                self.notes.refuse(
+                    claim_id,
+                    subtype="budget_exceeded",
+                    facts={
+                        "task": self.config.commentary["task"],
+                        "detail": str(error),
+                        "note_version": version,
+                    },
+                    risk="the governed model budget cannot fund this approval-note draft",
+                    recommendation="review the commentary model budget before regenerating",
+                    correlation_id=merged_event_id,
+                )
+                return
+            except NoteInputsInvalid as error:
+                self.notes.refuse(
+                    claim_id,
+                    subtype="note_inputs_invalid",
+                    facts={"detail": str(error), "note_version": version},
+                    risk="a rendered figure would lack resolved provenance",
+                    recommendation="verify and cite the named field before regenerating",
+                    correlation_id=merged_event_id,
+                )
+                return
+            integrity = self.notes.grade(claim_id, candidate)
+            body = {**candidate.body, "integrity": integrity}
+            if integrity["g_tpl_result"] != "pass" or integrity["g_note_result"] != "pass":
+                draft_id = self.notes.persist(
+                    claim_id, version=version, body=body, status="draft"
+                )
+                self.notes.refuse(
+                    claim_id,
+                    subtype="note_integrity_failed",
+                    facts={
+                        "note_draft_id": draft_id,
+                        "note_version": version,
+                        "integrity": integrity,
+                    },
+                    risk="a known-wrong approval note must never enter human signing",
+                    recommendation="inspect the failed grader run and regenerate the note",
+                    correlation_id=merged_event_id,
+                )
+                return
             draft_id = self.notes.persist(
-                claim_id, version=version, body=body, status="draft"
-            )
-            self.notes.refuse(
                 claim_id,
-                subtype="note_integrity_failed",
-                facts={
-                    "note_draft_id": draft_id,
-                    "note_version": version,
-                    "integrity": integrity,
-                },
-                risk="a known-wrong approval note must never enter human signing",
-                recommendation="inspect the failed grader run and regenerate the note",
-                correlation_id=merged_event_id,
+                version=version,
+                body=body,
+                status="superseded" if superseded_before_draft else "in_review",
             )
-            return
-        draft_id = self.notes.persist(
-            claim_id, version=version, body=body, status="in_review"
-        )
-        self.notes.hand_off(
-            claim_id,
-            draft_id=draft_id,
-            version=version,
-            body=body,
-            candidate=candidate,
-            merged_payload=merged["payload"],
-            merged_event_id=merged_event_id,
-            actor=actor,
-        )
+            if superseded_before_draft:
+                return
+            self.notes.hand_off(
+                claim_id,
+                draft_id=draft_id,
+                version=version,
+                body=body,
+                candidate=candidate,
+                merged_payload=merged["payload"],
+                merged_event_id=merged_event_id,
+                actor=actor,
+            )
 
     # -- consumer --------------------------------------------------------------
 

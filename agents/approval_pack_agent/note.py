@@ -8,9 +8,12 @@ marker and never a synthetic zero or false (register #5/#229/#230).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from threading import RLock
 from typing import Any
 
 from jinja2 import Environment, StrictUndefined, TemplateError
@@ -19,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 
 from approval_pack_agent.config import (
     ApprovalPackConfig,
+    canonical_json,
     money_display,
 )
 from approval_pack_agent.models import NoteDraft
@@ -375,6 +379,8 @@ class CommentaryGenerator:
         self.config = config
         self.model_client = model_client
         self.validator = CommentaryValidator(config)
+        self.sessions = sessionmaker(bind=app.state.engine, expire_on_commit=False)
+        self._budget_lock = RLock()
 
     def _record(self, claim_id: str, *, cost_usd: float, model_id: str, status: str) -> None:
         self.app.state.claim_service.record_model_call(
@@ -402,7 +408,6 @@ class CommentaryGenerator:
     def _spend(self, claim_id: str) -> tuple[Decimal, Decimal, Decimal]:
         """Sum recorded commentary spend by claim-day, claim-lifetime, platform-day."""
 
-        task = self.config.commentary["task"]
         today = self.app.state.clock().date()
         claim_daily = claim_lifetime = platform_daily = Decimal(0)
         with self.app.state.engine.connect() as connection:
@@ -417,7 +422,7 @@ class CommentaryGenerator:
         for row in rows:
             payload = _json(row["payload"])
             detail = payload.get("detail") if isinstance(payload, dict) else None
-            if not isinstance(detail, dict) or detail.get("task") != task:
+            if not isinstance(detail, dict):
                 continue
             try:
                 cost = Decimal(str(detail.get("cost_usd")))
@@ -433,7 +438,13 @@ class CommentaryGenerator:
                 platform_daily += cost
         return claim_daily, claim_lifetime, platform_daily
 
-    def _check_budget(self, claim_id: str, *, before_call: bool = False) -> None:
+    def _check_budget(
+        self,
+        claim_id: str,
+        *,
+        reserve_usd: Decimal = Decimal(0),
+        after_call: bool = False,
+    ) -> None:
         """Refuse before or after a call once any configured ceiling is reached."""
 
         commentary = self.config.commentary
@@ -452,11 +463,60 @@ class CommentaryGenerator:
         exceeded = sorted(
             key
             for key in limits
-            if (used[key] >= limits[key] if before_call else used[key] > limits[key])
+            if (
+                used[key] > limits[key]
+                if after_call
+                else used[key] + reserve_usd > limits[key]
+            )
         )
         if exceeded:
             raise ModelBudgetExceeded(
                 "pack note commentary budget exceeded: " + ", ".join(exceeded)
+            )
+
+    @contextmanager
+    def _budget_guard(self) -> Iterator[None]:
+        """Serialise reservation and spend publication platform-wide."""
+
+        with self._budget_lock:
+            with self.sessions.begin() as session:
+                if session.bind is not None and session.bind.dialect.name == "postgresql":
+                    session.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            "hashtextextended('approval-pack-commentary-budget', 18))"
+                        )
+                    )
+                yield
+
+    @staticmethod
+    def _token_upper_bound(value: Any) -> int:
+        """Return a conservative provider-neutral token upper bound."""
+
+        return len(canonical_json(value).encode("utf-8"))
+
+    def _check_tokens(self, result: dict[str, Any], inputs: dict[str, Any]) -> None:
+        commentary = self.config.commentary
+        input_tokens = result.get("input_tokens")
+        output_tokens = result.get("output_tokens")
+        measured_input = (
+            int(input_tokens)
+            if isinstance(input_tokens, int) and not isinstance(input_tokens, bool)
+            else self._token_upper_bound(inputs)
+        )
+        measured_output = (
+            int(output_tokens)
+            if isinstance(output_tokens, int) and not isinstance(output_tokens, bool)
+            else self._token_upper_bound(result["data"])
+        )
+        exceeded = []
+        if measured_input > int(commentary["max_input_tokens"]):
+            exceeded.append("input_tokens")
+        if measured_output > int(commentary["max_output_tokens"]):
+            exceeded.append("output_tokens")
+        if exceeded:
+            raise ModelBudgetExceeded(
+                "pack note commentary token budget exceeded: " + ", ".join(exceeded)
             )
 
     def generate(self, claim_id: str, bundle: dict[str, Any], allowed: list[str]) -> dict[str, Any]:
@@ -467,30 +527,53 @@ class CommentaryGenerator:
         """
 
         commentary = self.config.commentary
-        wrapper = ModelWrapper(
-            self.model_client,
-            budget_ceiling_usd=float(commentary["max_cost_usd"]),
-        )
-        errors: list[str] = []
-        for attempt in range(2):
-            self._check_budget(claim_id, before_call=True)
-            inputs = dict(bundle)
-            if attempt == 1:
-                inputs["validation_errors"] = list(errors)
-            spent_before = wrapper.spent_usd
-            result = wrapper.structured_call(
-                tier=commentary["tier"], schema=COMMENTARY_SCHEMA, inputs=inputs
+        max_cost = Decimal(str(commentary["max_cost_usd"]))
+        with self._budget_guard():
+            wrapper = ModelWrapper(
+                self.model_client,
+                budget_ceiling_usd=float(max_cost),
             )
-            self._record(
-                claim_id,
-                cost_usd=wrapper.spent_usd - spent_before,
-                model_id=result["model_id"],
-                status="completed",
-            )
-            self._check_budget(claim_id)
-            errors = self.validator.validate(result["data"], allowed)
-            if not errors:
-                return result["data"]
+            errors: list[str] = []
+            for attempt in range(2):
+                self._check_budget(claim_id, reserve_usd=max_cost)
+                inputs = dict(bundle)
+                if attempt == 1:
+                    inputs["validation_errors"] = list(errors)
+                if self._token_upper_bound(inputs) > int(commentary["max_input_tokens"]):
+                    raise ModelBudgetExceeded(
+                        "pack note commentary token budget exceeded: input_tokens"
+                    )
+                spent_before = wrapper.spent_usd
+                try:
+                    result = wrapper.structured_call(
+                        tier=commentary["tier"], schema=COMMENTARY_SCHEMA, inputs=inputs
+                    )
+                except ModelBudgetExceeded:
+                    spent = wrapper.spent_usd - spent_before
+                    if spent > 0:
+                        self._record(
+                            claim_id,
+                            cost_usd=spent,
+                            model_id="budget_exceeded",
+                            status="budget_exceeded",
+                        )
+                    raise
+                spent = wrapper.spent_usd - spent_before
+                self._record(
+                    claim_id,
+                    cost_usd=spent,
+                    model_id=result["model_id"],
+                    status="completed",
+                )
+                if Decimal(str(wrapper.spent_usd)) > max_cost:
+                    raise ModelBudgetExceeded(
+                        "pack note commentary per-call budget exceeded"
+                    )
+                self._check_tokens(result, inputs)
+                self._check_budget(claim_id, after_call=True)
+                errors = self.validator.validate(result["data"], allowed)
+                if not errors:
+                    return result["data"]
         raise CommentaryInvalid(errors)
 
 

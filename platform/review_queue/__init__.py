@@ -30,7 +30,7 @@ class ReviewQueue:
         self._projection.backfill(actor)
 
     def cancel(self, review_id: str, *, actor: str, reason: str) -> dict[str, object]:
-        """Withdraw one superseded open item without recording a human decision."""
+        """Withdraw one producer-owned superseded approval-note review."""
 
         return self.service.cancel(review_id, actor=actor, reason=reason)
 
