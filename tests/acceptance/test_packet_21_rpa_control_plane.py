@@ -12,6 +12,7 @@ runtime. A green run means `synthetic_control_plane_green`, never `rpa_live`.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -856,7 +857,11 @@ def test_l3_authorises_a_deferred_job_and_reuses_the_deterministic_sampler(env):
 
 
 def test_only_the_gate_helper_may_call_adapter_execute():
-    import tools.ci.banned_calls as guard  # noqa: PLC0415 - CI guard under test
+    guard_path = REPO / "tools" / "ci" / "banned_calls.py"
+    spec = importlib.util.spec_from_file_location("packet21_banned_calls_guard", guard_path)
+    assert spec is not None and spec.loader is not None
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
 
     assert guard.scan_text("result = adapter.execute(op, payload, run_id)\n")
     assert guard.scan_text("adapter.execute_op(payload)\n")
@@ -950,7 +955,7 @@ def test_the_raw_lease_token_is_never_stored_and_stale_callbacks_fail(env):
     token = job["lease_token"]
     row = _projection(env, projection_id)
     lease = row["evidence"]["rpa"]["lease"]
-    assert token not in json.dumps(row)
+    assert token not in json.dumps(row, default=str)
     assert lease["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
 
     changed_token = token[:-1] + ("0" if token[-1] != "0" else "1")
