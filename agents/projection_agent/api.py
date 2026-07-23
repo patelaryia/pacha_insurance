@@ -7,11 +7,14 @@ strip is rebuilt server-side from the immutable snapshot.
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from fastapi import APIRouter, Header
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
+
+from claim_core import ClaimCoreError
 
 PRIVATE_HEADERS = {
     "Cache-Control": "private, no-store",
@@ -42,8 +45,21 @@ def _private(payload: Any) -> JSONResponse:
     return JSONResponse(content=payload, headers=PRIVATE_HEADERS)
 
 
+class PasteReadbackCapture(BaseModel):
+    """One officer-observed target capture (PACKET-21 §12).
+
+    Values never reach the review item, the event, or the log: the service
+    protects them under the claim DEK and returns only an opaque capture id.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    observed: dict[str, Any] = Field(default_factory=dict)
+    screenshot_base64: str | None = None
+
+
 def build_router(service: Any) -> APIRouter:
-    """Return the five authenticated projection routes."""
+    """Return the eight authenticated projection routes."""
 
     router = APIRouter(prefix="/console/claims/{claim_id}/projections")
 
@@ -98,7 +114,60 @@ def build_router(service: Any) -> APIRouter:
             )
         )
 
+    @router.get("/{projection_id}/rpa")
+    def read_rpa(
+        claim_id: str, projection_id: str, x_actor: str = Header(alias="X-Actor")
+    ) -> JSONResponse:
+        return _private(service.rpa_view(claim_id, projection_id, actor=x_actor))
+
+    @router.get("/{projection_id}/evidence/{evidence_id}")
+    def read_evidence(
+        claim_id: str,
+        projection_id: str,
+        evidence_id: str,
+        x_actor: str = Header(alias="X-Actor"),
+    ) -> Response:
+        content, digest = service.read_evidence(
+            claim_id, projection_id, evidence_id, actor=x_actor
+        )
+        return Response(
+            content=content,
+            media_type="image/png",
+            headers={**PRIVATE_HEADERS, "X-Evidence-SHA256": digest},
+        )
+
     return router
 
 
-__all__ = ["PRIVATE_HEADERS", "build_router"]
+def build_review_router(service: Any) -> APIRouter:
+    """The one authenticated review-scoped projection route (PACKET-21 §12)."""
+
+    router = APIRouter(prefix="/console/reviews")
+
+    @router.post("/{review_id}/paste-readback/capture")
+    def capture_paste_readback(
+        review_id: str,
+        body: PasteReadbackCapture,
+        x_actor: str = Header(alias="X-Actor"),
+    ) -> JSONResponse:
+        screenshot: bytes | None = None
+        if body.screenshot_base64:
+            try:
+                screenshot = base64.b64decode(body.screenshot_base64, validate=True)
+            except (ValueError, TypeError) as error:
+                raise ClaimCoreError(
+                    422, "EVIDENCE_CONTENT_INVALID", "Screenshot bytes are not valid base64"
+                ) from error
+        return _private(
+            service.capture_paste_readback(
+                review_id,
+                actor=x_actor,
+                observed=body.observed,
+                screenshot=screenshot,
+            )
+        )
+
+    return router
+
+
+__all__ = ["PRIVATE_HEADERS", "build_review_router", "build_router"]

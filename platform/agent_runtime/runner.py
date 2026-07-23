@@ -219,6 +219,54 @@ class AgentRunner:
             run.error = error
             run.ended_at = now if status in {"completed", "failed", "blocked"} else None
 
+    def finish_deferred_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        outcome: dict[str, Any],
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """End a deferred run, recording the coarse stages it actually reached.
+
+        ``outcome['stages']`` is an ordered list of ``{"id", "status", "ref"}``
+        entries. Only stages already declared for the capability are recorded;
+        an undeclared stage id is a defect, not something to invent a step for.
+        """
+
+        now = self.app.state.clock()
+        stages = outcome.get("stages")
+        recorded = {
+            str(stage["id"]): stage
+            for stage in (stages if isinstance(stages, list) else [])
+            if isinstance(stage, dict) and isinstance(stage.get("id"), str)
+        }
+        with self.sessions.begin() as session:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                raise LookupError(f"agent run {run_id} was not found")
+            declared = {step.get("step_id") for step in run.steps}
+            unknown = sorted(set(recorded) - declared)
+            if unknown:
+                raise ValueError(f"undeclared deferred stages {unknown}")
+            steps = [dict(step) for step in run.steps]
+            for step in steps:
+                stage = recorded.get(str(step.get("step_id")))
+                if stage is None:
+                    continue
+                step.update(
+                    status=str(stage.get("status", "completed")),
+                    attempts=max(1, int(step.get("attempts", 0))),
+                    ended=now.isoformat(),
+                    updated_at=now.isoformat(),
+                    outcome={"ref": stage.get("ref")},
+                )
+            steps[-1].update(outcome={**steps[-1].get("outcome", {}), "result": dict(outcome)})
+            run.steps = steps
+            run.status = status
+            run.error = error
+            run.ended_at = now
+
     def heartbeat(self, run_id: str, step_id: str) -> None:
         """Persist a current-step heartbeat without relying on worker memory."""
 

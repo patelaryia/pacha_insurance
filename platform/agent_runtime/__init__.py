@@ -6,9 +6,16 @@ from pathlib import Path
 from typing import Any
 
 from agent_runtime.comms import CommunicationsService
-from agent_runtime.gate import Action, AutonomyGate, load_gate_config
+from agent_runtime.gate import (
+    Action,
+    AutonomyGate,
+    DeferredAction,
+    WorkReceipt,
+    execute_authorised_adapter,
+    load_gate_config,
+)
 from agent_runtime.models import AgentRun
-from agent_runtime.runner import AgentRunner, configure_reaper
+from agent_runtime.runner import AgentRunner, StepContext, configure_reaper
 from claim_core import Base
 
 
@@ -57,8 +64,23 @@ class AgentRuntime:
             run_id=run_id,
         )
 
-    def execute_staged(self, action: Action) -> Any:
-        return self.gate.execute_staged(action)
+    def register_deferred_executor(self, action_type: str, fn: Any) -> None:
+        """Register the curated PACKET-21 deferred contract (register #278)."""
+
+        self.gate.register_deferred_executor(action_type, fn)
+
+    def execute_staged(self, action: Action, *, run_id: str | None = None) -> Any:
+        return self.gate.execute_staged(action, run_id=run_id)
+
+    def finish_deferred(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        outcome: dict[str, Any],
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        self.gate.finish_deferred(run_id, status=status, outcome=outcome, error=error)
 
     def register_step(self, capability_id: str, step_id: str, fn: Any) -> None:
         self.runner.register_step(capability_id, step_id, fn)
@@ -95,4 +117,12 @@ def build_agent_runtime(app: Any, *, grade: Any = None) -> AgentRuntime:
     return runtime
 
 
-__all__ = ["Action", "AgentRuntime", "build_agent_runtime"]
+__all__ = [
+    "Action",
+    "AgentRuntime",
+    "DeferredAction",
+    "StepContext",
+    "WorkReceipt",
+    "build_agent_runtime",
+    "execute_authorised_adapter",
+]

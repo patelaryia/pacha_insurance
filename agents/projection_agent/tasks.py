@@ -16,6 +16,12 @@ from claim_core import celery_app
 
 BEAT_ENTRY = "projection-agent-weekly-paste-readback"
 TASK_NAME = "projection_agent.sample_paste_readbacks"
+#: PACKET-21 §8/§14. The reaper interval is pack data; the nightly drift slot is
+#: registered but stays unscheduled while its EAT time is uncaptured (#290).
+REAPER_BEAT_ENTRY = "projection-agent-lease-reaper"
+REAPER_TASK_NAME = "projection_agent.reap_leases"
+DRIFT_BEAT_ENTRY = "projection-agent-nightly-drift"
+DRIFT_TASK_NAME = "projection_agent.nightly_drift"
 
 _SERVICE: Any | None = None
 
@@ -72,8 +78,26 @@ def sample_paste_readbacks() -> dict[str, Any]:
     return _SERVICE.sample_paste_readbacks()
 
 
+@celery_app.task(name=REAPER_TASK_NAME)
+def reap_leases() -> dict[str, Any]:
+    """Recover stale executing rows by exact readback. It never re-writes."""
+
+    if _SERVICE is None:
+        raise RuntimeError("projection agent task runtime is not configured")
+    return _SERVICE.rpa.reap_leases()
+
+
+@celery_app.task(name=DRIFT_TASK_NAME)
+def nightly_drift() -> dict[str, Any]:
+    """One idempotent standing-drift cycle. Pending registry does nothing."""
+
+    if _SERVICE is None:
+        raise RuntimeError("projection agent task runtime is not configured")
+    return _SERVICE.drift.run()
+
+
 def configure_weekly_task(service: Any) -> None:
-    """Bind the current service and install the pack-configured weekly slot."""
+    """Bind the current service and install every pack-configured slot."""
 
     global _SERVICE  # noqa: PLW0603 - Celery task bindings are process-local
     _SERVICE = service
@@ -89,7 +113,36 @@ def configure_weekly_task(service: Any) -> None:
             app=celery_app,
         ),
     }
+    schedule[REAPER_BEAT_ENTRY] = {
+        "task": REAPER_TASK_NAME,
+        "schedule": float(service.operations.runtime.runner.reaper_seconds),
+    }
+    drift = service.operations.drift
+    if drift.schedulable and service.operations.runtime.drift_schedule_status == "live":
+        schedule[DRIFT_BEAT_ENTRY] = {
+            "task": DRIFT_TASK_NAME,
+            "schedule": crontab(
+                day_of_week=drift.day_of_week,
+                hour=drift.hour,
+                minute=drift.minute,
+                app=celery_app,
+            ),
+        }
+    else:
+        # Visibly disabled: the nightly EAT time is not in the source documents.
+        schedule.pop(DRIFT_BEAT_ENTRY, None)
     celery_app.conf.beat_schedule = schedule
 
 
-__all__ = ["BEAT_ENTRY", "TASK_NAME", "configure_weekly_task", "sample_paste_readbacks"]
+__all__ = [
+    "BEAT_ENTRY",
+    "DRIFT_BEAT_ENTRY",
+    "DRIFT_TASK_NAME",
+    "REAPER_BEAT_ENTRY",
+    "REAPER_TASK_NAME",
+    "TASK_NAME",
+    "configure_weekly_task",
+    "nightly_drift",
+    "reap_leases",
+    "sample_paste_readbacks",
+]

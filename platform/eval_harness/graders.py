@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from hmac import compare_digest
 from pathlib import Path
 from typing import Any, Literal
 
@@ -118,6 +119,23 @@ class ValueGrader(Grader):
         self._external[path] = (name, check)
 
     @staticmethod
+    def _grade_reconciliation(reconciliation: dict[str, Any]) -> RawGrade:
+        expected = reconciliation.get("expected_sha256")
+        actual = reconciliation.get("actual_sha256")
+        if not isinstance(expected, str) or not isinstance(actual, str):
+            return RawGrade("error", {"code": "INVALID_SUBJECT_REF"})
+        passed = compare_digest(expected, actual)
+        return RawGrade(
+            "pass" if passed else "fail",
+            {
+                "validator": "projection_reconciliation",
+                "outcome": "pass" if passed else "fail",
+                "detected_by": reconciliation.get("detected_by"),
+                "mismatch_paths": list(reconciliation.get("mismatch_paths") or ()),
+            },
+        )
+
+    @staticmethod
     def _target_validators() -> dict[str, str]:
         schemas = Path(__file__).resolve().parents[1] / "doc_intel" / "schemas" / "motor"
         mappings: dict[str, str] = {}
@@ -138,6 +156,12 @@ class ValueGrader(Grader):
         path = subject.get("path")
         if not isinstance(claim_id, str) or not isinstance(path, str):
             return RawGrade("error", {"code": "INVALID_SUBJECT_REF"})
+        reconciliation = subject.get("reconciliation")
+        if isinstance(reconciliation, dict):
+            # PRD-09 §9.5 projection reconciliation. The same critical G-VAL owns
+            # it, as it already owns captured readback formats; no tenth grader
+            # id is invented. Only digests cross this boundary, never a value.
+            return self._grade_reconciliation(reconciliation)
         external = self._external.get(path)
         validator = self._validators.get(path)
         if validator is None and external is None:
@@ -851,6 +875,63 @@ class CommunicationGrader(Grader):
         return RawGrade("pass", {"code": "COMMUNICATION_VALID"})
 
 
+class ProcedureGrader(Grader):
+    """Check one durable agent run against its pack-declared coarse COP steps.
+
+    Deliberately coarse (PRD-03 §3.4): it verifies that the recorded stage ids
+    are the declared ids, in the declared order, with no invented stage and no
+    stage skipped before a terminal one. Target-form detail lives in the
+    projection's own evidence, never in the AR-1 step list.
+    """
+
+    def __init__(self, harness: Any, declared: Callable[[str], tuple[str, ...]]) -> None:
+        super().__init__(harness, "G-PROC", "artifact", "major")
+        self._declared = declared
+
+    def grade(self, subject: dict[str, Any], actor: str) -> RawGrade:
+        del actor
+        run_id = subject.get("agent_run_id")
+        if not isinstance(run_id, str):
+            return RawGrade("error", {"code": "INVALID_SUBJECT_REF"})
+        with self.harness.engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT capability_id, status, steps FROM agent_runs WHERE id = :id"),
+                {"id": run_id},
+            ).mappings().first()
+        if row is None:
+            return RawGrade("error", {"code": "AGENT_RUN_MISSING", "agent_run_id": run_id})
+        declared = self._declared(str(row["capability_id"]))
+        if not declared:
+            return RawGrade(
+                "error",
+                {"code": "NO_DECLARED_STEPS", "capability_id": row["capability_id"]},
+            )
+        steps = _decoded_json(row["steps"])
+        recorded = [
+            str(step.get("step_id"))
+            for step in (steps if isinstance(steps, list) else [])
+            if isinstance(step, dict)
+        ]
+        completed = [
+            str(step.get("step_id"))
+            for step in (steps if isinstance(steps, list) else [])
+            if isinstance(step, dict) and step.get("status") == "completed"
+        ]
+        detail = {
+            "declared": list(declared),
+            "recorded": recorded,
+            "completed": completed,
+            "status": row["status"],
+        }
+        if recorded != list(declared):
+            return RawGrade("fail", {**detail, "outcome": "step_sequence_mismatch"})
+        if completed != list(declared)[: len(completed)]:
+            return RawGrade("fail", {**detail, "outcome": "step_order_violated"})
+        if row["status"] == "completed" and completed != list(declared):
+            return RawGrade("fail", {**detail, "outcome": "completed_with_skipped_steps"})
+        return RawGrade("pass", {**detail, "outcome": "pass"})
+
+
 class GraderRegistry:
     """Closed grader catalog with live and pending entries."""
 
@@ -914,6 +995,11 @@ class GraderRegistry:
         """Install deterministic G-COMM when its AR-3 producer is available."""
 
         self._entries["G-COMM"] = CommunicationGrader(self._entries["G-COMM"].harness)
+
+    def activate_gproc(self, declared: Callable[[str], tuple[str, ...]]) -> None:
+        """Install deterministic G-PROC once a producer of durable runs exists."""
+
+        self._entries["G-PROC"] = ProcedureGrader(self._entries["G-PROC"].harness, declared)
 
     def ids(self) -> list[str]:
         return list(self._entries)

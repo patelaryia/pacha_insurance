@@ -1724,13 +1724,15 @@ def test_the_projection_event_catalogue_and_ledger_map_stay_closed(env):
     projection_actions = {
         key: value for key, value in ACTION_MAP.items() if key.startswith("projection.")
     }
+    # Register #294: PACKET-21 owns `projection.diverged` and is authorised to
+    # add it here. The map stays closed at exactly the four PRD-09 events — no
+    # lease, heartbeat, or step callback invents a fifth.
     assert projection_actions == {
         "projection.requested": "projection.requested",
         "projection.completed": "projection.completed",
         "projection.failed": "projection.failed",
+        "projection.diverged": "projection.diverged",
     }
-    # `projection.diverged` belongs to PACKET-21 and is deliberately unmapped.
-    assert "projection.diverged" not in ACTION_MAP
 
 
 # --- regression guards ----------------------------------------------------------------
@@ -1760,12 +1762,16 @@ def test_no_adapter_executor_or_funds_transfer_verb_is_registered(env):
     )
 
 
-def test_the_generated_openapi_exposes_five_routes_and_no_adapter_surface(env):
+def test_the_generated_openapi_exposes_the_console_routes_and_no_adapter_surface(env):
+    """Register #294: PACKET-21 replaces the five-route pin with the eight
+    console routes it is authorised to add, without weakening the no-adapter,
+    no-funds, and no-secret checks this test exists for."""
+
     document = env.app.app.openapi() if hasattr(env.app, "app") else env.app.openapi()
     projection_paths = {
         path: sorted(operations)
         for path, operations in document["paths"].items()
-        if "/projections" in path
+        if "/projections" in path or "paste-readback" in path
     }
     assert projection_paths == {
         "/console/claims/{claim_id}/projections": ["get"],
@@ -1776,11 +1782,24 @@ def test_the_generated_openapi_exposes_five_routes_and_no_adapter_surface(env):
         "/console/claims/{claim_id}/projections/{projection_id}/paste-assist/confirm": [
             "post"
         ],
+        "/console/claims/{claim_id}/projections/{projection_id}/rpa": ["get"],
+        "/console/claims/{claim_id}/projections/{projection_id}"
+        "/evidence/{evidence_id}": ["get"],
+        "/console/reviews/{review_id}/paste-readback/capture": ["post"],
     }
-    # No adapter route, and no officer endpoint that can supply a payload,
-    # snapshot hash, field version, mode, or idempotency key material.
+    # No adapter route, no internal runner contract without an injected
+    # authenticator, and no officer endpoint that can supply a payload, snapshot
+    # hash, field version, mode, or idempotency key material.
     surface = json.dumps(document)
-    for forbidden in ("/adapters", "/rpa", "adapter_health", "snapshot_hash"):
+    for forbidden in (
+        "/adapters",
+        "/internal/projection-runner",
+        "adapter_health",
+        "snapshot_hash",
+        "lease_token",
+        "secret_ref",
+        "selector",
+    ):
         assert forbidden not in surface
     confirm = document["paths"][
         "/console/claims/{claim_id}/projections/{projection_id}/paste-assist/confirm"

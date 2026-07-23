@@ -56,6 +56,9 @@ ACTION_MAP = {
     "projection.requested": "projection.requested",
     "projection.completed": "projection.completed",
     "projection.failed": "projection.failed",
+    # PACKET-21 §16: divergence is ledgered through this single writer. No
+    # package appends a projection row of its own.
+    "projection.diverged": "projection.diverged",
     "savings.recorded": "savings.recorded",
     "template.rendered": "template.rendered",
     "pack.sources_selected": "pack.sources_selected",

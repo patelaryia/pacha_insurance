@@ -1,6 +1,28 @@
 version: 1
+# A capability may name either a bare review type or `{type, subtype}`. The
+# subtype form exists so a confirmation opens the right workspace without the
+# gate learning anything about the calling package (PACKET-21 §6 / #279).
 confirm_types:
   assessment.mode_confirm: MODE_CONFIRM
+  # PRD-09 §9.6: an L2 RPA launch is confirmed once, against the exact
+  # projection id, snapshot hash, and definition version. No eighteenth review
+  # type is added. Every `project.*` capability is listed so the workspace is
+  # never chosen by a code default.
+  project.icon.policy_read: &projection_rpa {type: DRAFT_RELEASE, subtype: projection_rpa}
+  project.icon.claim_register: *projection_rpa
+  project.icon.reserve_create: *projection_rpa
+  project.icon.reserve_breakdown: *projection_rpa
+  project.icon.reserve_adjust: *projection_rpa
+  project.icon.assessor_payment_request: *projection_rpa
+  project.icon.note_entry: *projection_rpa
+  project.icon.claim_details_report: *projection_rpa
+  project.icon.salvage_register: *projection_rpa
+  project.icon.payment_voucher: *projection_rpa
+  project.edms.general_payments: *projection_rpa
+  project.edms.claims_workflow: *projection_rpa
+  project.edms.attach_and_tag: *projection_rpa
+  project.edms.claim_payment: *projection_rpa
+  project.edms.payment_workflow: *projection_rpa
 exempt_capabilities:
   - intake.acknowledge
 transport:

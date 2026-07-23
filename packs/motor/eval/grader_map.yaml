@@ -21,6 +21,15 @@ output_types:
       - external.icon.salvage_no
       - external.edms.folder_ref
 
+  # PACKET-21 §16: every completed RPA run is graded twice — the reconciliation
+  # itself by the same critical G-VAL, and the coarse COP stage sequence by the
+  # major G-PROC. No tenth grader id is invented for either.
+  projection_execution:
+    graders:
+      - {id: G-VAL, severity: critical}
+      - {id: G-PROC, severity: major}
+    capability_prefix: project.
+
   calc_run:
     graders:
       - {id: G-CALC, severity: critical}

@@ -27,6 +27,8 @@ LIVE_SERIES = frozenset(
         "chase_doc_type_cycle",
         "chase_broker_league",
         "chase_cycle_time",
+        # PACKET-21 §15 / register #291.
+        "projection_divergence_rate",
     }
 )
 
@@ -299,6 +301,19 @@ class OpsReadService:
             }
         return data
 
+    def _projection_divergence_rate(self) -> dict[str, Any]:
+        """S-4 divergence tile. Point-in-time; a zero denominator is null."""
+
+        projection = getattr(self.app.state, "projection_agent", None)
+        if projection is None:
+            return {
+                "diverged": 0,
+                "reconciled": 0,
+                "rate_percent": None,
+                "basis": "current_projection_status",
+            }
+        return projection.divergence_rate()
+
     def series_data(self, series_id: str) -> Any:
         readers = {
             "open_claims_by_state": self._open_claims_by_state,
@@ -310,6 +325,7 @@ class OpsReadService:
             "chase_doc_type_cycle": self._chase_doc_type_cycle,
             "chase_broker_league": self._chase_broker_league,
             "chase_cycle_time": self._chase_cycle_time,
+            "projection_divergence_rate": self._projection_divergence_rate,
         }
         reader = readers.get(series_id)
         return None if reader is None else reader()
@@ -440,7 +456,9 @@ class OpsReadService:
         )
         return {
             "packs": packs,
-            "adapter_health": {"status": "unavailable", "owner": "PRD-09"},
+            # PACKET-21 §15 replaces PACKET-12's placeholder with typed adapter
+            # and control rows. No credential, endpoint, or selector is exposed.
+            "adapter_health": self._adapter_health(),
             "user_roles": {
                 "status": "config-managed",
                 "provenance": "packs/motor/routing/roles.yaml",
@@ -451,6 +469,33 @@ class OpsReadService:
                 ],
             },
         }
+
+    def _adapter_health(self) -> list[dict[str, Any]]:
+        projection = getattr(self.app.state, "projection_agent", None)
+        if projection is None:
+            return [
+                {
+                    "system": system,
+                    "configured_mode": "paste_assist",
+                    "effective_mode": "paste_assist",
+                    "status": "unavailable",
+                    "reason_code": "projection_agent_not_installed",
+                    "runner_last_seen_at": None,
+                    "circuit_operation_ids": [],
+                }
+                for system in ("icon", "edms")
+            ]
+        return projection.rpa.systems_health()
+
+    def clear_projection_circuit(self, operation_id: str, *, actor: str) -> dict[str, Any]:
+        """Clear one qualified circuit breaker. Ledgered; new rows only (§11)."""
+
+        projection = getattr(self.app.state, "projection_agent", None)
+        if projection is None:
+            raise ClaimCoreError(
+                409, "PROJECTION_UNAVAILABLE", "The projection agent is not installed"
+            )
+        return projection.rpa.clear_circuit(operation_id, actor=actor)
 
     def capabilities(self) -> list[dict[str, Any]]:
         harness = self.app.state.eval_harness

@@ -2,6 +2,7 @@
 
 import importlib.util
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,6 +121,14 @@ def test_rejected_coverage_card_reissues_the_keying_path(tmp_path):
 
 def test_captured_t07_declines_then_stages_the_letter(tmp_path, monkeypatch):
     env = packet._build(tmp_path, "captured-t07", model=packet._triage_model())
+    # AR-3 correctly queues non-urgent communications outside 08:00–18:00
+    # EAT. Pin this staging regression to Tuesday 10:00 EAT so it does not
+    # change outcome with the CI runner's wall clock.
+    monkeypatch.setattr(
+        env.app.state,
+        "clock",
+        lambda: datetime(2026, 7, 21, 7, 0, tzinfo=UTC),
+    )
     claim_id = packet._drive_to_coverage_card(env)
     packet._resolve_coverage(env, claim_id)
     decline = packet._open_item(

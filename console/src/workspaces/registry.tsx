@@ -4,6 +4,7 @@ import type { ConsoleApi, ResolutionAction, ReviewItem } from "../api/types";
 import { formatStructured, parseLossless } from "../lib/json";
 import { ApprovalNoteWorkspace } from "./ApprovalNoteWorkspace";
 import { ApprovalPackWorkspace } from "./ApprovalPackWorkspace";
+import { ProjectionWorkspace } from "./ProjectionWorkspace";
 
 type FieldValueType = "string" | "money" | "date" | "datetime" | "bool" | "enum" | "object";
 type ChangeKind = "money" | "date" | "party" | "enum" | "text";
@@ -234,6 +235,11 @@ const DEDICATED_WORKSPACES: Record<
 > = {
   approval_note_review: ApprovalNoteWorkspace,
   approval_pack_review: ApprovalPackWorkspace,
+  // PACKET-21: none of these corrects a field value, so none of them can use
+  // the generic corrected-value editor.
+  projection_rpa_release: ProjectionWorkspace,
+  projection_divergence: ProjectionWorkspace,
+  paste_readback: ProjectionWorkspace,
 };
 
 export function Workspace({ item, api, onResolved }: WorkspaceProps) {

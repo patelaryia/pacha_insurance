@@ -1,6 +1,12 @@
 import React, { useEffect, useState } from "react";
 
-import type { CapabilityRow, ConsoleApi, LedgerRow, PackRow } from "../api/types";
+import type {
+  AdapterHealthRow,
+  CapabilityRow,
+  ConsoleApi,
+  LedgerRow,
+  PackRow,
+} from "../api/types";
 
 interface AdminPageProps { api: ConsoleApi; }
 
@@ -9,6 +15,8 @@ export function AdminPage({ api }: AdminPageProps) {
   const [capabilities, setCapabilities] = useState<CapabilityRow[]>([]);
   const [ledgerAction, setLedgerAction] = useState("");
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
+  const [adapters, setAdapters] = useState<AdapterHealthRow[] | null>(null);
+  const [circuitError, setCircuitError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -17,6 +25,9 @@ export function AdminPage({ api }: AdminPageProps) {
       if (!active) return;
       setPacks(packRows.packs);
       setCapabilities(capabilityRows.capabilities);
+      // The PACKET-12 placeholder shape is still honoured: a console talking to
+      // an application without PRD-09 keeps its explicit unavailable card.
+      setAdapters(Array.isArray(packRows.adapter_health) ? packRows.adapter_health : null);
     });
     return () => { active = false; };
   }, [api]);
@@ -51,10 +62,63 @@ export function AdminPage({ api }: AdminPageProps) {
             </div>
           ))}
         </article>
-        <article className="ops-panel availability-state" data-testid="adapter-health-unavailable">
-          <h2>Adapter health</h2>
-          <p>Unavailable until PRD-09 supplies the adapter registry.</p>
-        </article>
+        {adapters === null ? (
+          <article
+            className="ops-panel availability-state"
+            data-testid="adapter-health-unavailable"
+          >
+            <h2>Adapter health</h2>
+            <p>Unavailable until PRD-09 supplies the adapter registry.</p>
+          </article>
+        ) : (
+          <article className="ops-panel" data-testid="adapter-health">
+            <h2>Adapter health</h2>
+            {circuitError && <p role="alert">{circuitError}</p>}
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>System</th><th>Configured</th><th>Effective</th>
+                    <th>Status</th><th>Reason</th><th>Runner last seen</th><th>Circuits</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adapters.map((row) => (
+                    <tr key={row.system} data-testid={`adapter-row-${row.system}`}>
+                      <td>{row.system.toUpperCase()}</td>
+                      <td>{row.configured_mode.replaceAll("_", " ")}</td>
+                      <td>{row.effective_mode.replaceAll("_", " ")}</td>
+                      <td>{row.status.replaceAll("_", " ")}</td>
+                      <td>{row.reason_code?.replaceAll("_", " ") ?? "None"}</td>
+                      <td>{row.runner_last_seen_at ?? "Never"}</td>
+                      <td>
+                        {row.circuit_operation_ids.length === 0
+                          ? "None open"
+                          : row.circuit_operation_ids.map((operation) => (
+                            <button
+                              key={operation}
+                              data-testid={`clear-circuit-${operation}`}
+                              disabled={!api.clearProjectionCircuit}
+                              onClick={() => {
+                                setCircuitError(null);
+                                void api.clearProjectionCircuit!(operation).catch(() =>
+                                  setCircuitError(
+                                    `${operation} is not qualified for reset. Install a newer `
+                                    + "definition version and re-run its selector suite.",
+                                  ));
+                              }}
+                            >
+                              Clear {operation}
+                            </button>
+                          ))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        )}
         <article className="ops-panel availability-state" data-testid="user-role-readonly">
           <h2>User and role assignments</h2>
           <p>Read-only, config-managed organisation data.</p>

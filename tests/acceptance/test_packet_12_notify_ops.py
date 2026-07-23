@@ -657,5 +657,9 @@ def test_ops_openapi_write_surface_is_exactly_pinned(env):
             "POST /console/ops/sla-board/escalate",
             "POST /console/ops/notifications/{}/read",
             "POST /console/ops/capabilities/{}/promote",
+            # PACKET-21 §11 / register #297: clearing a qualified projection
+            # circuit breaker is an admin action on this surface, not a ninth
+            # Claim-360 route. It is still a write, so it stays pinned here.
+            "POST /console/ops/projection-circuits/{}/clear",
         ]
     ), ops_writes

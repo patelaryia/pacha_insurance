@@ -22,13 +22,19 @@ REPO = Path(__file__).resolve().parents[1]
 SNAPSHOT_DIR = REPO / "docs" / "openapi"
 # PACKET-19 adds the review-scoped workspace and autosave routes, so the
 # approval-pack snapshot covers both prefixes that surface now spans.
-# PACKET-20 adds the five PRD-09 paste-assist routes under one prefix.
+# PACKET-20 adds the five PRD-09 paste-assist routes under one prefix; PACKET-21
+# adds the RPA panel, the authenticated evidence read, and the sampled paste
+# readback capture. The internal runner contract is deliberately absent: it is
+# mounted only when infra injects a runner machine authenticator.
 SURFACES: dict[str, tuple[str, ...]] = {
     "approval_pack": (
         "/claims/{claim_id}/approval-pack",
         "/reviews/{review_id}/approval-note",
     ),
-    "projection": ("/console/claims/{claim_id}/projections",),
+    "projection": (
+        "/console/claims/{claim_id}/projections",
+        "/console/reviews/{review_id}/paste-readback",
+    ),
 }
 
 for package in ("platform", "agents", "packs"):
