@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from typing import Any
 
@@ -50,6 +51,13 @@ class ReviewService:
         self._resolution_validators: dict[
             str, Callable[[ReviewItem, str, dict[str, Any], str], None]
         ] = {}
+        self._resolution_scopes: dict[
+            str,
+            Callable[
+                [ReviewItem, str, dict[str, Any], str],
+                AbstractContextManager[None],
+            ],
+        ] = {}
 
     def register_resolution_validator(
         self,
@@ -63,6 +71,22 @@ class ReviewService:
         if not callable(validator):
             raise ValueError(f"resolution validator {type_name!r} must be callable")
         self._resolution_validators[type_name] = validator
+
+    def register_resolution_scope(
+        self,
+        type_name: str,
+        scope: Callable[
+            [ReviewItem, str, dict[str, Any], str],
+            AbstractContextManager[None],
+        ],
+    ) -> None:
+        """Install one package-owned lock spanning validation and resolution commit."""
+
+        if type_name in self._resolution_scopes:
+            raise ValueError(f"resolution scope {type_name!r} is already registered")
+        if not callable(scope):
+            raise ValueError(f"resolution scope {type_name!r} must be callable")
+        self._resolution_scopes[type_name] = scope
 
     @staticmethod
     def _not_found(review_id: str) -> ClaimCoreError:
@@ -240,11 +264,26 @@ class ReviewService:
             items = list(session.scalars(query.order_by(ReviewItem.created_at, ReviewItem.id)))
             for item in items:
                 session.expunge(item)
+        # An exact-role item is confidential to the immutable role snapshot on
+        # every read surface, not only the band queue (#248).
+        items = [item for item in items if self._exact_role_visible(item, actor)]
         if scope == "band":
             eligible = []
             for item in items:
                 contract = self.contracts.get(item.type, item.subtype)
                 if role not in contract.authorised_roles:
+                    continue
+                if contract.band_role_path is not None:
+                    # Exact-role queue: the immutable payload snapshot decides,
+                    # so a wider band never sees another role's approval.
+                    if (
+                        self.authorizer.resolve_exact_role_code(
+                            actor=actor,
+                            required_role=item.payload.get(contract.band_role_path),
+                        )
+                        is None
+                    ):
+                        eligible.append(item)
                     continue
                 amount = self._band_amount(item, contract.band_amount_path, actor)
                 if (
@@ -259,11 +298,25 @@ class ReviewService:
             items = eligible
         return [self.serialise(item) for item in items]
 
+    def _exact_role_visible(self, item: ReviewItem, actor: str) -> bool:
+        contract = self.contracts.get(item.type, item.subtype)
+        if contract.band_role_path is None:
+            return True
+        return (
+            self.authorizer.resolve_exact_role_code(
+                actor=actor,
+                required_role=item.payload.get(contract.band_role_path),
+            )
+            is None
+        )
+
     def get_item(self, review_id: str, *, actor: str) -> dict[str, Any]:
         self._read_role(actor)
         with self.sessions() as session:
             item = self._item(session, review_id)
             session.expunge(item)
+        if not self._exact_role_visible(item, actor):
+            raise self._not_found(review_id)
         return self.serialise(item)
 
     def _deny(self, item: ReviewItem, actor: str, code: str) -> None:
@@ -639,6 +692,39 @@ class ReviewService:
         with self.sessions() as session:
             item = self._item(session, review_id)
             session.expunge(item)
+        scope_factory = self._resolution_scopes.get(item.type)
+        scope = (
+            scope_factory(item, action, payload, actor)
+            if scope_factory is not None
+            else nullcontext()
+        )
+        with scope:
+            # A package scope may have waited behind another resolver. Reload
+            # before validating so stale in-memory `open` state is never used.
+            with self.sessions() as session:
+                current = self._item(session, review_id)
+                session.expunge(current)
+            return self._resolve_item(
+                current,
+                review_id=review_id,
+                actor=actor,
+                action=action,
+                schema_version=schema_version,
+                payload=payload,
+            )
+
+    def _resolve_item(
+        self,
+        item: ReviewItem,
+        *,
+        review_id: str,
+        actor: str,
+        action: str,
+        schema_version: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate and durably resolve one item inside its package lock scope."""
+
         if item.status != "open":
             raise ClaimCoreError(409, "ALREADY_RESOLVED", "Review item is no longer open")
         contract = self.contracts.get(item.type, item.subtype)
@@ -649,11 +735,17 @@ class ReviewService:
         )
         if code is not None:
             self._deny(item, actor, code)
-        code = self.authorizer.resolve_band_code(
-            actor=actor,
-            contract=contract,
-            band_amount=self._band_amount(item, contract.band_amount_path, actor),
-        )
+        if contract.band_role_path is not None:
+            code = self.authorizer.resolve_exact_role_code(
+                actor=actor,
+                required_role=item.payload.get(contract.band_role_path),
+            )
+        else:
+            code = self.authorizer.resolve_band_code(
+                actor=actor,
+                contract=contract,
+                band_amount=self._band_amount(item, contract.band_amount_path, actor),
+            )
         if code is not None:
             self._deny(item, actor, code)
         if action not in contract.resolution_actions:

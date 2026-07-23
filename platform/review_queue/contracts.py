@@ -28,6 +28,8 @@ class ReviewContract:
     authorised_roles: tuple[str, ...]
     band_amount_path: str | None
     schema: dict[str, Any]
+    band_role_path: str | None = None
+    """Payload key naming the single role authorised for this subtype (#248)."""
 
 
 class ContractRegistry:
@@ -129,6 +131,27 @@ class ContractRegistry:
                     r"[A-Z0-9_]+@[1-9][0-9]*", subtype_schema_ref
                 ) is None:
                     raise ValueError(f"{type_name}/{subtype} resolution_schema is invalid")
+                # A subtype may narrow its band authority. An explicit key wins,
+                # including an explicit null that removes the parent field path;
+                # an absent key inherits the parent contract unchanged.
+                subtype_band_path = (
+                    values["band_amount_path"]
+                    if "band_amount_path" in values
+                    else band_path
+                )
+                if subtype_band_path is not None and (
+                    not isinstance(subtype_band_path, str) or not subtype_band_path
+                ):
+                    raise ValueError(
+                        f"{type_name}/{subtype} band_amount_path must be a field path"
+                    )
+                subtype_role_path = values.get("band_role_path")
+                if subtype_role_path is not None and (
+                    not isinstance(subtype_role_path, str) or not subtype_role_path
+                ):
+                    raise ValueError(
+                        f"{type_name}/{subtype} band_role_path must be a payload key"
+                    )
                 subtype_schema_path = review_dir / "schemas" / f"{subtype_schema_ref}.json"
                 try:
                     subtype_schema = json.loads(
@@ -146,8 +169,9 @@ class ContractRegistry:
                     resolution_actions=tuple(actions),
                     resolution_schema=subtype_schema_ref,
                     authorised_roles=tuple(roles),
-                    band_amount_path=band_path,
+                    band_amount_path=subtype_band_path,
                     schema=subtype_schema,
+                    band_role_path=subtype_role_path,
                 )
         return loaded, subtype_contracts
 

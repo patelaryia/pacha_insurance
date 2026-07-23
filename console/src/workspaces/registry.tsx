@@ -2,6 +2,8 @@ import React, { useState } from "react";
 
 import type { ConsoleApi, ResolutionAction, ReviewItem } from "../api/types";
 import { formatStructured, parseLossless } from "../lib/json";
+import { ApprovalNoteWorkspace } from "./ApprovalNoteWorkspace";
+import { ApprovalPackWorkspace } from "./ApprovalPackWorkspace";
 
 type FieldValueType = "string" | "money" | "date" | "datetime" | "bool" | "enum" | "object";
 type ChangeKind = "money" | "date" | "party" | "enum" | "text";
@@ -224,7 +226,23 @@ function typedCorrection(item: ReviewItem, source: string): { value: unknown; ki
   return { value: source, kind: "text" };
 }
 
+// PACKET-19 §8.2/§8.3: the two approval layouts own their whole workspace —
+// locked evidence, autosave, artifact viewers, and their own action payloads.
+const DEDICATED_WORKSPACES: Record<
+  string,
+  React.ComponentType<WorkspaceProps>
+> = {
+  approval_note_review: ApprovalNoteWorkspace,
+  approval_pack_review: ApprovalPackWorkspace,
+};
+
 export function Workspace({ item, api, onResolved }: WorkspaceProps) {
+  const Dedicated = DEDICATED_WORKSPACES[item.workspace_layout];
+  if (Dedicated) return <Dedicated item={item} api={api} onResolved={onResolved} />;
+  return <GenericWorkspace item={item} api={api} onResolved={onResolved} />;
+}
+
+function GenericWorkspace({ item, api, onResolved }: WorkspaceProps) {
   const Layout = (WORKSPACE_COMPONENTS as Partial<
     Record<string, React.ComponentType<LayoutProps>>
   >)[item.workspace_layout];

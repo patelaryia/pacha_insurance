@@ -56,3 +56,26 @@ rules:
       id: staff.autonomy_demoted
       status: pending_capture
       blocked_on: open-item-6
+  # PRD-02 R-12: the >KES 4M alert goes to Head of Claims and the MD. Approval
+  # authority above KES 4M is the chairman's (§2.5) and is not a notification.
+  # In-app delivery is live; the email body stays blocked on open item 1/6.
+  - id: four_million_alert_head_of_claims
+    event_type: template.rendered
+    when:
+      template_id: T-03
+    audience: role:head_of_claims
+    channels: [in_app, email]
+    template:
+      id: staff.four_million_alert
+      status: pending_capture
+      blocked_on: open-item-6
+  - id: four_million_alert_md
+    event_type: template.rendered
+    when:
+      template_id: T-03
+    audience: role:md
+    channels: [in_app, email]
+    template:
+      id: staff.four_million_alert
+      status: pending_capture
+      blocked_on: open-item-6

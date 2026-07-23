@@ -1052,24 +1052,26 @@ def test_t01_values_are_exact_locked_cited_and_blocked_slots_never_gain_numbers(
     assert claim.status_code == 200 and claim.json()["status"] == "PACK_READY"
     assert _events(env.app, "pack.route", reference.claim_id) == []
 
-    # Packet 18 has no usable sign/reject path.
+    # Packet 19 owns the live resolution surface. This Packet-18 fixture still
+    # has C-08 blocked, so the current schema must refuse the signature without
+    # mutating the draft or closing its review (register #259).
     snapshot = json.dumps(_drafts(env.app, reference.claim_id), sort_keys=True, default=str)
-    for action in ("approve", "edit_approve", "reject"):
-        blocked = env.client.post(
-            f"/reviews/{reviews[0]['id']}/resolve",
-            json={
-                "action": action,
-                "schema_version": "NOTE_REVIEW@1",
-                "payload": {
-                    "capability_id": "pack.note_draft",
-                    "diff": {"typed_changes": [], "prose_change_ratio": 0},
-                    "reason": "Packet 19 owns this action",
-                },
+    blocked = env.client.post(
+        f"/reviews/{reviews[0]['id']}/resolve",
+        json={
+            "action": "approve",
+            "schema_version": "NOTE_REVIEW@2",
+            "payload": {
+                "capability_id": "pack.note_draft",
+                "draft_id": row["id"],
+                "body_sha256": body["body_sha256"],
+                "diff": {"typed_changes": [], "prose_change_ratio": 0},
             },
-            headers=_h(),
-        )
-        assert blocked.status_code == 409
-        assert blocked.json()["code"] == "NOTE_REVIEW_UI_NOT_BUILT"
+        },
+        headers=_h(),
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "SIGN_BLOCKED_ON_INPUTS"
     assert json.dumps(_drafts(env.app, reference.claim_id), sort_keys=True, default=str) == snapshot
     assert _reviews(env.app, reference.claim_id, "NOTE_REVIEW")[0]["status"] == "open"
 

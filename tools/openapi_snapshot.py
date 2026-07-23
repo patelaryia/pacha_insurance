@@ -20,7 +20,9 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
 SNAPSHOT = REPO / "docs" / "openapi" / "approval_pack.json"
-PREFIX = "/claims/{claim_id}/approval-pack"
+# PACKET-19 adds the review-scoped workspace and autosave routes, so the
+# snapshot covers both prefixes the approval-pack surface now spans.
+PREFIXES = ("/claims/{claim_id}/approval-pack", "/reviews/{review_id}/approval-note")
 
 for package in ("platform", "agents", "packs"):
     sys.path.insert(0, str(REPO / package))
@@ -63,7 +65,7 @@ def build_snapshot() -> dict[str, Any]:
     paths = {
         path: operations
         for path, operations in sorted(document["paths"].items())
-        if path.startswith(PREFIX)
+        if path.startswith(PREFIXES)
     }
     return {
         "openapi": document["openapi"],

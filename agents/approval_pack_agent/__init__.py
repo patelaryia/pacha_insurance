@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from approval_pack_agent.api import build_router
+from approval_pack_agent.api import build_review_router, build_router
 from approval_pack_agent.config import ApprovalPackConfig, PackConfigError, load_config
 from approval_pack_agent.conversion import (
     HtmlPdfRenderer,
@@ -18,7 +18,6 @@ from approval_pack_agent.conversion import (
     LocalImmutableStore,
 )
 from approval_pack_agent.models import NoteDraft
-from approval_pack_agent.note import guard_note_review
 from approval_pack_agent.service import ApprovalPackService
 from assessment_agent import savings_tables
 from chase_agent import checklist_tables
@@ -40,6 +39,7 @@ def build_approval_pack_agent(
     html_renderer: Any = None,
     immutable_store: Any = None,
     config: dict[str, Any] | None = None,
+    pack_root: str | Path | None = None,
 ) -> ApprovalPackService:
     """Build PRD-08 after the shared runtime, eval harness, and review queue."""
 
@@ -57,7 +57,10 @@ def build_approval_pack_agent(
     if html_renderer is None or not callable(getattr(html_renderer, "render", None)):
         raise ValueError("approval pack agent requires an offline HTML renderer")
     repo = Path(__file__).resolve().parents[2]
-    configured = load_config(repo / "packs" / "motor", config)
+    # The pack root is a parameter so an acceptance fixture can install a
+    # synthetic pack version. Production installs the pinned repository pack.
+    root = Path(pack_root) if pack_root is not None else repo / "packs" / "motor"
+    configured = load_config(root, config)
     Base.metadata.create_all(
         app.state.engine,
         tables=[*note_draft_tables(), *checklist_tables(), *savings_tables()],
@@ -72,10 +75,17 @@ def build_approval_pack_agent(
     app.state.agent_runtime.register_executor("pack.merge", service.execute_merge)
     app.state.agent_runtime.register_executor("pack.note_draft", service.execute_note_draft)
     app.state.review_queue.service.register_resolution_validator(
-        "NOTE_REVIEW", guard_note_review
+        "NOTE_REVIEW", service.signing.guard_note_review
+    )
+    app.state.review_queue.service.register_resolution_scope(
+        "NOTE_REVIEW", service.signing.resolution_scope
+    )
+    app.state.review_queue.service.register_resolution_validator(
+        "PACK_REVIEW", service.signing.guard_pack_review
     )
     app.state.dispatcher.register_consumer("approval_pack", service.consume)
     app.include_router(build_router(service))
+    app.include_router(build_review_router(service))
     app.state.approval_pack_agent = service
     return service
 

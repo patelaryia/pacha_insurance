@@ -1,0 +1,11 @@
+# PRD-08 §8.5 ICON note-entry seam (register #252, open item 3).
+# Build the slot, never the value: the ordered ICON note-form field mapping,
+# its selectors, and its formatting are uncaptured. The executable paste-assist
+# strip and the readback/reconciliation loop belong to PRD-09. Nothing here may
+# be promoted to `live` without a captured click path.
+version: 1
+field_sets:
+  icon.note_entry:
+    status: pending_capture
+    blocked_on: open-item-3
+    fields: []

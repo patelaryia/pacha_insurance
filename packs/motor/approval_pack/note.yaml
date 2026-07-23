@@ -34,6 +34,10 @@ commentary_slots:
 
 blocked_marker: BLOCKED ON INPUTS
 
+# PRD-08 §8.5: the officer never loses more than this many seconds of typing.
+# The console reads it from the workspace response; it is never a UI constant.
+autosave_seconds: 5
+
 slots:
   amount_payable:
     label: Amount payable

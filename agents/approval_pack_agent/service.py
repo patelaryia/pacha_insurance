@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from threading import RLock
+from threading import RLock, local
 from typing import Any
 
 from sqlalchemy import text
@@ -28,6 +28,8 @@ from approval_pack_agent.conversion import (
 from approval_pack_agent.merge import MergeEngine
 from approval_pack_agent.note import CommentaryInvalid, NoteInputsInvalid, NoteService
 from approval_pack_agent.resolver import ACTOR, ReadinessEngine, _json
+from approval_pack_agent.signing import SigningService
+from approval_pack_agent.workspace import NoteWorkspace
 from claim_core import ClaimCoreError, new_ulid
 from doc_intel.llm import ModelBudgetExceeded
 
@@ -69,6 +71,9 @@ class ApprovalPackService:
         self.notes = NoteService(app, config, model_client=model_client, store=self.store)
         self.sessions = sessionmaker(bind=app.state.engine, expire_on_commit=False)
         self._claim_locks = tuple(RLock() for _ in range(64))
+        self._claim_guard_state = local()
+        self.workspace = NoteWorkspace(self)
+        self.signing = SigningService(self)
 
     # -- shared helpers --------------------------------------------------------
 
@@ -103,6 +108,26 @@ class ApprovalPackService:
 
         claim_lock = self._claim_locks[hash(claim_id) % len(self._claim_locks)]
         with claim_lock:
+            active = getattr(self._claim_guard_state, "active", None)
+            if active is None:
+                active = {}
+                self._claim_guard_state.active = active
+            nested = active.get(claim_id)
+            if nested is not None:
+                session, holds_row_lock = nested
+                if (
+                    row_lock
+                    and not holds_row_lock
+                    and session.bind is not None
+                    and session.bind.dialect.name == "postgresql"
+                ):
+                    session.execute(
+                        text("SELECT id FROM claims WHERE id = :claim_id FOR UPDATE"),
+                        {"claim_id": claim_id},
+                    )
+                    active[claim_id] = (session, True)
+                yield session
+                return
             with self.sessions.begin() as session:
                 if session.bind is not None and session.bind.dialect.name == "postgresql":
                     session.execute(
@@ -121,7 +146,11 @@ class ApprovalPackService:
                         text("SELECT id FROM claims WHERE id = :claim_id FOR UPDATE"),
                         {"claim_id": claim_id},
                     )
-                yield session
+                active[claim_id] = (session, row_lock)
+                try:
+                    yield session
+                finally:
+                    active.pop(claim_id, None)
 
     @contextmanager
     def _claim_transaction(self, claim_id: str) -> Iterator[Any]:
@@ -746,7 +775,7 @@ class ApprovalPackService:
             integrity = self.notes.grade(claim_id, candidate)
             body = {**candidate.body, "integrity": integrity}
             if integrity["g_tpl_result"] != "pass" or integrity["g_note_result"] != "pass":
-                draft_id = self.notes.persist(
+                draft_id, _stored = self.notes.persist(
                     claim_id, version=version, body=body, status="draft"
                 )
                 self.notes.refuse(
@@ -762,7 +791,7 @@ class ApprovalPackService:
                     correlation_id=merged_event_id,
                 )
                 return
-            draft_id = self.notes.persist(
+            draft_id, stored = self.notes.persist(
                 claim_id,
                 version=version,
                 body=body,
@@ -774,7 +803,7 @@ class ApprovalPackService:
                 claim_id,
                 draft_id=draft_id,
                 version=version,
-                body=body,
+                body=stored,
                 candidate=candidate,
                 merged_payload=merged["payload"],
                 merged_event_id=merged_event_id,
@@ -784,11 +813,19 @@ class ApprovalPackService:
     # -- consumer --------------------------------------------------------------
 
     def consume(self, event: Any) -> None:
-        """Execute a released pack action after its human DRAFT_RELEASE approval."""
+        """Finalise durable review resolutions this package owns."""
 
         if event.type != "review.resolved":
             return
         payload = event.payload if isinstance(event.payload, dict) else json.loads(event.payload)
+        # PACKET-19 §4/§5: the durable resolution event, not the HTTP request, is
+        # the finalisation trigger, so a crash mid-way never loses a signature.
+        if payload.get("type") == "NOTE_REVIEW":
+            self.signing.finalise_note_review(event, payload)
+            return
+        if payload.get("type") == "PACK_REVIEW":
+            self.signing.finalise_pack_review(event, payload)
+            return
         if payload.get("type") != "DRAFT_RELEASE" or payload.get("resolution") != "approved":
             return
         review_id = payload.get("review_id")

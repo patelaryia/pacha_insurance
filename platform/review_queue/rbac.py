@@ -82,6 +82,27 @@ class Authorizer:
             return "FORBIDDEN_ROLE"
         return None
 
+    def resolve_exact_role_code(
+        self,
+        *,
+        actor: str,
+        required_role: Any,
+    ) -> str | None:
+        """Authorise against one immutable required role, not a band ceiling.
+
+        A higher role does not silently take the item: only the exact role the
+        producer pinned into the review payload may see or resolve it (#248).
+        """
+
+        if not isinstance(required_role, str) or not required_role:
+            return "RESOLUTION_BLOCKED_ON_INPUTS"
+        role = self.role(actor)
+        if role is None:
+            return "FORBIDDEN_ROLE"
+        if role != required_role:
+            return "FORBIDDEN_BAND"
+        return None
+
     def resolve_band_code(
         self,
         *,
