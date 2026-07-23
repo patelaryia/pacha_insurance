@@ -246,6 +246,18 @@ class ReviewService:
                 contract = self.contracts.get(item.type, item.subtype)
                 if role not in contract.authorised_roles:
                     continue
+                if contract.band_role_path is not None:
+                    # Exact-role queue: the immutable payload snapshot decides,
+                    # so a wider band never sees another role's approval.
+                    if (
+                        self.authorizer.resolve_exact_role_code(
+                            actor=actor,
+                            required_role=item.payload.get(contract.band_role_path),
+                        )
+                        is None
+                    ):
+                        eligible.append(item)
+                    continue
                 amount = self._band_amount(item, contract.band_amount_path, actor)
                 if (
                     self.authorizer.resolve_band_code(
@@ -649,11 +661,17 @@ class ReviewService:
         )
         if code is not None:
             self._deny(item, actor, code)
-        code = self.authorizer.resolve_band_code(
-            actor=actor,
-            contract=contract,
-            band_amount=self._band_amount(item, contract.band_amount_path, actor),
-        )
+        if contract.band_role_path is not None:
+            code = self.authorizer.resolve_exact_role_code(
+                actor=actor,
+                required_role=item.payload.get(contract.band_role_path),
+            )
+        else:
+            code = self.authorizer.resolve_band_code(
+                actor=actor,
+                contract=contract,
+                band_amount=self._band_amount(item, contract.band_amount_path, actor),
+            )
         if code is not None:
             self._deny(item, actor, code)
         if action not in contract.resolution_actions:

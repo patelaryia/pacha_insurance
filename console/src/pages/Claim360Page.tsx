@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 import { consoleError, type ConsoleError } from "../api/errors";
 import type { Citation, Claim360, ConsoleApi, ReviewItem } from "../api/types";
+import { ApprovalPackReadiness } from "../components/ApprovalPackReadiness";
 import { CitationOverlay } from "../components/CitationOverlay";
 import { formatStructured } from "../lib/json";
 import { formatKes, parseCents } from "../lib/money";
@@ -242,6 +243,15 @@ export function Claim360Page({ api, claimId }: Claim360PageProps) {
                 })}
               </tbody></table></div>
             )}
+            {/* PRD-08 §8.2: the approval-pack readiness card lives on Claim 360
+                inside the evidence tab. PRD-04 §4.3 fixes the seven tab names,
+                so no eighth tab is invented. */}
+            <ApprovalPackReadiness
+              api={api}
+              claimId={claimId}
+              documents={claim.documents}
+              communications={claim.communications}
+            />
           </div>
         )}
         {activeTab === "Fields & Citations" && (

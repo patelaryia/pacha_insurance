@@ -46,16 +46,30 @@ export function ApprovalsPage({ api }: ApprovalsPageProps) {
           ))}
         </aside>
         <section className="ops-panel approval-detail">
-          <div data-testid="approval-pack-unavailable" className="availability-state">
-            <strong>Approval pack unavailable</strong>
-            <p>Not available until PRD-08 is installed.</p>
-          </div>
-          <div className="availability-state">
-            <strong>T-03 alert · pending_capture</strong>
-            <p>The alert body remains blocked on the pack template capture.</p>
-          </div>
+          {/* A legacy PACK_REVIEW carries no PRD-08 signed artifacts, so it keeps
+              the explicit unavailable state. An `approval_pack` item renders the
+              real side-by-side workspace (PACKET-19 §8.3). */}
+          {item?.subtype !== "approval_pack" && (
+            <>
+              <div data-testid="approval-pack-unavailable" className="availability-state">
+                <strong>Approval pack unavailable</strong>
+                <p>
+                  This review item carries no PRD-08 merged pack or signed note
+                  reference.
+                </p>
+              </div>
+              <div className="availability-state">
+                <strong>T-03 alert · pending_capture</strong>
+                <p>The alert body remains blocked on the pack template capture.</p>
+              </div>
+            </>
+          )}
           {item ? (
-            <Workspace item={item} api={api} onResolved={() => undefined} />
+            <Workspace
+              item={item}
+              api={api}
+              onResolved={() => setItems((rows) => rows.filter((row) => row.id !== item.id))}
+            />
           ) : (
             <p>Select an approval item.</p>
           )}

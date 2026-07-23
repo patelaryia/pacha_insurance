@@ -148,12 +148,27 @@ class ApprovalPackConfig:
     photos_per_page: int
     retention: str
     object_lock_status: str
+    field_sets: dict[str, dict[str, Any]]
 
     def item(self, item_id: str) -> ManifestItem:
         for row in self.items:
             if row.id == item_id:
                 return row
         raise LookupError(f"unknown manifest item {item_id!r}")
+
+    @property
+    def autosave_seconds(self) -> int:
+        """Return the pack-configured autosave interval in whole seconds."""
+
+        return int(self.note["autosave_seconds"])
+
+    def field_set(self, field_set_id: str) -> dict[str, Any]:
+        """Return one declared projection field set, blocked state included."""
+
+        try:
+            return dict(self.field_sets[field_set_id])
+        except KeyError as error:
+            raise LookupError(f"unknown field set {field_set_id!r}") from error
 
 
 def _yaml(path: Path, label: str) -> dict[str, Any]:
@@ -257,6 +272,9 @@ def _load_note(path: Path) -> dict[str, Any]:
         or not isinstance(payload.get("commentary"), dict)
         or set(payload["commentary"]) != set(commentary)
         or not isinstance(payload.get("blocked_marker"), str)
+        or not isinstance(payload.get("autosave_seconds"), int)
+        or isinstance(payload.get("autosave_seconds"), bool)
+        or payload["autosave_seconds"] <= 0
     ):
         raise PackConfigError("approval note slot map is incomplete")
     for slot_id, raw in slots.items():
@@ -353,6 +371,41 @@ def _load_render(path: Path) -> tuple[HtmlRenderPolicy, dict[str, Any]]:
     return policy, {"photos": photos, "store": store}
 
 
+def _load_field_sets(path: Path) -> dict[str, dict[str, Any]]:
+    """Load the declared projection field sets without inventing a mapping.
+
+    A `pending_capture` set must carry its register reference and an empty
+    field list: PACKET-19 §7 ships the slot, never a guessed ICON field order.
+    """
+
+    payload = _yaml(path, "approval pack field sets")
+    sets = payload.get("field_sets")
+    if set(payload) != {"version", "field_sets"} or not isinstance(sets, dict) or not sets:
+        raise PackConfigError("approval pack field sets require version and field_sets")
+    loaded: dict[str, dict[str, Any]] = {}
+    for field_set_id, raw in sets.items():
+        if not isinstance(field_set_id, str) or not field_set_id or not isinstance(raw, dict):
+            raise PackConfigError("field set ids must map to mappings")
+        status = raw.get("status")
+        fields = raw.get("fields")
+        if status not in {"pending_capture", "live"} or not isinstance(fields, list):
+            raise PackConfigError(f"field set {field_set_id!r} has an invalid status")
+        if status == "pending_capture" and (
+            fields or not isinstance(raw.get("blocked_on"), str) or not raw["blocked_on"]
+        ):
+            raise PackConfigError(
+                f"uncaptured field set {field_set_id!r} requires an empty field list "
+                "and a register reference"
+            )
+        loaded[field_set_id] = {
+            "id": field_set_id,
+            "status": status,
+            "blocked_on": raw.get("blocked_on"),
+            "fields": list(fields),
+        }
+    return loaded
+
+
 def load_config(pack_root: Path, override: dict[str, Any] | None = None) -> ApprovalPackConfig:
     """Load and validate every approval-pack file for one motor pack root."""
 
@@ -361,6 +414,7 @@ def load_config(pack_root: Path, override: dict[str, Any] | None = None) -> Appr
     note = _load_note(directory / "note.yaml")
     commentary = {**_load_commentary(directory / "commentary.yaml"), **dict(override or {})}
     policy, extras = _load_render(directory / "render.yaml")
+    field_sets = _load_field_sets(directory / "icon.yaml")
     if list(commentary["sections"]) != list(note["commentary_slots"]):
         raise PackConfigError("commentary sections must match the note commentary slots")
     return ApprovalPackConfig(
@@ -373,6 +427,7 @@ def load_config(pack_root: Path, override: dict[str, Any] | None = None) -> Appr
         photos_per_page=int(extras["photos"]["per_page"]),
         retention=str(extras["store"]["retention"]),
         object_lock_status=str(extras["store"]["object_lock_status"]),
+        field_sets=field_sets,
     )
 
 

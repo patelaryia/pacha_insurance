@@ -83,6 +83,30 @@ class CopRuntime:
 
         return self._pack(pack_id, version).authority_matrix
 
+    def routing_contract(self, pack_id: str, version: str) -> dict[str, Any]:
+        """Return the pinned §2.5 routing-amount contract as read-only data.
+
+        PRD-08 needs the provenance of the routed figure, not just its value:
+        which calculation owns it, whether that calculation is live, and which
+        field the binding fallback reads while it is not.
+        """
+
+        pack = self._pack(pack_id, version)
+        calc_id = pack.config.get("routing_amount_calc")
+        status: str | None = None
+        calc_version: str | None = None
+        if isinstance(calc_id, str):
+            definition = pack.calc_registry.get(calc_id)
+            status = definition.status
+            calc_version = definition.version
+        fallback_path = pack.config.get("routing_amount_fallback")
+        return {
+            "calc_id": calc_id if isinstance(calc_id, str) else None,
+            "calc_status": status,
+            "calc_version": calc_version,
+            "fallback_path": fallback_path if isinstance(fallback_path, str) else None,
+        }
+
     def _claim_context(
         self,
         claim_id: str,

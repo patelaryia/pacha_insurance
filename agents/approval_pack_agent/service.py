@@ -28,6 +28,8 @@ from approval_pack_agent.conversion import (
 from approval_pack_agent.merge import MergeEngine
 from approval_pack_agent.note import CommentaryInvalid, NoteInputsInvalid, NoteService
 from approval_pack_agent.resolver import ACTOR, ReadinessEngine, _json
+from approval_pack_agent.signing import SigningService
+from approval_pack_agent.workspace import NoteWorkspace
 from claim_core import ClaimCoreError, new_ulid
 from doc_intel.llm import ModelBudgetExceeded
 
@@ -69,6 +71,8 @@ class ApprovalPackService:
         self.notes = NoteService(app, config, model_client=model_client, store=self.store)
         self.sessions = sessionmaker(bind=app.state.engine, expire_on_commit=False)
         self._claim_locks = tuple(RLock() for _ in range(64))
+        self.workspace = NoteWorkspace(self)
+        self.signing = SigningService(self)
 
     # -- shared helpers --------------------------------------------------------
 
@@ -746,7 +750,7 @@ class ApprovalPackService:
             integrity = self.notes.grade(claim_id, candidate)
             body = {**candidate.body, "integrity": integrity}
             if integrity["g_tpl_result"] != "pass" or integrity["g_note_result"] != "pass":
-                draft_id = self.notes.persist(
+                draft_id, _stored = self.notes.persist(
                     claim_id, version=version, body=body, status="draft"
                 )
                 self.notes.refuse(
@@ -762,7 +766,7 @@ class ApprovalPackService:
                     correlation_id=merged_event_id,
                 )
                 return
-            draft_id = self.notes.persist(
+            draft_id, stored = self.notes.persist(
                 claim_id,
                 version=version,
                 body=body,
@@ -774,7 +778,7 @@ class ApprovalPackService:
                 claim_id,
                 draft_id=draft_id,
                 version=version,
-                body=body,
+                body=stored,
                 candidate=candidate,
                 merged_payload=merged["payload"],
                 merged_event_id=merged_event_id,
@@ -784,11 +788,19 @@ class ApprovalPackService:
     # -- consumer --------------------------------------------------------------
 
     def consume(self, event: Any) -> None:
-        """Execute a released pack action after its human DRAFT_RELEASE approval."""
+        """Finalise durable review resolutions this package owns."""
 
         if event.type != "review.resolved":
             return
         payload = event.payload if isinstance(event.payload, dict) else json.loads(event.payload)
+        # PACKET-19 §4/§5: the durable resolution event, not the HTTP request, is
+        # the finalisation trigger, so a crash mid-way never loses a signature.
+        if payload.get("type") == "NOTE_REVIEW":
+            self.signing.finalise_note_review(event, payload)
+            return
+        if payload.get("type") == "PACK_REVIEW":
+            self.signing.finalise_pack_review(event, payload)
+            return
         if payload.get("type") != "DRAFT_RELEASE" or payload.get("resolution") != "approved":
             return
         review_id = payload.get("review_id")

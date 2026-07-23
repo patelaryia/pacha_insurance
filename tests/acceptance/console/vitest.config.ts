@@ -43,6 +43,7 @@ export default async function protectedAcceptanceConfig() {
             "node_modules/@testing-library/user-event/dist/esm/index.js",
           ),
         },
+        { find: "axe-core", replacement: fromConsole("axe-core") },
         {
           find: "react/jsx-dev-runtime",
           replacement: fromConsole("react/jsx-dev-runtime"),
@@ -59,6 +60,7 @@ export default async function protectedAcceptanceConfig() {
       include: [
         path.resolve(here, "test_packet_11_console.test.tsx"),
         path.resolve(here, "test_packet_12_console.test.tsx"),
+        path.resolve(here, "test_packet_19_console.test.tsx"),
         path.resolve(consoleRoot, "src/**/*.test.{ts,tsx}"),
       ],
       coverage: {

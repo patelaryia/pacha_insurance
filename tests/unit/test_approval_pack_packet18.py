@@ -957,17 +957,22 @@ def test_committed_openapi_snapshot_is_current_and_adds_no_sign_or_route_surface
 
     document = json.loads((REPO / "docs" / "openapi" / "approval_pack.json").read_text())
     prefix = "/claims/{claim_id}/approval-pack"
+    review = "/reviews/{review_id}/approval-note"
     assert sorted(document["paths"]) == [
+        f"{prefix}/artifacts/{{event_id}}",
         f"{prefix}/generate",
         f"{prefix}/manifest/{{item_id}}/sources",
         f"{prefix}/manifest/{{item_id}}/upload",
         f"{prefix}/note-drafts",
         f"{prefix}/readiness",
         f"{prefix}/versions",
+        review,
+        f"{review}/draft",
     ]
     assert sorted(document["paths"][f"{prefix}/readiness"]) == ["get"]
     assert sorted(document["paths"][f"{prefix}/generate"]) == ["post"]
-    # PACKET-19 owns signing, routing, and approval; none of it exists yet.
+    # PACKET-19 signs and routes through the closed PRD-04 resolution endpoint.
+    # No signing, routing, or approval verb ever becomes its own HTTP surface.
     for path in document["paths"]:
         assert not any(word in path for word in ("sign", "route", "approve", "reject"))
 

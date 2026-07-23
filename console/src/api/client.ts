@@ -1,4 +1,6 @@
 import type {
+  ApprovalNoteWorkspace,
+  AutosaveResult,
   Citation,
   Claim360,
   ConsoleApi,
@@ -6,6 +8,8 @@ import type {
   ReviewItem,
   ResolutionAction,
   LedgerRow,
+  PackGeneration,
+  PackReadiness,
   PortfolioTile,
   SlaClockRow,
   CapabilityRow,
@@ -124,6 +128,84 @@ export class ConsoleApiClient implements ConsoleApi {
   async getDocument(documentUrl: string): Promise<ArrayBuffer> {
     const response = await this.request(documentUrl);
     return response.arrayBuffer();
+  }
+
+  async getPackReadiness(claimId: string): Promise<PackReadiness> {
+    return (await this.json(await this.request(
+      `/claims/${encodeURIComponent(claimId)}/approval-pack/readiness`,
+    ))) as PackReadiness;
+  }
+
+  async selectPackSources(
+    claimId: string,
+    itemId: string,
+    sources: Array<{ kind: string; id: string }>,
+  ): Promise<unknown> {
+    return this.json(await this.request(
+      `/claims/${encodeURIComponent(claimId)}/approval-pack/manifest/`
+      + `${encodeURIComponent(itemId)}/sources`,
+      { method: "PUT", body: stringifyLossless({ sources }) },
+    ));
+  }
+
+  async uploadPackItem(claimId: string, itemId: string, file: File): Promise<unknown> {
+    // Multipart sets its own boundary, so this call cannot use `request`'s
+    // JSON content type.
+    const token = await this.getAccessToken();
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const response = await fetch(
+      `${this.baseUrl}/claims/${encodeURIComponent(claimId)}/approval-pack/manifest/`
+      + `${encodeURIComponent(itemId)}/upload`,
+      { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form },
+    );
+    if (!response.ok) {
+      throw {
+        code: `HTTP_${response.status}`,
+        detail: "The upload was refused",
+      };
+    }
+    return this.json(response);
+  }
+
+  async generatePack(
+    claimId: string,
+    body: { readiness_fingerprint: string },
+    idempotencyKey: string,
+  ): Promise<PackGeneration> {
+    return (await this.json(await this.request(
+      `/claims/${encodeURIComponent(claimId)}/approval-pack/generate`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: stringifyLossless(body),
+      },
+    ))) as PackGeneration;
+  }
+
+  async getApprovalNote(reviewId: string): Promise<ApprovalNoteWorkspace> {
+    return (await this.json(await this.request(
+      `/reviews/${encodeURIComponent(reviewId)}/approval-note`,
+    ))) as ApprovalNoteWorkspace;
+  }
+
+  async saveApprovalNote(
+    reviewId: string,
+    body: {
+      base_draft_id: string;
+      base_body_sha256: string;
+      commentary: Array<{ template_slot: string; content: string }>;
+    },
+    idempotencyKey: string,
+  ): Promise<AutosaveResult> {
+    return (await this.json(await this.request(
+      `/reviews/${encodeURIComponent(reviewId)}/approval-note/draft`,
+      {
+        method: "PUT",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: stringifyLossless(body),
+      },
+    ))) as AutosaveResult;
   }
 
   async getSlaBoard(): Promise<{ clocks: SlaClockRow[] }> {

@@ -48,6 +48,12 @@ types:
     resolution_actions: [approve, edit_approve, reject]
     resolution_schema: NOTE_REVIEW@1
     authorised_roles: *operational_roles
+    subtypes:
+      # PACKET-19 §4: NOTE_REVIEW@1 stays registered for historical replay; the
+      # approval-note subtype signs an exact draft id and body hash.
+      approval_note:
+        workspace_layout: approval_note_review
+        resolution_schema: NOTE_REVIEW@2
   PACK_REVIEW:
     producing_events: [review.created]
     workspace_layout: pack_review
@@ -56,6 +62,16 @@ types:
     authorised_roles: &approval_roles
       [asst_claims_manager, claims_manager, gm, md, chairman]
     band_amount_path: assessment.agreed_quote
+    subtypes:
+      # PACKET-19 §5/#248: an approval pack is authorised against the immutable
+      # routing snapshot in its payload, never against `assessment.agreed_quote`.
+      # `band_amount_path: null` removes the wrong band input; `band_role_path`
+      # names the payload key holding the one role that may see or resolve it.
+      approval_pack:
+        workspace_layout: approval_pack_review
+        resolution_schema: PACK_REVIEW@2
+        band_amount_path: null
+        band_role_path: required_role
   EX_GRATIA:
     producing_events: [review.created]
     workspace_layout: ex_gratia_review

@@ -4,10 +4,21 @@
 
 PACKET-18 owns the PRD-08 back half up to `PACK_READY`: manifest source selection, the
 readiness card, the immutable merged PDF, the structured T-01 draft, both integrity graders,
-and one open `NOTE_REVIEW{approval_note}`. Editing, autosave, signing, authority routing,
-T-03 and ICON paste-assist belong to PACKET-19. Resolving this packet's `NOTE_REVIEW`
-returns `409 NOTE_REVIEW_UI_NOT_BUILT`, changes no row, and emits no FSM transition — that
-is the expected launch behaviour, not a defect.
+and one open `NOTE_REVIEW{approval_note}`. PACKET-19 adds the review workspace, five-second
+append-version autosave, human-only signing, deterministic authority routing, the S-3
+approval loop, and the authenticated artifact reads. ICON paste-assist remains PRD-09.
+
+Two production blockers are deliberately preserved and are the expected launch behaviour,
+not defects:
+
+- **C-08 is `blocked_on_inputs`**, so every current T-01 has `signable: false`. Signing a
+  live motor note returns `409 SIGN_BLOCKED_ON_INPUTS` naming the payable blocker and
+  mutates nothing.
+- **T-03 is `pending_capture`**, so a >KES 4M claim cannot render its mandated alert. Sign
+  preflight returns `409 ROUTING_BLOCKED_ON_INPUTS{blocked_on: open-item-6}` and creates no
+  signed version, `PACK_REVIEW`, notification, or FSM hop.
+
+Neither value is invented anywhere in code, configuration, or fixtures.
 
 ## Who may do what
 
@@ -121,20 +132,118 @@ open (#30/#116/#226), so production publishability is still blocked. Orphaned by
 crash are never promoted into the `pack.merged` event index and are never guessed back into
 use — regenerate instead.
 
-## PACKET-19 hand-off
+## Review workspace, autosave, and stale edits
 
-`GET /claims/{id}/approval-pack/versions` and `GET /claims/{id}/approval-pack/note-drafts`
-are the read surface PACKET-19 consumes without reinterpretation. PACKET-19 owns the editor,
-autosave, signature, `PACK_READY→IN_APPROVAL`, authority routing and T-03, and must resolve
-the >4M chairman/MD contradiction (#235) before asserting that scenario. No draft carrying a
-blocked slot or a failed grader may ever be signed.
+`GET /reviews/{review_id}/approval-note` returns the *highest* version in the review's
+lineage, never the id embedded in the original review event. Every read recomputes the
+canonical body hash and the blocker list, so a client-supplied `locked` or `signable` flag
+is never trusted.
+
+`PUT /reviews/{review_id}/approval-note/draft` appends a new version. It accepts only the
+three configured commentary slots; computed and verification sections, citations, blockers,
+pack refs, template id/version and integrity refs are copied server-side. Every save reruns
+the deterministic numeric allow-list and the ≤80-word incident-summary limit, so an injected
+figure is a 422 that creates no version.
+
+- **Stale tab** — a `base_draft_id`/`base_body_sha256` that is not the latest lineage version
+  returns `409 STALE_NOTE_DRAFT` with the current id, version and hash, and writes nothing.
+  The console reloads the server version and preserves the local text in a labelled recovery
+  panel; it never overwrites silently.
+- **Save failure** — the console shows `Save failed` with the exact server code. Retrying is
+  safe: reusing the same idempotency key with the same content replays the original result,
+  and reusing it with different content is `409 IDEMPOTENCY_CONFLICT`.
+- **Lost work** — the pack-configured `autosave_seconds` (5) bounds the exposure. After a
+  crash or reload the workspace opens the highest server version.
+
+Commentary text never enters an event or the audit ledger; `pack.note_autosaved` carries ids,
+versions, hashes and the actor only.
+
+## Signing recovery
+
+Signing is human-only. `pack.note_draft` remains max L3 for draft production; no code path
+gates or auto-executes a signature. Preflight, before `review.resolved` is recorded:
+
+1. re-read and lock the latest lineage draft; a stale id/hash is `409 STALE_NOTE_DRAFT`;
+2. recompute blockers; any blocker is `409 SIGN_BLOCKED_ON_INPUTS` — on the production motor
+   pack this always fires with the named C-08 blocker;
+3. resolve the routing input and refuse an uncaptured mandated side effect (below);
+4. re-grade G-TPL (critical) and G-NOTE on the exact final candidate bytes; a new failure
+   leaves the review open and creates `EXCEPTION{note_integrity_failed}`;
+5. render the final network-disabled PDF under the pinned PACKET-18 policy and store it
+   immutably;
+6. record `pack.note_sign_prepared`.
+
+The durable `review.resolved` event, not the HTTP request, triggers finalisation. If the
+process dies between preparation and finalisation, Claim 360 and the workspace report
+`sign_state: signing_pending` — the resolution is never reported as lost. Replay resumes from
+the last durable event and produces no second signed artifact, `PACK_REVIEW`, or FSM hop:
+`pack.note_signed`, `pack.routed` and the `PACK_READY→IN_APPROVAL` transition are each guarded
+by their own evidence. Re-preparation is content-addressed, so an identical candidate reuses
+the same immutable key; a differing overwrite is refused as `409 UNCERTAIN_WRITE` with
+`EXCEPTION{uncertain_write}` rather than blind-writing a second artifact.
+
+**NOTE_REVIEW Reject** signs nothing. The current version is retained and returned to
+`draft`, the claim stays `PACK_READY`, and `pack.note_review_rejected` is emitted. A fresh
+governed candidate requires an explicit new generation; nothing regenerates silently.
+
+## Authority routing, route staleness, and the T-03 blocker
+
+PRD-02 §2.5 precedes PRD-08. The routed amount is C-08 payable when that calculation is live
+and the binding `reserve.total` fallback while it is not; the snapshot records which, with the
+calc-run or field id and version. Bands are inclusive: exactly `4_000_000_00` routes to the
+**MD**; one cent above routes to the **chairman** and carries the `render T-03` side effect.
+The MD is a T-03 recipient and the ≤KES 4M band owner — never the >4M approval role.
+
+While T-03 is `pending_capture`, a >KES 4M sign preflight returns
+`409 ROUTING_BLOCKED_ON_INPUTS{blocked_on: open-item-6}` and creates no signed version,
+`PACK_REVIEW`, notification, or FSM hop. Once T-03 is live its artifact is rendered before the
+approval item exists. In-app notification to Head of Claims and the MD is live through
+`notify`; the email body remains honestly staged under open item 1/6.
+
+`PACK_REVIEW{approval_pack}` is authorised against the immutable `required_role` in its
+payload, not `assessment.agreed_quote`. A wider band does not silently take another role's
+item: `scope=band` shows it only to the exact role, and a different role is `403
+FORBIDDEN_BAND` with an `authz.denied` event. Server-side resolution recomputes the routing
+input; a changed value is `409 APPROVAL_ROUTE_STALE`, the item stays open, and a fresh route
+is required.
+
+## Manager approval, annotation, and rejection revision
+
+- **Approve** transitions `IN_APPROVAL→APPROVED`. Signed artifacts stay immutable.
+- **Annotate & Approve** requires a non-empty manager annotation, retains it only in the
+  resolution event, mutates no signed artifact, then approves.
+- **Reject** requires structured `{code, detail}` reasons (an optional `field_path` must also
+  appear in the typed diff), transitions `IN_APPROVAL→PACK_READY`, retains the signed version,
+  clones its structured body into a new `in_review` version carrying a visible
+  `manager_rejection` block, and opens one new NOTE_REVIEW. Reasons are review metadata and
+  are never spliced into generated commentary. The PRD-03 consumer captures one
+  `origin=production_correction` case; when the reasons name no corrected field path the case
+  is captured but stays visibly `blocked_on_inputs`.
+
+## Artifact access denial
+
+`GET /claims/{claim_id}/approval-pack/artifacts/{event_id}` accepts only an allowlisted
+`pack.merged` or `pack.note_signed` event id on the same claim. Raw S3/blob keys are never
+accepted from a browser. A cross-claim event id, a non-allowlisted event, or an unknown id is
+`404 ARTIFACT_NOT_FOUND`; an actor outside the approval-pack read roles is `403`. Responses
+carry `application/pdf`, `nosniff`, `private, no-store`, and an ETag equal to the recorded
+SHA-256. No public or portal route exists.
+
+## ICON note entry
+
+`packs/motor/approval_pack/icon.yaml` ships `icon.note_entry` as `pending_capture`,
+`blocked_on: open-item-3`, with an empty field list. The workspace response exposes that
+status verbatim. Field order, selectors, formatting, and the executable paste-assist strip
+belong to PRD-09 — none of them may be invented here.
 
 ## Generated OpenAPI
 
 `python tools/openapi_snapshot.py` rewrites `docs/openapi/approval_pack.json`; the
 `--check` form fails when the committed artifact is stale and runs in the unit suite. The
-surface is exactly six routes: readiness, source selection, item upload, generation, and the
-two read-only PACKET-19 feeds. There is no sign, route, or approve endpoint.
+surface is nine routes: readiness, source selection, item upload, generation, the two
+read-only version feeds, the authenticated artifact read, and the review-scoped workspace
+read and autosave. There is no sign, route, or approve endpoint — signing and approval both
+travel through the closed PRD-04 `/reviews/{id}/resolve` contract.
 
 ## Dependencies
 

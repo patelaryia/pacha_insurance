@@ -78,6 +78,121 @@ export interface Claim360 {
   availability: Record<string, { status: string; owner: string }>;
 }
 
+export interface PackReadinessSource {
+  kind: string;
+  id: string;
+  filename: string;
+  received_at: string;
+  sha256: string;
+}
+
+export interface PackReadinessItem {
+  id: string;
+  order: number;
+  label: string;
+  state: "ready" | "ambiguous" | "missing" | "invalid" | "pending_integration";
+  required: boolean;
+  waivable: boolean;
+  sources: PackReadinessSource[];
+  blockers: Array<{ code: string; item_id: string | null; detail: string }>;
+}
+
+export interface PackReadiness {
+  claim_id: string;
+  status: string;
+  ready: boolean;
+  fingerprint: string;
+  checklists: { ready: boolean; blockers: Array<Record<string, unknown>> };
+  fields: { ready: boolean; blockers: Array<Record<string, unknown>> };
+  items: PackReadinessItem[];
+  blockers: Array<{ code: string; item_id: string | null; detail: string }>;
+}
+
+export interface PackGeneration {
+  status: string;
+  note_status?: string;
+  pack_version?: number;
+  pack_event_id?: string;
+  note_review_item_id?: string | null;
+  review_item_id?: string;
+  capability_id?: string;
+}
+
+export interface NoteSlot {
+  slot: string;
+  label: string;
+  state: string;
+  locked: boolean;
+  display?: string;
+  value?: unknown;
+  value_type?: string;
+  blocker?: string;
+  citation_marker?: string;
+  source_ref?: {
+    field_id: string;
+    path: string;
+    version: number;
+    provenance: Record<string, unknown>;
+  } | null;
+  evidence?: Array<{ id: string; check_id: string; status: string }>;
+}
+
+export interface NoteSection {
+  template_slot: string;
+  content: unknown;
+  locked: boolean;
+  numbers_used?: string[];
+}
+
+export interface ApprovalNoteWorkspace {
+  review_id: string;
+  review_status: string;
+  claim_id: string;
+  root_draft_id: string;
+  current_draft: {
+    id: string;
+    version: number;
+    status: string;
+    body_sha256: string;
+    edited_by: string | null;
+    body: {
+      sections: NoteSection[];
+      blockers: Array<{ slot: string | null; state: string; detail: string }>;
+      manager_rejection?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
+  };
+  merged_pack: {
+    event_id: string | null;
+    version: number | null;
+    sha256: string | null;
+    content_url: string | null;
+  };
+  signed_note: { event_id: string; sha256: string; content_url: string } | null;
+  sign_state: "unsigned" | "signing_pending" | "signed";
+  autosave_seconds: number;
+  commentary_slots: string[];
+  editable_slots: string[];
+  incident_summary_max_words: number;
+  icon_note_entry: {
+    id: string;
+    status: string;
+    blocked_on: string | null;
+    fields: unknown[];
+  };
+  signable: boolean;
+  blockers: Array<{ slot: string | null; state: string; detail: string }>;
+}
+
+export interface AutosaveResult {
+  draft_id: string;
+  version: number;
+  body_sha256: string;
+  parent_draft_id: string;
+  review_id: string;
+  recorded: boolean;
+}
+
 export interface Citation {
   claim_id: string;
   field_path: string;
@@ -146,6 +261,28 @@ export interface ConsoleApi {
   getClaim360(claimId: string): Promise<Claim360>;
   getCitation(claimId: string, fieldPath: string): Promise<Citation>;
   getDocument?(documentUrl: string): Promise<ArrayBuffer>;
+  getPackReadiness?(claimId: string): Promise<PackReadiness>;
+  selectPackSources?(
+    claimId: string,
+    itemId: string,
+    sources: Array<{ kind: string; id: string }>,
+  ): Promise<unknown>;
+  uploadPackItem?(claimId: string, itemId: string, file: File): Promise<unknown>;
+  generatePack?(
+    claimId: string,
+    body: { readiness_fingerprint: string },
+    idempotencyKey: string,
+  ): Promise<PackGeneration>;
+  getApprovalNote?(reviewId: string): Promise<ApprovalNoteWorkspace>;
+  saveApprovalNote?(
+    reviewId: string,
+    body: {
+      base_draft_id: string;
+      base_body_sha256: string;
+      commentary: Array<{ template_slot: string; content: string }>;
+    },
+    idempotencyKey: string,
+  ): Promise<AutosaveResult>;
   getSlaBoard?(): Promise<{ clocks: SlaClockRow[] }>;
   escalateClocks?(clockIds: string[]): Promise<{
     results: Array<{

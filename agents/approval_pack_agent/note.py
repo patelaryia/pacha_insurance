@@ -7,6 +7,7 @@ marker and never a synthetic zero or false (register #5/#229/#230).
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,7 +28,7 @@ from approval_pack_agent.config import (
 )
 from approval_pack_agent.models import NoteDraft
 from approval_pack_agent.resolver import ACTOR, Readiness, _json
-from claim_core import ClaimCoreError, new_ulid
+from claim_core import new_ulid
 from doc_intel.llm import ModelBudgetExceeded, ModelWrapper
 
 NUMERIC_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -58,6 +59,17 @@ def numeric_tokens(value: str) -> list[str]:
     """Return every numeric token in ``value`` with separators normalised out."""
 
     return [token.replace(",", "") for token in NUMERIC_TOKEN.findall(value)]
+
+
+def canonical_body_hash(body: dict[str, Any]) -> str:
+    """Return the binding hash of one structured note body.
+
+    The stored hash is excluded from its own material, so every reader can
+    recompute the value from durable state instead of trusting the row (#246).
+    """
+
+    material = {key: value for key, value in body.items() if key != "body_sha256"}
+    return hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
 
 
 class NoteInputsInvalid(RuntimeError):
@@ -768,6 +780,7 @@ class NoteService:
         commentary: list[dict[str, Any]],
         blockers: list[dict[str, Any]],
         merged_payload: dict[str, Any],
+        signable: bool = False,
     ) -> bytes:
         context: dict[str, Any] = {
             path.replace(".", "_"): readiness.field_rows[path].value
@@ -789,7 +802,7 @@ class NoteService:
                     {"slot": blocker["slot"], "detail": blocker["detail"]}
                     for blocker in blockers
                 ],
-                "signable_display": "no",
+                "signable_display": "yes" if signable else "no",
                 "merged_pack_version": merged_payload["version"],
                 "merged_pack_sha256": merged_payload["sha256"],
             }
@@ -801,6 +814,60 @@ class NoteService:
             return self._environment.from_string(source).render(context).encode("utf-8")
         except (OSError, TemplateError, TypeError) as error:
             raise NoteInputsInvalid(f"T-01 refused to render: {error}") from error
+
+    def sections(self, body: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Index one structured body's sections by their template slot."""
+
+        return {
+            section["template_slot"]: section
+            for section in body.get("sections", [])
+            if isinstance(section, dict) and isinstance(section.get("template_slot"), str)
+        }
+
+    def render_body(
+        self,
+        *,
+        claim_id: str,
+        actor: str,
+        readiness: Readiness,
+        body: dict[str, Any],
+        blockers: list[dict[str, Any]],
+        signable: bool,
+    ) -> bytes:
+        """Re-render one persisted body deterministically, editing nothing.
+
+        The locked classes and merged-pack refs come from the stored body; only
+        the recomputed blocker list and signability are supplied by the caller.
+        """
+
+        definition = self._template(claim_id, actor)
+        sections = self.sections(body)
+        try:
+            computed = sections["computed"]["content"]
+            verification = sections["verification"]["content"]
+            commentary = [
+                {
+                    "template_slot": slot,
+                    "label": self.config.note["commentary"][slot]["label"],
+                    "content": sections[slot]["content"],
+                }
+                for slot in self.config.note["commentary_slots"]
+            ]
+        except KeyError as error:
+            raise NoteInputsInvalid(f"note body is missing section {error}") from error
+        return self._render(
+            definition,
+            readiness=readiness,
+            computed=computed,
+            verification=verification,
+            commentary=commentary,
+            blockers=blockers,
+            merged_payload={
+                "version": body["merged_pack"]["version"],
+                "sha256": body["merged_pack"]["sha256"],
+            },
+            signable=signable,
+        )
 
     # -- integrity and persistence --------------------------------------------
 
@@ -833,11 +900,33 @@ class NoteService:
         return int(highest or 0) + 1
 
     def persist(
-        self, claim_id: str, *, version: int, body: dict[str, Any], status: str
-    ) -> str:
-        """Insert one version and supersede only an unsigned earlier draft."""
+        self,
+        claim_id: str,
+        *,
+        version: int,
+        body: dict[str, Any],
+        status: str,
+        edited_by: str | None = None,
+        lineage: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Insert one version and supersede only an unsigned earlier draft.
+
+        The stored body always carries its lineage and canonical hash, so a
+        later reader never has to reconstruct either from the row (#246).
+        """
 
         draft_id = new_ulid()
+        body = dict(body)
+        body["lineage"] = dict(
+            lineage
+            if lineage is not None
+            else {
+                "root_draft_id": draft_id,
+                "parent_draft_id": None,
+                "review_id": None,
+            }
+        )
+        body["body_sha256"] = canonical_body_hash(body)
         superseded: list[str] = []
         with self.sessions.begin() as session:
             if status == "in_review":
@@ -865,13 +954,13 @@ class NoteService:
                     version=version,
                     body=body,
                     status=status,
-                    edited_by=None,
+                    edited_by=edited_by,
                     signed_by=None,
                     signed_at=None,
                 )
             )
         self._withdraw_reviews(claim_id, superseded)
-        return draft_id
+        return draft_id, body
 
     def _withdraw_reviews(self, claim_id: str, draft_ids: list[str]) -> None:
         """Close the NOTE_REVIEW of every superseded draft: exactly one stays open."""
@@ -943,6 +1032,61 @@ class NoteService:
             correlation_id=correlation_id,
         )
 
+    def open_note_review(
+        self,
+        claim_id: str,
+        *,
+        draft_id: str,
+        version: int,
+        body: dict[str, Any],
+        merged_event_id: str,
+        merged_payload: dict[str, Any],
+        review_artifact_blob_key: str,
+        correlation_id: str | None,
+        manager_rejection: dict[str, Any] | None = None,
+    ) -> str:
+        """Emit exactly one governed NOTE_REVIEW for an unsigned note version.
+
+        The payload pins the exact draft id and canonical body hash, so a signer
+        can never resolve against a version the queue did not show (§4).
+        """
+
+        payload: dict[str, Any] = {
+            "type": "NOTE_REVIEW",
+            "subtype": "approval_note",
+            "capability_id": "pack.note_draft",
+            "note_draft_id": draft_id,
+            "note_version": version,
+            "root_draft_id": body["lineage"]["root_draft_id"],
+            "body_sha256": body["body_sha256"],
+            "merged_pack_event_id": merged_event_id,
+            "merged_pack_blob_key": merged_payload["blob_key"],
+            "merged_pack_sha256": merged_payload["sha256"],
+            "review_artifact_blob_key": review_artifact_blob_key,
+            "blockers": body["blockers"],
+            "signable": False,
+            "grader_runs": body["integrity"],
+            "facts": {"note_draft_id": draft_id, "note_version": version},
+            "risk": "an unsigned approval note is waiting for officer review",
+            "recommendation": "review the cited pack and note before signing",
+            "resolution_schema": "NOTE_REVIEW@2",
+        }
+        if manager_rejection is not None:
+            # Manager reasons are review metadata. They are never spliced into
+            # generated commentary (#250).
+            payload["manager_rejection"] = dict(manager_rejection)
+            payload["risk"] = "a manager rejected the signed approval note"
+            payload["recommendation"] = (
+                "review the manager's structured reasons, correct the cited claim "
+                "inputs, and regenerate the approval pack"
+            )
+        return self._emit(
+            claim_id=claim_id,
+            event_type="review.created",
+            payload=payload,
+            correlation_id=correlation_id,
+        )
+
     def hand_off(
         self,
         claim_id: str,
@@ -963,6 +1107,7 @@ class NoteService:
             payload={
                 "note_draft_id": draft_id,
                 "note_version": version,
+                "note_body_sha256": body["body_sha256"],
                 "merged_pack_event_id": merged_event_id,
                 "merged_pack_version": merged_payload["version"],
                 "merged_pack_sha256": merged_payload["sha256"],
@@ -972,27 +1117,14 @@ class NoteService:
             },
             correlation_id=merged_event_id,
         )
-        review_event_id = self._emit(
-            claim_id=claim_id,
-            event_type="review.created",
-            payload={
-                "type": "NOTE_REVIEW",
-                "subtype": "approval_note",
-                "capability_id": "pack.note_draft",
-                "note_draft_id": draft_id,
-                "note_version": version,
-                "merged_pack_event_id": merged_event_id,
-                "merged_pack_blob_key": merged_payload["blob_key"],
-                "merged_pack_sha256": merged_payload["sha256"],
-                "review_artifact_blob_key": candidate.blob_key,
-                "blockers": body["blockers"],
-                "signable": False,
-                "grader_runs": body["integrity"],
-                "facts": {"note_draft_id": draft_id, "note_version": version},
-                "risk": "an unsigned approval note is waiting for officer review",
-                "recommendation": "review the cited pack and note before signing",
-                "resolution_schema": "NOTE_REVIEW@1",
-            },
+        review_event_id = self.open_note_review(
+            claim_id,
+            draft_id=draft_id,
+            version=version,
+            body=body,
+            merged_event_id=merged_event_id,
+            merged_payload=merged_payload,
+            review_artifact_blob_key=candidate.blob_key,
             correlation_id=merged_event_id,
         )
         claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
@@ -1005,18 +1137,6 @@ class NoteService:
         return review_event_id
 
 
-def guard_note_review(item: Any, action: str, payload: dict[str, Any], actor: str) -> None:
-    """Refuse every PACKET-18 NOTE_REVIEW resolution without touching a row."""
-
-    del payload, actor
-    if item.subtype == "approval_note" and action in {"approve", "edit_approve", "reject"}:
-        raise ClaimCoreError(
-            409,
-            "NOTE_REVIEW_UI_NOT_BUILT",
-            "Approval-note review resolution ships with PACKET-19",
-        )
-
-
 __all__ = [
     "COMMENTARY_SCHEMA",
     "CommentaryGenerator",
@@ -1026,6 +1146,6 @@ __all__ = [
     "NoteCandidate",
     "NoteInputsInvalid",
     "NoteService",
-    "guard_note_review",
+    "canonical_body_hash",
     "numeric_tokens",
 ]

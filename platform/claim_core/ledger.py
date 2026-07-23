@@ -61,6 +61,11 @@ ACTION_MAP = {
     "pack.generation_refused": "pack.generation_refused",
     "pack.merged": "pack.merged",
     "pack.note_drafted": "pack.note_drafted",
+    "pack.note_autosaved": "pack.note_autosaved",
+    "pack.note_review_rejected": "pack.note_review_rejected",
+    "pack.note_sign_prepared": "pack.note_sign_prepared",
+    "pack.note_signed": "pack.note_signed",
+    "pack.routed": "pack.routed",
 }
 
 EventRecorder = Callable[..., Event]
