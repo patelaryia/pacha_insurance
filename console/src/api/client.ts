@@ -10,7 +10,10 @@ import type {
   LedgerRow,
   PackGeneration,
   PackReadiness,
+  PasteAssistView,
   PortfolioTile,
+  ProjectionSummary,
+  ProjectionSurface,
   SlaClockRow,
   CapabilityRow,
   PackRow,
@@ -206,6 +209,60 @@ export class ConsoleApiClient implements ConsoleApi {
         body: stringifyLossless(body),
       },
     ))) as AutosaveResult;
+  }
+
+  private projectionPath(claimId: string, projectionId?: string): string {
+    const base = `/console/claims/${encodeURIComponent(claimId)}/projections`;
+    return projectionId === undefined
+      ? base
+      : `${base}/${encodeURIComponent(projectionId)}/paste-assist`;
+  }
+
+  async getProjections(claimId: string): Promise<ProjectionSurface> {
+    return (await this.json(
+      await this.request(this.projectionPath(claimId)),
+    )) as ProjectionSurface;
+  }
+
+  async getPasteAssist(claimId: string, projectionId: string): Promise<PasteAssistView> {
+    return (await this.json(
+      await this.request(this.projectionPath(claimId, projectionId)),
+    )) as PasteAssistView;
+  }
+
+  async startPasteAssist(claimId: string, projectionId: string): Promise<PasteAssistView> {
+    return (await this.json(await this.request(
+      `${this.projectionPath(claimId, projectionId)}/start`,
+      { method: "POST" },
+    ))) as PasteAssistView;
+  }
+
+  async setPasteGroup(
+    claimId: string,
+    projectionId: string,
+    groupId: string,
+    done: boolean,
+  ): Promise<PasteAssistView> {
+    return (await this.json(await this.request(
+      `${this.projectionPath(claimId, projectionId)}/groups/${encodeURIComponent(groupId)}`,
+      { method: "PUT", body: stringifyLossless({ done }) },
+    ))) as PasteAssistView;
+  }
+
+  async confirmPasteAssist(
+    claimId: string,
+    projectionId: string,
+    body: { attested: boolean; readback: Record<string, string> },
+    idempotencyKey: string,
+  ): Promise<ProjectionSummary> {
+    return (await this.json(await this.request(
+      `${this.projectionPath(claimId, projectionId)}/confirm`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: stringifyLossless(body),
+      },
+    ))) as ProjectionSummary;
   }
 
   async getSlaBoard(): Promise<{ clocks: SlaClockRow[] }> {

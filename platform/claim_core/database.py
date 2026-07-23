@@ -59,6 +59,7 @@ def initialise_database(engine: Engine) -> None:
         "chase_checklists",
         "chase_items",
         "note_drafts",
+        "projections",
         "savings_ledger",
         "vendors",
     }

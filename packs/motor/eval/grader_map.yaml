@@ -1,0 +1,48 @@
+# ED-7 grader coverage registration: every graded output type names at least one
+# `critical` grader from the closed nine-grader registry. No grader id is
+# invented here; this file only records which existing grader owns which output.
+version: 1
+
+output_types:
+  extracted_field:
+    graders:
+      - {id: G-VAL, severity: critical}
+      - {id: G-CITE, severity: critical}
+
+  # PRD-09 §9.5 / PACKET-20: an ICON or EDMS readback committed as
+  # `source_type=projection_readback` is graded against the captured click-path
+  # validator by the same critical G-VAL, before it can count as autonomy
+  # evidence for a `project.*` capability.
+  projection_readback:
+    graders:
+      - {id: G-VAL, severity: critical}
+    field_paths:
+      - external.icon.claim_no
+      - external.icon.salvage_no
+      - external.edms.folder_ref
+
+  calc_run:
+    graders:
+      - {id: G-CALC, severity: critical}
+      - {id: G-SUM, severity: critical}
+
+  rule_run:
+    graders:
+      - {id: G-RULE, severity: critical}
+
+  rendered_template:
+    graders:
+      - {id: G-TPL, severity: critical}
+
+  outbound_communication:
+    graders:
+      - {id: G-COMM, severity: critical}
+
+  approval_note:
+    graders:
+      - {id: G-NOTE, severity: major}
+      - {id: G-TPL, severity: critical}
+
+  agent_procedure:
+    graders:
+      - {id: G-PROC, severity: major}

@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import bindparam, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
@@ -47,6 +48,27 @@ SOURCE_TYPES = frozenset(
 VERIFICATION_STATES = frozenset(
     {"extracted", "human_verified", "system_confirmed"}
 )
+
+
+@dataclass(frozen=True)
+class FieldSnapshot:
+    """One current field version in its exact stored form (register #266).
+
+    ``value`` is whatever ``claim_fields`` holds: an AES-256-GCM envelope for a
+    field the dictionary requires to be encrypted, plaintext otherwise. Callers
+    that need to display it must go back through
+    :meth:`ClaimService.reveal_snapshot_value`, which access-logs the decrypt.
+    """
+
+    path: str
+    field_id: str
+    version: int
+    value_type: str
+    source_type: str
+    source_ref: dict | None
+    verification_state: str
+    value: Any
+    encrypted: bool
 
 
 def utc_now() -> datetime:
@@ -900,6 +922,116 @@ class ClaimService:
                         correlation_id=new_ulid(),
                     )
         return claim, fields, blocked_reasons
+
+    def snapshot_current_fields(
+        self, claim_id: str, paths: Sequence[str]
+    ) -> dict[str, FieldSnapshot]:
+        """Return exact current field versions without decrypting anything.
+
+        This is the curated read used to build immutable projection payload
+        snapshots (register #266). It deliberately preserves the stored
+        encrypted envelope so a snapshot never becomes a plaintext PII shadow
+        store, and so the snapshot hash stays deterministic for one field
+        version.
+        """
+
+        selected = tuple(dict.fromkeys(paths))
+        with self._sessions() as session:
+            self._claim_or_error(session, claim_id)
+            if not selected:
+                return {}
+            rows = list(
+                session.scalars(
+                    select(ClaimField).where(
+                        ClaimField.claim_id == claim_id,
+                        ClaimField.path.in_(selected),
+                        ClaimField.superseded_by.is_(None),
+                    )
+                )
+            )
+            for row in rows:
+                session.expunge(row)
+        snapshots: dict[str, FieldSnapshot] = {}
+        for row in rows:
+            definition = FIELD_DICTIONARY.get(row.path)
+            if definition is None:
+                continue
+            snapshots[row.path] = FieldSnapshot(
+                path=row.path,
+                field_id=row.id,
+                version=row.version,
+                value_type=row.value_type,
+                source_type=row.source_type,
+                source_ref=row.source_ref,
+                verification_state=row.verification_state,
+                value=row.value,
+                encrypted=requires_encryption(row.path, definition),
+            )
+        return snapshots
+
+    def reveal_snapshot_value(
+        self, claim_id: str, *, path: str, value: Any, actor: str
+    ) -> Any:
+        """Decrypt one stored snapshot value and access-log the read.
+
+        A value that was never encrypted is returned unchanged and logs
+        nothing; a value the dictionary protects emits the existing
+        ``pii.decrypted`` event carrying the field path and actor only.
+        """
+
+        definition = FIELD_DICTIONARY.get(path)
+        if definition is None:
+            raise ClaimCoreError(
+                422, "FIELD_NOT_IN_DICTIONARY", f"Field path {path!r} is not registered"
+            )
+        if not requires_encryption(path, definition):
+            return value
+        if self._key_provider is None:
+            raise RuntimeError("PII read services are not configured")
+        with self._sessions() as session:
+            claim = self._claim_or_error(session, claim_id)
+            wrapped = claim.dek_wrapped
+        if wrapped is None:
+            raise ClaimCoreError(
+                409, "PII_KEY_UNAVAILABLE", "The claim has no data encryption key"
+            )
+        plaintext = decrypt_value(value, self._key_provider.unwrap(bytes(wrapped)))
+        with self._sessions.begin() as session:
+            self.record_event(
+                session,
+                claim_id=claim_id,
+                event_type="pii.decrypted",
+                payload={"field_path": path},
+                actor=actor,
+                correlation_id=new_ulid(),
+            )
+        return plaintext
+
+    def protect_snapshot_value(self, claim_id: str, *, path: str, value: Any) -> Any:
+        """Return one value in the exact form the claim stores it in.
+
+        Used for durable readback values so no package wraps its own keys.
+        """
+
+        definition = FIELD_DICTIONARY.get(path)
+        if definition is None:
+            raise ClaimCoreError(
+                422, "FIELD_NOT_IN_DICTIONARY", f"Field path {path!r} is not registered"
+            )
+        if not requires_encryption(path, definition):
+            return value
+        if self._key_provider is None:
+            raise RuntimeError("PII key provider is not configured")
+        with self._claim_locks.acquire(claim_id):
+            with self._sessions.begin() as session:
+                acquire_database_claim_lock(session, claim_id)
+                claim = self._claim_or_error(session, claim_id)
+                if claim.dek_wrapped is None:
+                    dek = self._key_provider.generate_dek()
+                    claim.dek_wrapped = self._key_provider.wrap(dek)
+                else:
+                    dek = self._key_provider.unwrap(bytes(claim.dek_wrapped))
+        return encrypt_value(value, dek)
 
     def field_citation_lineage(
         self,

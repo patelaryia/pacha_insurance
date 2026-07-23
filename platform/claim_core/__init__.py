@@ -11,7 +11,7 @@ from claim_core.errors import ClaimCoreError, HumanOverrideProtected
 from claim_core.fsm import STATE_METADATA, ClaimState, ClaimStateMachine
 from claim_core.models import Base, Document, Notification
 from claim_core.schemas import ClaimCreate, FieldWrite, FieldWriteResult
-from claim_core.service import ClaimService, new_ulid
+from claim_core.service import ClaimService, FieldSnapshot, new_ulid
 from claim_core.storage import BlobStore, LocalBlobStore
 
 __all__ = [
@@ -25,6 +25,7 @@ __all__ = [
     "ClaimStateMachine",
     "Document",
     "FieldDefinition",
+    "FieldSnapshot",
     "FieldWrite",
     "FieldWriteResult",
     "HumanOverrideProtected",

@@ -69,6 +69,7 @@ def _import_every_model() -> MetaData:
     import eval_harness  # noqa: F401
     import intake_agent  # noqa: F401
     import notify  # noqa: F401
+    import projection_agent  # noqa: F401
     import review_queue  # noqa: F401
     from claim_core.models import Base
     from doc_intel import engine as _doc_intel_engine  # noqa: F401

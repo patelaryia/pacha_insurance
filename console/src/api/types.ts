@@ -193,6 +193,81 @@ export interface AutosaveResult {
   recorded: boolean;
 }
 
+export interface ProjectionOperation {
+  id: string;
+  capability_id: string;
+  system: string;
+  mode: string;
+  status: "live" | "pending_capture" | "blocked_on_inputs";
+  blocked_on: string | null;
+  owner_prd: string;
+  version: string;
+}
+
+export interface ProjectionSummary {
+  id: string;
+  claim_id: string;
+  operation: string;
+  capability_id: string;
+  mode: string;
+  status: "queued" | "executing" | "verifying" | "completed" | "failed" | "diverged";
+  snapshot_hash: string | null;
+  definition_version: string | null;
+  blocked_on: string | null;
+  readback_paths: string[];
+  attested_by: string | null;
+  attested_at: string | null;
+  paste_seconds: number | null;
+  started_at: string | null;
+  groups_done: Record<string, boolean>;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface ProjectionSurface {
+  operations: ProjectionOperation[];
+  projections: ProjectionSummary[];
+}
+
+export interface PasteField {
+  step_id: string;
+  label: string;
+  path: string;
+  /** The exact server string the Clipboard API receives. Never reformatted. */
+  copy_value: string;
+  value_type: string;
+  field_version: number | string;
+}
+
+export interface PasteGroup {
+  id: string;
+  label: string;
+  done: boolean;
+  fields: PasteField[];
+}
+
+export interface PasteReadbackField {
+  label: string;
+  path: string;
+  required: boolean;
+  format_status: "live" | "pending_capture";
+  blocked_on: string | null;
+}
+
+export interface PasteAssistView {
+  projection_id: string;
+  claim_id: string;
+  operation: string;
+  definition_version: string;
+  mode: string;
+  status: ProjectionSummary["status"];
+  groups: PasteGroup[];
+  readback_fields: PasteReadbackField[];
+  attestation_text: string;
+  started_at: string | null;
+  elapsed_seconds: number | null;
+}
+
 export interface Citation {
   claim_id: string;
   field_path: string;
@@ -283,6 +358,21 @@ export interface ConsoleApi {
     },
     idempotencyKey: string,
   ): Promise<AutosaveResult>;
+  getProjections?(claimId: string): Promise<ProjectionSurface>;
+  getPasteAssist?(claimId: string, projectionId: string): Promise<PasteAssistView>;
+  startPasteAssist?(claimId: string, projectionId: string): Promise<PasteAssistView>;
+  setPasteGroup?(
+    claimId: string,
+    projectionId: string,
+    groupId: string,
+    done: boolean,
+  ): Promise<PasteAssistView>;
+  confirmPasteAssist?(
+    claimId: string,
+    projectionId: string,
+    body: { attested: boolean; readback: Record<string, string> },
+    idempotencyKey: string,
+  ): Promise<ProjectionSummary>;
   getSlaBoard?(): Promise<{ clocks: SlaClockRow[] }>;
   escalateClocks?(clockIds: string[]): Promise<{
     results: Array<{
