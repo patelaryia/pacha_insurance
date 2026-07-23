@@ -19,8 +19,6 @@ from sqlalchemy import text
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MOTOR_PACK = REPO / "packs" / "motor"
 
-pytestmark = pytest.mark.usefixtures()
-
 
 def _click_path(**overrides: Any) -> dict[str, Any]:
     base = {

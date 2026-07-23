@@ -1616,42 +1616,53 @@ def test_concurrent_weekly_scans_create_one_readback_check(env, monkeypatch):
     assert len(checks) == 1
 
 
-def test_the_configured_rate_governs_selection_and_the_payload_is_pii_safe(tmp_path):
+# One rate per test: the PostgreSQL tier shares one worker database across every
+# application built inside a single test, so two rates in one body would see each
+# other's review events.
+@pytest.mark.parametrize(("rate", "samples_everything"), [(100, True), (0, False)])
+def test_the_configured_rate_governs_selection_and_the_payload_is_pii_safe(
+    tmp_path, rate, samples_everything
+):
     """Rate is pack data: at 100 every completed row is sampled, at 0 none is."""
 
-    for rate, expected_all in ((100, True), (0, False)):
-        pack = _fixture_pack(tmp_path, name=f"rate-{rate}-pack")
-        catalogue_path = pack / "projection" / "operations.yaml"
-        catalogue = yaml.safe_load(catalogue_path.read_text(encoding="utf-8"))
-        catalogue["paste_readback_sampling"]["rate_percent"] = rate
-        catalogue_path.write_text(yaml.safe_dump(catalogue, sort_keys=False), encoding="utf-8")
-        env = _build(tmp_path, f"rate-{rate}", pack=pack)
-        completed = _complete_many(env, 2)
-        report = env.app.state.projection_agent.sample_paste_readbacks()
-        assert report["created"] == (len(completed) if expected_all else 0)
-        _drain(env.app)
-        created = [
-            event
-            for event in _events(env, "review.created")
-            if event["payload"].get("type") == "PASTE_READBACK_CHECK"
-        ]
-        assert len(created) == (len(completed) if expected_all else 0)
-        for event in created:
-            payload = event["payload"]
-            assert payload["capability_id"] == "project.icon.claim_register"
-            assert payload["operation"] == "icon.claim_register"
-            assert payload["readback_paths"] == ["external.icon.claim_no"]
-            assert set(payload) == {
-                "type",
-                "projection_id",
-                "operation",
-                "capability_id",
-                "snapshot_hash",
-                "readback_paths",
-            }
-            # Ids, hashes, and path names only — never a copied or readback value.
-            assert "ICON-0" not in json.dumps(payload)
-            assert INSURED_NAME not in json.dumps(payload)
+    pack = _fixture_pack(tmp_path, name=f"rate-{rate}-pack")
+    catalogue_path = pack / "projection" / "operations.yaml"
+    catalogue = yaml.safe_load(catalogue_path.read_text(encoding="utf-8"))
+    catalogue["paste_readback_sampling"]["rate_percent"] = rate
+    catalogue_path.write_text(yaml.safe_dump(catalogue, sort_keys=False), encoding="utf-8")
+    env = _build(tmp_path, f"rate-{rate}", pack=pack)
+    completed = _complete_many(env, 2)
+    expected = len(completed) if samples_everything else 0
+
+    report = env.app.state.projection_agent.sample_paste_readbacks()
+    assert report["rate_percent"] == rate
+    assert report["created"] == expected
+    _drain(env.app)
+    created = [
+        event
+        for event in _events(env, "review.created")
+        if event["payload"].get("type") == "PASTE_READBACK_CHECK"
+    ]
+    assert len(created) == expected
+    assert {event["payload"]["projection_id"] for event in created} == (
+        set(completed) if samples_everything else set()
+    )
+    for event in created:
+        payload = event["payload"]
+        assert payload["capability_id"] == "project.icon.claim_register"
+        assert payload["operation"] == "icon.claim_register"
+        assert payload["readback_paths"] == ["external.icon.claim_no"]
+        assert set(payload) == {
+            "type",
+            "projection_id",
+            "operation",
+            "capability_id",
+            "snapshot_hash",
+            "readback_paths",
+        }
+        # Ids, hashes, and path names only — never a copied or readback value.
+        assert "ICON-0" not in json.dumps(payload)
+        assert INSURED_NAME not in json.dumps(payload)
 
 
 def test_the_weekly_beat_slot_is_registered_from_pack_data(env):
