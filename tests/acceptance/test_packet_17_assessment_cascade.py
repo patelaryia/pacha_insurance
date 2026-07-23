@@ -688,32 +688,37 @@ def _boundary_report(quote_kes: str, pav_kes: str) -> dict:
 
 
 def test_scenario_2_write_off_boundary(tmp_path):
-    # Case A: quote×2 == min(pav, si) exactly → NOT a write-off (R-05 strict >).
-    model_a = _base_model(estimate_kes="200,000",
-                          report_fields=_boundary_report("130,000", "260,000"))
-    env_a = _build(tmp_path, "boundary-eq", model=model_a)
-    claim_a = _to_dispatched(env_a, vendor_ids=["V-ALPHA"], estimate_kes="200,000")
-    _send_report(env_a, pdf_lines=[
+    # quote×2 == min(pav, si) exactly → NOT a write-off (R-05 strict >).
+    model = _base_model(estimate_kes="200,000",
+                        report_fields=_boundary_report("130,000", "260,000"))
+    env = _build(tmp_path, "boundary-eq", model=model)
+    claim_id = _to_dispatched(env, vendor_ids=["V-ALPHA"],
+                              estimate_kes="200,000")
+    _send_report(env, pdf_lines=[
         "Assessor report for KBX 123A",
         "Agreed quote KES 130,000. PAV KES 260,000",
     ])
-    assert _status(env_a, claim_a) == "REPORT_RECEIVED"
-    assert _field(env_a.client, claim_a, "assessment.write_off_indicated") is None
+    assert _status(env, claim_id) == "REPORT_RECEIVED"
+    assert _field(env.client, claim_id, "assessment.write_off_indicated") is None
 
-    # Case B: one shilling over the boundary → WRITE_OFF transition (§7.7-2).
-    model_b = _base_model(estimate_kes="200,000",
-                          report_fields=_boundary_report("130,001", "260,000"))
-    env_b = _build(tmp_path, "boundary-over", model=model_b)
-    claim_b = _to_dispatched(env_b, vendor_ids=["V-ALPHA"], estimate_kes="200,000")
-    _send_report(env_b, pdf_lines=[
+
+def test_scenario_2_write_off_boundary_one_shilling_over(tmp_path):
+    # A separate test item gives PostgreSQL a fresh database fixture. Building
+    # both cases in one item shared durable stage rows across private blob stores.
+    model = _base_model(estimate_kes="200,000",
+                        report_fields=_boundary_report("130,001", "260,000"))
+    env = _build(tmp_path, "boundary-over", model=model)
+    claim_id = _to_dispatched(env, vendor_ids=["V-ALPHA"],
+                              estimate_kes="200,000")
+    _send_report(env, pdf_lines=[
         "Assessor report for KBX 123A",
         "Agreed quote KES 130,001. PAV KES 260,000",
     ])
-    assert _status(env_b, claim_b) == "WRITE_OFF"
-    indicated = _field(env_b.client, claim_b, "assessment.write_off_indicated")
+    assert _status(env, claim_id) == "WRITE_OFF"
+    indicated = _field(env.client, claim_id, "assessment.write_off_indicated")
     assert indicated is not None and indicated["value"] is True
     hops = [(e["payload"]["from"], e["payload"]["to"])
-            for e in _events(env_b.app, "claim.status_changed", claim_b)]
+            for e in _events(env.app, "claim.status_changed", claim_id)]
     assert ("IN_ASSESSMENT", "REPORT_RECEIVED") in hops
     assert ("REPORT_RECEIVED", "WRITE_OFF") in hops
 
