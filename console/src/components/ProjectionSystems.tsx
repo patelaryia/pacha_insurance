@@ -37,10 +37,12 @@ function humanOperation(operation: string): string {
 }
 
 /** Display-only preview. The clipboard always receives the exact server string. */
-function preview(value: string, valueType: string): string {
+function preview(value: string, valueType: string, encoding: string): string {
   if (valueType !== "money") return value;
   try {
-    // The strip renders shillings; the money helper reads integer cents.
+    if (encoding === "cents") return formatKes(parseCents(value));
+    if (encoding !== "shillings") return value;
+    // Convert a declared shilling boundary string back to cents for display only.
     const [shillings, fraction = "00"] = value.split(".");
     return formatKes(parseCents(`${shillings}${fraction.padEnd(2, "0").slice(0, 2)}`));
   } catch {
@@ -312,7 +314,13 @@ export function ProjectionSystems({ api, claimId }: ProjectionSystemsProps) {
                 {group.fields.map((field) => (
                   <li key={field.step_id}>
                     <span>{field.label}</span>
-                    <strong>{preview(field.copy_value, field.value_type)}</strong>
+                    <strong>
+                      {preview(
+                        field.copy_value,
+                        field.value_type,
+                        field.external_encoding,
+                      )}
+                    </strong>
                     <small>version {String(field.field_version)}</small>
                     <button
                       aria-label={`Copy ${field.label}`}

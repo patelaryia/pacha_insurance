@@ -282,9 +282,9 @@ def test_gate_l0_logs_l1_drafts_l2_confirms(env):
     calls: list[dict] = []
     runtime.register_executor("test.echo", lambda action: calls.append(action.payload))
 
-    _set_level(app, "icon.claim_register", "L0")
+    _set_level(app, "project.icon.salvage_register", "L0")
     logged = runtime.execute_or_stage(
-        capability_id="icon.claim_register",
+        capability_id="project.icon.salvage_register",
         action=Action(type="test.echo", payload={"n": 0}),
         claim_id=claim_id,
         actor=AGENT,

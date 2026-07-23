@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -280,6 +281,12 @@ def _parse_sampling(raw: Any) -> SamplingConfig:
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         raise OperationConfigError("schedule hour/minute are out of range")
     timezone = _text(schedule.get("timezone"), "schedule timezone is required")
+    try:
+        ZoneInfo(timezone)
+    except (ValueError, ZoneInfoNotFoundError) as error:
+        raise OperationConfigError(
+            f"schedule timezone {timezone!r} is not registered"
+        ) from error
     return SamplingConfig(
         rate_percent=rate,
         day_of_week=day,

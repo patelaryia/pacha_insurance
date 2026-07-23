@@ -18,8 +18,10 @@ import json
 import os
 import pathlib
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import Event, Lock
 from typing import Any
 
 import pytest
@@ -494,6 +496,7 @@ def test_catalogue_registers_exactly_fifteen_operations_and_stays_honest(live_en
         ("live_without_path", "live without a click path"),
         ("blocked_without_blocker", "blocked without a blocker"),
         ("bad_sampling", "rate_percent"),
+        ("bad_timezone", "timezone"),
         ("path_traversal", "escapes the operation root"),
     ],
 )
@@ -522,6 +525,8 @@ def test_catalogue_defects_fail_startup(tmp_path, mutation, fragment):
         rows[0]["blocked_on"] = None
     elif mutation == "bad_sampling":
         catalogue["paste_readback_sampling"]["rate_percent"] = 250
+    elif mutation == "bad_timezone":
+        catalogue["paste_readback_sampling"]["schedule"]["timezone"] = "Mars/Olympus"
     elif mutation == "path_traversal":
         rows[1].update(
             status="live", blocked_on=None, click_path_ref="../../../etc/hosts"
@@ -1108,6 +1113,50 @@ def test_confirm_requires_groups_attestation_and_the_exact_declared_readback(env
     assert _events(env, "projection.completed", claim_id) == []
 
 
+def test_confirm_rechecks_the_locked_group_state(env, monkeypatch):
+    claim_id = _seed(env)
+    projection_id = _request(env, claim_id, "icon.claim_register").projection_id
+    service = env.app.state.projection_agent
+    base = f"/console/claims/{claim_id}/projections/{projection_id}/paste-assist"
+    env.client.post(f"{base}/start", headers=_h(OFFICER))
+    for group in ("claim_details", "reserve"):
+        env.client.put(
+            f"{base}/groups/{group}",
+            json={"done": True},
+            headers=_h(OFFICER),
+        )
+
+    original = service.paste.validate_readback
+
+    def uncheck_after_request_validation(click_path, submitted):
+        checked = original(click_path, submitted)
+        service.set_group(
+            claim_id,
+            projection_id,
+            "reserve",
+            done=False,
+            actor=OFFICER,
+        )
+        return checked
+
+    monkeypatch.setattr(
+        service.paste,
+        "validate_readback",
+        uncheck_after_request_validation,
+    )
+    response = env.client.post(
+        f"{base}/confirm",
+        json={
+            "attested": True,
+            "readback": {"external.icon.claim_no": ICON_CLAIM_NO},
+        },
+        headers=_h(OFFICER, **{"Idempotency-Key": "locked-groups"}),
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "PROJECTION_GROUPS_INCOMPLETE"
+    assert _projections(env)[0]["status"] == "executing"
+
+
 def test_confirm_is_request_idempotent_and_a_completed_row_is_immutable(env):
     claim_id = _seed(env)
     projection_id = _request(env, claim_id, "icon.claim_register").projection_id
@@ -1249,6 +1298,107 @@ def test_a_kill_between_field_commit_and_completion_resumes_exactly_once(env, mo
         ).scalar()
     refs = _loads(refs)
     assert refs["external.icon.claim_no"] == ICON_CLAIM_NO
+
+
+def test_concurrent_finalisers_append_one_readback_version(env, monkeypatch):
+    claim_id = _seed(env)
+    projection_id = _request(env, claim_id, "icon.claim_register").projection_id
+    service = env.app.state.projection_agent
+    original_finalise = service._finalise
+
+    def stop_after_verifying(*_args, **_kwargs):
+        raise RuntimeError("synthetic stop before finalisation")
+
+    monkeypatch.setattr(service, "_finalise", stop_after_verifying)
+    with pytest.raises(RuntimeError):
+        _run_paste(env, claim_id, projection_id, key="concurrent-finalise")
+    monkeypatch.setattr(service, "_finalise", original_finalise)
+
+    original_write = service.claims.write_fields
+    first_entered = Event()
+    release_first = Event()
+    second_entered = Event()
+    calls = 0
+    calls_lock = Lock()
+
+    def interleaved_write(*args, **kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=2)
+        else:
+            second_entered.set()
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(service.claims, "write_fields", interleaved_write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(original_finalise, projection_id, actor=OFFICER)
+        assert first_entered.wait(timeout=2)
+        second_started = Event()
+
+        def second_finalise():
+            second_started.set()
+            return original_finalise(projection_id, actor=OFFICER)
+
+        second = pool.submit(second_finalise)
+        assert second_started.wait(timeout=2)
+        # Under the projection lock, the second worker cannot reach write_fields
+        # while the first worker is paused there.
+        assert second_entered.wait(timeout=0.2) is False
+        release_first.set()
+        assert first.result(timeout=2)["status"] == "completed"
+        assert second.result(timeout=2)["status"] == "completed"
+
+    with env.app.state.engine.connect() as connection:
+        versions = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM claim_fields WHERE claim_id = :id "
+                "AND path = 'external.icon.claim_no'"
+            ),
+            {"id": claim_id},
+        ).scalar()
+    assert versions == 1
+    assert len(_events(env, "projection.completed", claim_id)) == 1
+
+
+def test_completed_projection_replays_unacknowledged_fsm_work(env, monkeypatch):
+    claim_id = _seed(env, status="REPORT_RECEIVED")
+    projection_id = _request(env, claim_id, "icon.claim_register").projection_id
+    service = env.app.state.projection_agent
+    original = service._advance_claim_state
+
+    def crash_before_fsm(*_args, **_kwargs):
+        raise RuntimeError("synthetic kill after projection completion")
+
+    monkeypatch.setattr(service, "_advance_claim_state", crash_before_fsm)
+    with pytest.raises(RuntimeError):
+        _run_paste(env, claim_id, projection_id, key="fsm-crash")
+    monkeypatch.setattr(service, "_advance_claim_state", original)
+
+    assert _projections(env)[0]["status"] == "completed"
+    with env.app.state.engine.connect() as connection:
+        status = connection.execute(
+            text("SELECT status FROM claims WHERE id = :id"),
+            {"id": claim_id},
+        ).scalar()
+    assert status == "REPORT_RECEIVED"
+
+    assert service.resume(actor="system") == 1
+    with env.app.state.engine.connect() as connection:
+        status = connection.execute(
+            text("SELECT status FROM claims WHERE id = :id"),
+            {"id": claim_id},
+        ).scalar()
+        evidence = connection.execute(
+            text("SELECT evidence FROM projections WHERE id = :id"),
+            {"id": projection_id},
+        ).scalar()
+    assert status == "REGISTERED"
+    assert _loads(evidence)["paste_assist"]["fsm_checked_at"]
+    assert service.resume(actor="system") == 0
 
 
 def test_a_human_verified_icon_claim_number_is_never_superseded(env):
@@ -1417,6 +1567,55 @@ def test_sampling_selects_exactly_the_deterministic_ten_percent(env):
     assert items == len(expected)
 
 
+def test_concurrent_weekly_scans_create_one_readback_check(env, monkeypatch):
+    service = env.app.state.projection_agent
+    completed = _complete_many(env, 1)
+    projection_id = completed[0]
+    monkeypatch.setattr(
+        service,
+        "selected_for_readback",
+        lambda _projection_id, *, rate_percent: True,
+    )
+    original_events = service._events
+    first_entered = Event()
+    release_first = Event()
+    second_entered = Event()
+    calls = 0
+    calls_lock = Lock()
+
+    def interleaved_events(claim_id, event_type):
+        nonlocal calls
+        result = original_events(claim_id, event_type)
+        if event_type != "review.created":
+            return result
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=2)
+        else:
+            second_entered.set()
+        return result
+
+    monkeypatch.setattr(service, "_events", interleaved_events)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.sample_paste_readbacks)
+        assert first_entered.wait(timeout=2)
+        second = pool.submit(service.sample_paste_readbacks)
+        assert second_entered.wait(timeout=0.2) is False
+        release_first.set()
+        reports = [first.result(timeout=2), second.result(timeout=2)]
+    assert sum(report["created"] for report in reports) == 1
+    checks = [
+        event
+        for event in original_events(None, "review.created")
+        if event["payload"].get("type") == "PASTE_READBACK_CHECK"
+        and event["payload"].get("projection_id") == projection_id
+    ]
+    assert len(checks) == 1
+
+
 def test_the_configured_rate_governs_selection_and_the_payload_is_pii_safe(tmp_path):
     """Rate is pack data: at 100 every completed row is sampled, at 0 none is."""
 
@@ -1461,11 +1660,13 @@ def test_the_weekly_beat_slot_is_registered_from_pack_data(env):
 
     entry = celery_app.conf.beat_schedule[BEAT_ENTRY]
     assert entry["task"] == TASK_NAME
-    # Celery numbers Sunday as 0, so Monday is 1.
+    # Pack data stays Monday 08:00 EAT. Beat evaluates in UTC, so the installed
+    # crontab is Monday 05:00 UTC (Celery numbers Sunday as 0).
     assert entry["schedule"].day_of_week == {1}
-    assert entry["schedule"].hour == {8}
+    assert entry["schedule"].hour == {5}
     assert entry["schedule"].minute == {0}
-    assert entry["options"]["timezone"] == "Africa/Nairobi"
+    assert entry["schedule"].app.timezone.key == "UTC"
+    assert "options" not in entry
 
 
 # --- 16. events, ledger, and leak checks ---------------------------------------------
@@ -1631,3 +1832,5 @@ def test_a_projection_readback_field_is_graded_by_gval_before_it_counts(env):
         ]
     assert len(graded) == 1
     assert graded[0]["result"] == "pass"
+    subject_ref = _loads(graded[0]["subject_ref"])
+    assert subject_ref["capability_id"] == "project.icon.claim_register"

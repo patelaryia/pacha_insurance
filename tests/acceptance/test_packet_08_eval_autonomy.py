@@ -398,7 +398,7 @@ def test_gtpl_passes_render_and_fails_on_leak(harness):
 def test_capabilities_seeded_with_constitution_ceilings(harness):
     client, _, _, evals = harness
     assert evals.autonomy.level("intake.acknowledge") == "L1"
-    assert evals.autonomy.level("icon.claim_register") == "L0"
+    assert evals.autonomy.level("project.icon.salvage_register") == "L0"
     r = client.get("/eval/capabilities", headers=AGENT)
     assert r.status_code == 200
     rows = {row["id"]: row for row in r.json()["capabilities"]}

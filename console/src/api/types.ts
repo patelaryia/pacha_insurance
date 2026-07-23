@@ -235,6 +235,7 @@ export interface PasteField {
   path: string;
   /** The exact server string the Clipboard API receives. Never reformatted. */
   copy_value: string;
+  external_encoding: string;
   value_type: string;
   field_version: number | string;
 }

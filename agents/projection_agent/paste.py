@@ -244,6 +244,7 @@ class PasteEngine:
                             value_type=entry["value_type"],
                             encoding=entry["external_encoding"],
                         ),
+                        "external_encoding": entry["external_encoding"],
                         "value_type": entry["value_type"],
                         "field_version": entry["version"],
                     }

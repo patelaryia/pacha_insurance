@@ -6,7 +6,9 @@ synchronous engine acceptance and operations drive directly.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from celery.schedules import crontab
 
@@ -16,6 +18,49 @@ BEAT_ENTRY = "projection-agent-weekly-paste-readback"
 TASK_NAME = "projection_agent.sample_paste_readbacks"
 
 _SERVICE: Any | None = None
+
+
+def _scheduler_slot(sampling: Any) -> tuple[str, int, int]:
+    """Convert one configured weekly wall time into Celery Beat's timezone."""
+
+    source_timezone = ZoneInfo(sampling.timezone)
+    scheduler_timezone = celery_app.timezone
+    source_weekday = (
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun",
+    ).index(sampling.day_of_week)
+    year = datetime.now(UTC).year
+    converted: set[tuple[str, int, int]] = set()
+    day_names = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+    for month in (1, 4, 7, 10):
+        first = datetime(year, month, 1)
+        day = 1 + (source_weekday - first.weekday()) % 7
+        local = datetime(
+            year,
+            month,
+            day,
+            sampling.hour,
+            sampling.minute,
+            tzinfo=source_timezone,
+        )
+        scheduler_time = local.astimezone(scheduler_timezone)
+        converted.add(
+            (
+                day_names[scheduler_time.weekday()],
+                scheduler_time.hour,
+                scheduler_time.minute,
+            )
+        )
+    if len(converted) != 1:
+        raise ValueError(
+            "sampling timezone cannot be represented by one scheduler crontab"
+        )
+    return converted.pop()
 
 
 @celery_app.task(name=TASK_NAME)
@@ -33,15 +78,16 @@ def configure_weekly_task(service: Any) -> None:
     global _SERVICE  # noqa: PLW0603 - Celery task bindings are process-local
     _SERVICE = service
     sampling = service.operations.sampling
+    scheduler_day, scheduler_hour, scheduler_minute = _scheduler_slot(sampling)
     schedule = dict(celery_app.conf.beat_schedule or {})
     schedule[BEAT_ENTRY] = {
         "task": TASK_NAME,
         "schedule": crontab(
-            day_of_week=sampling.day_of_week,
-            hour=sampling.hour,
-            minute=sampling.minute,
+            day_of_week=scheduler_day,
+            hour=scheduler_hour,
+            minute=scheduler_minute,
+            app=celery_app,
         ),
-        "options": {"timezone": sampling.timezone},
     }
     celery_app.conf.beat_schedule = schedule
 

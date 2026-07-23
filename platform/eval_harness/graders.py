@@ -1015,7 +1015,10 @@ class EvalConsumer:
             with self.harness.engine.connect() as connection:
                 row = (
                     connection.execute(
-                        text("SELECT source_type, path FROM claim_fields WHERE id = :field_id"),
+                        text(
+                            "SELECT source_type, source_ref, path FROM claim_fields "
+                            "WHERE id = :field_id"
+                        ),
                         {"field_id": field_id},
                     )
                     .mappings()
@@ -1039,10 +1042,20 @@ class EvalConsumer:
                 return
             # PRD-09 §9.5: a projection readback is graded against its captured
             # validator before it can count as autonomy evidence.
-            if row["source_type"] == "projection_readback" and not self._already_graded(
-                "G-VAL", "field_id", field_id
-            ):
-                self.harness.grade("G-VAL", subject, actor="agent:eval")
+            if row["source_type"] == "projection_readback":
+                source_ref = _decoded_json(row["source_ref"])
+                operation = (
+                    source_ref.get("operation")
+                    if isinstance(source_ref, dict)
+                    else None
+                )
+                if not isinstance(operation, str) or not operation.startswith(
+                    ("icon.", "edms.")
+                ):
+                    return
+                subject["capability_id"] = f"project.{operation}"
+                if not self._already_graded("G-VAL", "field_id", field_id):
+                    self.harness.grade("G-VAL", subject, actor="agent:eval")
 
 
 __all__ = ["EvalConsumer", "GraderRegistry", "GraderResult", "RawGrade"]

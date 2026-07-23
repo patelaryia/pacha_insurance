@@ -449,14 +449,26 @@ class ProjectionService:
             )
 
     def resume(self, *, actor: str = "system") -> int:
-        """Finish every projection stranded in `verifying` after a crash."""
+        """Finish verifying rows and any unacknowledged post-completion FSM work."""
 
         with self.sessions() as session:
-            stranded = list(
+            candidates = list(
                 session.scalars(
-                    select(Projection.id).where(Projection.status == "verifying")
+                    select(Projection).where(
+                        (Projection.status == "verifying")
+                        | (
+                            (Projection.status == "completed")
+                            & (Projection.operation == "icon.claim_register")
+                        )
+                    )
                 )
             )
+            stranded = [
+                row.id
+                for row in candidates
+                if row.status == "verifying"
+                or self._evidence(row).get("fsm_checked_at") is None
+            ]
         resumed = 0
         for projection_id in stranded:
             try:
@@ -681,33 +693,12 @@ class ProjectionService:
                 )
             return self._finalise(projection_id, actor=actor)
 
-        if row.status != "executing":
-            raise ClaimCoreError(
-                409,
-                "PROJECTION_STATE_STALE",
-                f"Confirm requires an executing projection, not {row.status}",
-            )
         if attested is not True:
             raise ClaimCoreError(
                 422, "ATTESTATION_REQUIRED", "Attestation must be literal true"
             )
         if not isinstance(readback, dict):
             raise ClaimCoreError(422, "READBACK_MALFORMED", "Readback must be an object")
-        groups = paste.get("groups") or {}
-        outstanding = sorted(
-            screen.id
-            for screen in click_path.screens
-            if not (
-                isinstance(groups.get(screen.id), dict)
-                and groups[screen.id].get("done") is True
-            )
-        )
-        if outstanding:
-            raise ClaimCoreError(
-                422,
-                "PROJECTION_GROUPS_INCOMPLETE",
-                f"Screens {outstanding} are not marked done",
-            )
         checked = self.paste.validate_readback(click_path, readback)
         now = self.clock()
         with self._guard(projection_id) as session:
@@ -715,27 +706,65 @@ class ProjectionService:
             if locked is None:
                 raise ClaimCoreError(404, "PROJECTION_NOT_FOUND", "Projection was not found")
             current = self._evidence(locked)
-            if isinstance(current.get("confirm"), dict):
-                raise ClaimCoreError(
-                    409, "PROJECTION_STATE_STALE", "This projection was confirmed concurrently"
+            current_confirm = current.get("confirm")
+            if isinstance(current_confirm, dict):
+                same_key = current_confirm.get("idempotency_key") == idempotency_key
+                same_body = current_confirm.get("request_hash") == request_hash
+                if same_key and not same_body:
+                    raise ClaimCoreError(
+                        409,
+                        "IDEMPOTENCY_CONFLICT",
+                        "That key was used with a different body",
+                    )
+                if not same_body:
+                    raise ClaimCoreError(
+                        409,
+                        "PROJECTION_ALREADY_COMPLETED",
+                        "This projection was already confirmed with a different readback",
+                    )
+                # An exact concurrent repeat joins the durable finalisation below.
+                return_after_guard = True
+            else:
+                return_after_guard = False
+                if locked.status != "executing":
+                    raise ClaimCoreError(
+                        409,
+                        "PROJECTION_STATE_STALE",
+                        f"Confirm requires an executing projection, not {locked.status}",
+                    )
+                groups = current.get("groups") or {}
+                outstanding = sorted(
+                    screen.id
+                    for screen in click_path.screens
+                    if not (
+                        isinstance(groups.get(screen.id), dict)
+                        and groups[screen.id].get("done") is True
+                    )
                 )
-            started_at = current.get("started_at")
-            elapsed = (
-                int((now - datetime.fromisoformat(started_at)).total_seconds())
-                if isinstance(started_at, str)
-                else 0
-            )
-            current["confirm"] = {
-                "idempotency_key": idempotency_key,
-                "request_hash": request_hash,
-                "readback": dict(checked),
-            }
-            current["attested_by"] = actor
-            current["attested_at"] = now.isoformat()
-            current["completed_at"] = now.isoformat()
-            current["paste_seconds"] = elapsed
-            self._transition(locked, "verifying")
-            self._store_evidence(locked, current)
+                if outstanding:
+                    raise ClaimCoreError(
+                        422,
+                        "PROJECTION_GROUPS_INCOMPLETE",
+                        f"Screens {outstanding} are not marked done",
+                    )
+            if not return_after_guard:
+                started_at = current.get("started_at")
+                elapsed = (
+                    int((now - datetime.fromisoformat(started_at)).total_seconds())
+                    if isinstance(started_at, str)
+                    else 0
+                )
+                current["confirm"] = {
+                    "idempotency_key": idempotency_key,
+                    "request_hash": request_hash,
+                    "readback": dict(checked),
+                }
+                current["attested_by"] = actor
+                current["attested_at"] = now.isoformat()
+                current["completed_at"] = now.isoformat()
+                current["paste_seconds"] = elapsed
+                self._transition(locked, "verifying")
+                self._store_evidence(locked, current)
         return self._finalise(projection_id, actor=actor)
 
     # -- finalisation ----------------------------------------------------------
@@ -745,7 +774,14 @@ class ProjectionService:
 
         row = self._row(projection_id)
         if row.status == "completed":
-            return self._view(row).as_dict()
+            paste = self._evidence(row)
+            accepted = (paste.get("confirm") or {}).get("readback") or {}
+            self._finish_claim_state(
+                row,
+                accepted,
+                actor=paste.get("attested_by") or actor,
+            )
+            return self._view(self._row(projection_id)).as_dict()
         if row.status != "verifying":
             raise ClaimCoreError(
                 409, "PROJECTION_STATE_STALE", "Finalisation requires a verifying projection"
@@ -753,80 +789,129 @@ class ProjectionService:
         operation = self._definition(row)
         click_path = operation.click_path
         assert click_path is not None  # guaranteed by _definition
-        paste = self._evidence(row)
-        confirm = paste.get("confirm") or {}
-        accepted = confirm.get("readback") or {}
-        attested_by = paste.get("attested_by")
-        attested_at = paste.get("attested_at")
-        source_ref = {
-            "projection_id": row.id,
-            "operation": row.operation,
-            "operation_version": click_path.version,
-            "attested_by": attested_by,
-            "attested_at": attested_at,
-        }
-        writes: list[FieldWrite] = []
-        for path, value in accepted.items():
-            existing = self.claims.snapshot_current_fields(row.claim_id, [path]).get(path)
-            if existing is not None:
-                reference = existing.source_ref if isinstance(existing.source_ref, dict) else {}
-                if (
-                    existing.verification_state == "human_verified"
-                    or reference.get("projection_id") != row.id
-                    or existing.value != value
-                ):
-                    self._readback_conflict(row, path)
-                # This projection's own append-only version already exists.
-                continue
-            writes.append(
-                FieldWrite(
-                    path=path,
-                    value=value,
-                    value_type="string",
-                    source_type="projection_readback",
-                    source_ref=source_ref,
-                    verification_state="system_confirmed",
-                )
-            )
-        if writes:
-            self.claims.write_fields(row.claim_id, writes, attested_by or actor)
-
         with self._guard(projection_id) as session:
             locked = session.get(Projection, projection_id)
             if locked is None:
                 raise ClaimCoreError(404, "PROJECTION_NOT_FOUND", "Projection was not found")
             if locked.status == "completed":
-                return self._view(locked).as_dict()
-            self._transition(locked, "completed")
-            locked.completed_at = self.clock()
-            locked.readback = {
-                "paths": sorted(accepted),
-                "values": {
-                    path: self.claims.protect_snapshot_value(
-                        row.claim_id, path=path, value=value
+                completed = self._view(locked).as_dict()
+                completed_row = locked
+                completed_paste = self._evidence(locked)
+                completed_accepted = (
+                    completed_paste.get("confirm") or {}
+                ).get("readback") or {}
+                completed_actor = completed_paste.get("attested_by") or actor
+            else:
+                if locked.status != "verifying":
+                    raise ClaimCoreError(
+                        409,
+                        "PROJECTION_STATE_STALE",
+                        "Finalisation requires a verifying projection",
                     )
-                    for path, value in accepted.items()
-                },
-            }
-            self._emit(
-                session,
-                claim_id=locked.claim_id,
-                event_type="projection.completed",
-                payload={
+                paste = self._evidence(locked)
+                confirm = paste.get("confirm") or {}
+                accepted = confirm.get("readback") or {}
+                attested_by = paste.get("attested_by")
+                attested_at = paste.get("attested_at")
+                source_ref = {
                     "projection_id": locked.id,
                     "operation": locked.operation,
-                    "mode": locked.mode,
-                    "snapshot_hash": (locked.payload or {}).get("snapshot_hash"),
-                    "readback_paths": sorted(accepted),
+                    "operation_version": click_path.version,
                     "attested_by": attested_by,
                     "attested_at": attested_at,
-                    "paste_seconds": paste.get("paste_seconds"),
-                },
-                actor=attested_by or actor,
-            )
-            completed = self._view(locked).as_dict()
-        self._advance_claim_state(row, operation, accepted, actor=attested_by or actor)
+                }
+                writes: list[FieldWrite] = []
+                for path, value in accepted.items():
+                    existing = self.claims.snapshot_current_fields(
+                        locked.claim_id, [path]
+                    ).get(path)
+                    if existing is not None:
+                        reference = (
+                            existing.source_ref
+                            if isinstance(existing.source_ref, dict)
+                            else {}
+                        )
+                        if (
+                            existing.verification_state == "human_verified"
+                            or reference.get("projection_id") != locked.id
+                            or existing.value != value
+                        ):
+                            self._readback_conflict(locked, path)
+                        # This projection's own append-only version already exists.
+                        continue
+                    writes.append(
+                        FieldWrite(
+                            path=path,
+                            value=value,
+                            value_type="string",
+                            source_type="projection_readback",
+                            source_ref=source_ref,
+                            verification_state="system_confirmed",
+                        )
+                    )
+                if writes:
+                    self.claims.write_fields(
+                        locked.claim_id, writes, attested_by or actor
+                    )
+                self._transition(locked, "completed")
+                locked.completed_at = self.clock()
+                locked.readback = {
+                    "paths": sorted(accepted),
+                    "values": {
+                        path: self.claims.protect_snapshot_value(
+                            locked.claim_id, path=path, value=value
+                        )
+                        for path, value in accepted.items()
+                    },
+                }
+                self._emit(
+                    session,
+                    claim_id=locked.claim_id,
+                    event_type="projection.completed",
+                    payload={
+                        "projection_id": locked.id,
+                        "operation": locked.operation,
+                        "mode": locked.mode,
+                        "snapshot_hash": (locked.payload or {}).get("snapshot_hash"),
+                        "readback_paths": sorted(accepted),
+                        "attested_by": attested_by,
+                        "attested_at": attested_at,
+                        "paste_seconds": paste.get("paste_seconds"),
+                    },
+                    actor=attested_by or actor,
+                )
+                completed = self._view(locked).as_dict()
+                completed_row = locked
+                completed_accepted = accepted
+                completed_actor = attested_by or actor
+        self._finish_claim_state(
+            completed_row,
+            completed_accepted,
+            actor=completed_actor,
+        )
         return completed
+
+    def _finish_claim_state(
+        self,
+        row: Projection,
+        accepted: dict[str, Any],
+        *,
+        actor: str,
+    ) -> None:
+        """Complete and acknowledge the post-projection FSM obligation once."""
+
+        if row.operation != "icon.claim_register":
+            return
+        with self._guard(row.id) as session:
+            locked = session.get(Projection, row.id)
+            if locked is None:
+                raise ClaimCoreError(404, "PROJECTION_NOT_FOUND", "Projection was not found")
+            paste = self._evidence(locked)
+            if paste.get("fsm_checked_at") is not None:
+                return
+            self._advance_claim_state(locked, locked.operation, accepted, actor=actor)
+            paste.setdefault("fsm_checked_at", self.clock().isoformat())
+            self._store_evidence(locked, paste)
 
     def _readback_conflict(self, row: Projection, path: str) -> None:
         """Stop in `verifying` and raise one visible EXCEPTION. Never supersede."""
@@ -864,14 +949,14 @@ class ProjectionService:
     def _advance_claim_state(
         self,
         row: Projection,
-        operation: Operation,
+        operation_id: str,
         accepted: dict[str, Any],
         *,
         actor: str,
     ) -> None:
         """Own `REPORT_RECEIVED→REGISTERED` only. Never `REGISTERED→RESERVED`."""
 
-        if operation.id != "icon.claim_register":
+        if operation_id != "icon.claim_register":
             return
         with self.app.state.engine.connect() as connection:
             status = connection.execute(
@@ -884,7 +969,7 @@ class ProjectionService:
                 "REGISTERED",
                 {
                     "projection_id": row.id,
-                    "operation": operation.id,
+                    "operation": operation_id,
                     "readback_paths": sorted(accepted),
                 },
                 actor,
@@ -911,7 +996,7 @@ class ProjectionService:
                     "type": "EXCEPTION",
                     "subtype": subtype,
                     "projection_id": row.id,
-                    "operation": operation.id,
+                    "operation": operation_id,
                     "claim_status": status,
                 },
                 actor=ACTOR,
@@ -943,36 +1028,42 @@ class ProjectionService:
             )
             for row in rows:
                 session.expunge(row)
-        sampled = {
-            event["payload"].get("projection_id")
-            for event in self._events(None, "review.created")
-            if isinstance(event["payload"], dict)
-            and event["payload"].get("type") == "PASTE_READBACK_CHECK"
-        }
         created: list[str] = []
         for row in rows:
-            if row.id in sampled:
-                continue
             if not self.selected_for_readback(row.id, rate_percent=rate):
                 continue
-            readback = row.readback if isinstance(row.readback, dict) else {}
-            with self.sessions.begin() as session:
+            # The completed projection row is the durable uniqueness boundary.
+            # PostgreSQL workers serialise on FOR UPDATE; SQLite workers share
+            # the application-local stripe. Re-check only after taking it.
+            with self._guard(row.id) as session:
+                locked = session.get(Projection, row.id)
+                if locked is None or locked.status != "completed":
+                    continue
+                if any(
+                    event["payload"].get("type") == "PASTE_READBACK_CHECK"
+                    and event["payload"].get("projection_id") == locked.id
+                    for event in self._events(locked.claim_id, "review.created")
+                    if isinstance(event["payload"], dict)
+                ):
+                    continue
+                readback = (
+                    locked.readback if isinstance(locked.readback, dict) else {}
+                )
                 self._emit(
                     session,
-                    claim_id=row.claim_id,
+                    claim_id=locked.claim_id,
                     event_type="review.created",
                     payload={
                         "type": "PASTE_READBACK_CHECK",
-                        "projection_id": row.id,
-                        "operation": row.operation,
-                        "capability_id": f"project.{row.operation}",
-                        "snapshot_hash": (row.payload or {}).get("snapshot_hash"),
+                        "projection_id": locked.id,
+                        "operation": locked.operation,
+                        "capability_id": f"project.{locked.operation}",
+                        "snapshot_hash": (locked.payload or {}).get("snapshot_hash"),
                         "readback_paths": list(readback.get("paths", [])),
                     },
                     actor=actor,
                 )
-            sampled.add(row.id)
-            created.append(row.id)
+            created.append(locked.id)
         return {"scanned": len(rows), "created": len(created), "rate_percent": rate}
 
 

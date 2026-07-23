@@ -105,6 +105,7 @@ function strip(overrides: Partial<PasteAssistView> = {}): PasteAssistView {
             label: "Policy number",
             path: "policy.number",
             copy_value: "POL-20-0001",
+            external_encoding: "raw",
             value_type: "string",
             field_version: 3,
           },
@@ -113,6 +114,7 @@ function strip(overrides: Partial<PasteAssistView> = {}): PasteAssistView {
             label: "Loss date",
             path: "loss.date",
             copy_value: "2026-07-01",
+            external_encoding: "iso",
             value_type: "date",
             field_version: 1,
           },
@@ -128,6 +130,7 @@ function strip(overrides: Partial<PasteAssistView> = {}): PasteAssistView {
             label: "Reserve total",
             path: "reserve.total",
             copy_value: "142656.00",
+            external_encoding: "shillings",
             value_type: "money",
             field_version: 2,
           },
@@ -373,6 +376,27 @@ describe("paste strip", () => {
 
     await userEvent.click(within(panel).getByRole("button", { name: "Copy Policy number" }));
     expect(writeText).toHaveBeenLastCalledWith("POL-20-0001");
+  });
+
+  it("previews cents and shillings without changing the copied amount", async () => {
+    const shillingPanel = await openStrip(stubApi());
+    const shillingPreview = within(shillingPanel)
+      .getByText("Reserve total")
+      .parentElement?.querySelector("strong")?.textContent;
+    expect(shillingPreview).toContain("142,656");
+    cleanup();
+
+    const centsView = strip();
+    centsView.groups[1].fields[0] = {
+      ...centsView.groups[1].fields[0],
+      copy_value: "14265600",
+      external_encoding: "cents",
+    };
+    const centsPanel = await openStrip(stubApi({ view: centsView }));
+    const centsPreview = within(centsPanel)
+      .getByText("Reserve total")
+      .parentElement?.querySelector("strong")?.textContent;
+    expect(centsPreview).toBe(shillingPreview);
   });
 
   it("surfaces a copy failure and leaves the field unchanged", async () => {
