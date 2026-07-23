@@ -1,0 +1,433 @@
+@font-face {
+  font-family: "Pacha Ovo";
+  src: url("/landing/ovo-regular.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "Pacha Courier";
+  src: url("/landing/courier-prime-regular.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "Pacha Courier";
+  src: url("/landing/courier-prime-bold.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.landing-page {
+  --landing-ink: oklch(15% 0.008 270);
+  --landing-ink-soft: oklch(43% 0.015 270);
+  --landing-ink-faint: oklch(53% 0.012 270);
+  --landing-canvas: oklch(95.8% 0.01 80);
+  --landing-paper: oklch(99.8% 0.002 250);
+  --landing-tint: oklch(97.5% 0.004 250);
+  --landing-line: oklch(88% 0.008 260);
+  --landing-line-strong: oklch(76% 0.012 260);
+  --landing-blue: oklch(56% 0.145 245);
+  --landing-blue-dark: oklch(44% 0.125 245);
+  --landing-blue-pale: oklch(94% 0.035 240);
+  --landing-space-xs: 0.25rem;
+  --landing-space-sm: 0.5rem;
+  --landing-space-md: 0.75rem;
+  --landing-space-lg: 1rem;
+  --landing-space-xl: 1.5rem;
+  --landing-space-2xl: 2rem;
+  --landing-space-3xl: 3rem;
+  --landing-space-4xl: 4rem;
+  --landing-space-6xl: 6rem;
+  width: 100%;
+  min-height: 100%;
+  overflow: clip;
+  background: var(--landing-canvas);
+  color: var(--landing-ink);
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 1rem;
+  font-kerning: normal;
+  -webkit-font-smoothing: antialiased;
+}
+
+.landing-page * { box-sizing: border-box; }
+.landing-page a { color: inherit; text-decoration: none; }
+.landing-page p { margin: 0; }
+.landing-page ::selection { background: var(--landing-blue-pale); }
+
+.landing-skip-link {
+  position: fixed;
+  top: var(--landing-space-md);
+  left: var(--landing-space-md);
+  z-index: 20;
+  translate: 0 -180%;
+  background: var(--landing-ink);
+  color: var(--landing-paper) !important;
+  padding: var(--landing-space-md) var(--landing-space-lg);
+  font-weight: 700;
+  transition: translate 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.landing-skip-link:focus { translate: 0; }
+.landing-filter-defs { position: absolute; width: 0; height: 0; }
+.landing-hero-runway { position: relative; height: 380vh; }
+.landing-hero-runway-reduced { height: 100svh; }
+
+.landing-hero {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  min-height: 620px;
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--landing-canvas);
+}
+
+.landing-hero-orbs { position: absolute; inset: 0; pointer-events: none; }
+.landing-hero-orbs img { position: absolute; height: auto; }
+.landing-hero-orbs img:first-child { top: -30%; right: -22%; width: 82vw; opacity: 0.56; filter: blur(10px); }
+.landing-hero-orbs img:last-child { bottom: -38%; left: -28%; width: 78vw; opacity: 0.48; filter: blur(12px); }
+
+.landing-header {
+  position: absolute;
+  z-index: 8;
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: calc(1.5rem + env(safe-area-inset-top)) clamp(1.25rem, 3vw, 2.5rem) 0;
+  color: var(--landing-ink-soft);
+  font-family: "Pacha Courier", "Courier New", monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.landing-header a,
+.landing-button {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.landing-header a { transition: color 160ms cubic-bezier(0.22, 1, 0.36, 1); }
+.landing-header a:hover { color: var(--landing-ink); }
+
+.landing-document-stage { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.landing-paper {
+  position: absolute;
+  width: 384px;
+  overflow: hidden;
+  transform-origin: left top;
+  border: 1px solid var(--landing-line);
+  background: var(--landing-paper);
+  box-shadow: 0 4px 12px oklch(15% 0.008 270 / 0.08), 0 2px 4px oklch(15% 0.008 270 / 0.04);
+  color: var(--landing-ink);
+  padding: 0.75rem 1rem 0.875rem;
+  will-change: transform;
+}
+
+.landing-paper-claim { top: 9vh; left: 4vw; transform: rotate(-2deg); }
+.landing-paper-email { top: 7vh; right: 3vw; width: 428px; padding: 0.75rem 0 0; transform: rotate(1.5deg); transform-origin: right top; }
+.landing-paper-police { bottom: 4vh; left: 7vw; width: 376px; transform: rotate(1deg); transform-origin: left bottom; }
+.landing-paper-assessor { right: 5vw; bottom: 5vh; width: 400px; transform: rotate(-1.5deg); transform-origin: right bottom; }
+
+.landing-paper-label {
+  color: var(--landing-ink-faint);
+  font-family: "Pacha Courier", "Courier New", monospace;
+  font-size: 0.65625rem;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.625rem;
+  text-transform: uppercase;
+}
+
+.landing-paper-email .landing-paper-label { padding: 0 1rem; }
+.landing-paper-content { transition: opacity 80ms linear; }
+.landing-doc-letterhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--landing-space-md);
+  border-bottom: 2px solid oklch(26% 0.01 270);
+  padding-bottom: 0.375rem;
+}
+
+.landing-doc-letterhead > div { display: grid; gap: 0.0625rem; }
+.landing-doc-letterhead b { font-family: "Pacha Ovo", Georgia, serif; font-size: 0.90625rem; font-weight: 400; }
+.landing-doc-letterhead small { color: var(--landing-ink-faint); font-size: 0.5rem; }
+.landing-doc-letterhead code { color: var(--landing-ink-faint); font-family: "Pacha Courier", monospace; font-size: 0.53125rem; text-align: right; white-space: nowrap; }
+.landing-doc-title {
+  border-bottom: 1px solid var(--landing-line-strong);
+  padding: 0.375rem 0;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.landing-doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3125rem 0.75rem; padding-top: 0.5rem; }
+.landing-doc-grid-form { grid-template-columns: 1.4fr 1fr; }
+.landing-doc-field { min-width: 0; }
+.landing-doc-field-wide { grid-column: 1 / -1; }
+.landing-doc-field span,
+.landing-doc-signoff span {
+  display: block;
+  color: var(--landing-ink-faint);
+  font-size: 0.46875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.landing-doc-field strong {
+  display: block;
+  border-bottom: 1px dotted var(--landing-line-strong);
+  padding: 0.0625rem 0;
+  font-family: "Pacha Courier", monospace;
+  font-size: 0.625rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.landing-doc-signoff,
+.landing-police-signoff { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--landing-space-md); padding-top: 0.5rem; }
+.landing-doc-signoff > small { max-width: 12.5rem; color: var(--landing-ink-faint); font-size: 0.46875rem; line-height: 1.5; }
+.landing-doc-signoff > p { max-width: 14.5rem; font-family: "Pacha Courier", monospace; font-size: 0.5625rem; line-height: 1.6; }
+.landing-doc-signoff > p span { font-family: "Segoe UI", sans-serif; }
+.landing-signature { flex: 0 0 auto; text-align: right; }
+.landing-signature svg { display: block; width: 4.5rem; height: 1.125rem; margin-left: auto; }
+.landing-signature path { fill: none; stroke: oklch(36% 0.01 270); stroke-width: 1.2; }
+.landing-signature span { border-top: 1px solid var(--landing-line-strong); padding-top: 0.125rem; color: var(--landing-ink-faint); font-size: 0.46875rem; letter-spacing: 0.06em; text-transform: uppercase; }
+
+.landing-email-actions { display: flex; align-items: center; gap: 0.875rem; border-block: 1px solid var(--landing-line); background: var(--landing-tint); padding: 0.3125rem 1rem; color: var(--landing-blue-dark); font-size: 0.59375rem; }
+.landing-email-actions span:last-child { margin-left: auto; color: var(--landing-ink-faint); }
+.landing-email-body { padding: 0.625rem 1rem 0.875rem; font-size: 0.65625rem; }
+.landing-email-body > strong { font-size: 0.78125rem; line-height: 1.35; }
+.landing-email-sender { display: flex; align-items: center; gap: 0.5625rem; margin-top: 0.5625rem; }
+.landing-email-avatar { display: grid; place-items: center; flex: 0 0 1.875rem; height: 1.875rem; border-radius: 50%; background: var(--landing-blue-pale); color: var(--landing-blue-dark); font-weight: 700; }
+.landing-email-sender > span:nth-child(2) { display: grid; min-width: 0; flex: 1; }
+.landing-email-sender small { color: var(--landing-ink-faint); font-size: 0.5625rem; }
+.landing-email-sender time { color: var(--landing-ink-faint); font-size: 0.5625rem; white-space: nowrap; }
+.landing-email-copy { display: grid; gap: 0.375rem; margin-top: 0.625rem; color: oklch(30% 0.01 270); line-height: 1.6; }
+.landing-email-copy ol { margin: 0; padding-left: 1.65rem; }
+.landing-email-closing { color: var(--landing-ink-soft); }
+
+.landing-police-heading { display: grid; justify-items: center; gap: 0.125rem; border-bottom: 1px solid var(--landing-line-strong); padding-bottom: 0.4375rem; text-align: center; }
+.landing-police-heading strong { font-size: 0.59375rem; letter-spacing: 0.16em; text-transform: uppercase; }
+.landing-police-heading b { font-family: "Pacha Courier", monospace; font-size: 0.65625rem; font-weight: 400; letter-spacing: 0.1em; text-transform: uppercase; }
+.landing-police-heading small { color: var(--landing-ink-faint); font-size: 0.5rem; }
+.landing-police-stamp { display: grid; place-items: center; width: 7.375rem; height: 3.25rem; rotate: -8deg; border: 2px solid var(--landing-blue); border-radius: 50%; color: var(--landing-blue-dark); font-family: "Pacha Courier", monospace; font-size: 0.4375rem; letter-spacing: 0.1em; line-height: 1.5; opacity: 0.52; text-align: center; text-transform: uppercase; }
+.landing-police-note { display: block; padding-top: 0.375rem; color: var(--landing-ink-faint); font-size: 0.46875rem; text-align: center; }
+
+.landing-assessment-table { margin-top: 0.5625rem; border: 1px solid var(--landing-line-strong); font-family: "Pacha Courier", monospace; font-size: 0.59375rem; }
+.landing-assessment-table > div { display: grid; grid-template-columns: 1fr 5.625rem; border-bottom: 1px solid var(--landing-line); }
+.landing-assessment-table > div:last-child { border-bottom: 0; }
+.landing-assessment-table span,
+.landing-assessment-table b { padding: 0.125rem 0.5rem; }
+.landing-assessment-table span:last-child,
+.landing-assessment-table b:last-child { border-left: 1px solid var(--landing-line-strong); text-align: right; }
+.landing-assessment-heading,
+.landing-assessment-total { background: var(--landing-tint); }
+.landing-assessment-heading { color: var(--landing-ink-soft); font-family: "Segoe UI", sans-serif; font-size: 0.46875rem; letter-spacing: 0.1em; text-transform: uppercase; }
+.landing-assessment-total { text-transform: uppercase; }
+
+.landing-hero-message {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.landing-page .landing-hero-message h1 {
+  margin: 0;
+  color: var(--landing-ink);
+  font-family: "Pacha Ovo", Georgia, serif;
+  font-size: clamp(7.5rem, 17vw, 17.5rem);
+  font-weight: 400;
+  line-height: 1;
+  opacity: 0.35;
+  filter: blur(7px);
+  transform: scale(0.94);
+}
+
+.landing-tagline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+  margin-top: 1.75rem;
+  opacity: 0;
+  transform: translate3d(0, 1rem, 0);
+  text-align: center;
+}
+
+.landing-tagline > p { max-width: 32.5rem; color: var(--landing-ink-soft); font-size: 1.125rem; line-height: 1.55; }
+.landing-hero-actions,
+.landing-pilot-actions { display: flex; align-items: center; gap: var(--landing-space-lg); }
+
+.landing-hero-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--landing-ink-soft) !important;
+  font-family: "Pacha Courier", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: color 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.landing-hero-link:hover { color: var(--landing-ink) !important; }
+
+.landing-button {
+  min-width: 11.25rem;
+  border: 1px solid transparent;
+  border-radius: 0.375rem;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  transition: background-color 160ms cubic-bezier(0.22, 1, 0.36, 1), border-color 160ms cubic-bezier(0.22, 1, 0.36, 1), color 160ms cubic-bezier(0.22, 1, 0.36, 1), transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.landing-button-primary { background: var(--landing-blue); color: oklch(99% 0.003 245) !important; }
+.landing-button-primary:hover { background: var(--landing-blue-dark); }
+.landing-button-ghost { min-width: auto; color: var(--landing-blue-dark) !important; }
+.landing-button-ghost:hover { background: var(--landing-blue-pale); }
+.landing-button:active { transform: scale(0.98); }
+.landing-page a:focus-visible { outline: 3px solid oklch(72% 0.12 225); outline-offset: 3px; }
+
+.landing-scroll-cue {
+  position: absolute;
+  z-index: 6;
+  right: 0;
+  bottom: calc(1.5rem + env(safe-area-inset-bottom));
+  left: 0;
+  color: var(--landing-ink-faint);
+  font-family: "Pacha Courier", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.landing-section,
+.landing-section-shell > .landing-section {
+  width: min(100%, 70rem);
+  margin-inline: auto;
+  padding: clamp(6rem, 10vw, 8.75rem) clamp(1.25rem, 4vw, 2.5rem) clamp(5rem, 9vw, 7.5rem);
+}
+
+.landing-section-shell { position: relative; border-top: 1px solid var(--landing-line); }
+.landing-section-kicker {
+  margin-bottom: clamp(1.5rem, 3vw, 2.25rem);
+  color: var(--landing-ink-faint);
+  font-family: "Pacha Courier", monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.landing-page .landing-section h2 {
+  max-width: 51.25rem;
+  margin: 0;
+  color: var(--landing-ink);
+  font-family: "Pacha Ovo", Georgia, serif;
+  font-size: clamp(2.25rem, 2.7vw + 1rem, 3.75rem);
+  font-weight: 400;
+  line-height: 1.2;
+  text-wrap: pretty;
+}
+
+.landing-facts,
+.landing-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(2rem, 4vw, 3rem); margin-top: clamp(3.5rem, 7vw, 5rem); }
+.landing-facts article { display: grid; align-content: start; gap: var(--landing-space-md); border-top: 1px solid var(--landing-line-strong); padding-top: 1.25rem; }
+.landing-facts strong { font-family: "Pacha Courier", monospace; font-size: clamp(2rem, 3.3vw, 2.75rem); font-weight: 400; letter-spacing: -0.035em; line-height: 1; }
+.landing-facts p,
+.landing-steps p { max-width: 35rem; color: var(--landing-ink-soft); font-size: 0.9375rem; line-height: 1.6; }
+.landing-page .landing-steps h3 {
+  margin: 0 0 var(--landing-space-lg);
+  color: var(--landing-ink-faint);
+  font-family: "Pacha Courier", monospace;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.landing-business { overflow: hidden; }
+.landing-business > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.06; pointer-events: none; }
+.landing-business .landing-section { position: relative; }
+.landing-business .landing-section > p {
+  margin-top: 1.75rem;
+  color: var(--landing-ink-soft);
+  font-family: "Pacha Courier", monospace;
+  font-size: 1.0625rem;
+  line-height: 1.7;
+}
+
+.landing-pilot { overflow: hidden; }
+.landing-pilot > img { position: absolute; top: -46%; right: -22%; width: 68vw; min-width: 44rem; opacity: 0.4; filter: blur(10px); pointer-events: none; }
+.landing-pilot .landing-section { position: relative; padding-top: clamp(7rem, 11vw, 8.75rem); padding-bottom: max(3rem, env(safe-area-inset-bottom)); }
+.landing-pilot .landing-section > p { max-width: 32.5rem; margin-top: var(--landing-space-xl); color: var(--landing-ink-soft); font-size: 1rem; line-height: 1.6; }
+.landing-pilot-actions { margin-top: 2.5rem; }
+.landing-footer { display: flex; justify-content: space-between; align-items: baseline; gap: var(--landing-space-xl); margin-top: clamp(6rem, 12vw, 8.75rem); border-top: 1px solid var(--landing-line); padding-top: 1.75rem; }
+.landing-footer span:first-child { font-family: "Pacha Ovo", Georgia, serif; font-size: 1.625rem; }
+.landing-footer span:last-child { color: var(--landing-ink-faint); font-family: "Pacha Courier", monospace; font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase; }
+
+@media (max-width: 980px) {
+  .landing-paper-claim { left: -5rem; }
+  .landing-paper-email { right: -6rem; }
+  .landing-paper-police { left: -3rem; }
+  .landing-paper-assessor { right: -5rem; }
+}
+
+@media (max-width: 719px) {
+  .landing-hero-runway { height: 320vh; }
+  .landing-hero-runway-reduced { height: 100svh; }
+  .landing-hero { min-height: 42rem; }
+  .landing-header { padding-top: calc(1rem + env(safe-area-inset-top)); font-size: 0.6875rem; }
+  .landing-header a { min-height: 44px; }
+  .landing-hero-orbs img:first-child { top: -18%; right: -75%; width: 160vw; }
+  .landing-hero-orbs img:last-child { bottom: -22%; left: -72%; width: 150vw; }
+  .landing-paper-claim { top: 5rem; left: -6.5rem; }
+  .landing-paper-email { top: 6rem; right: -8.5rem; }
+  .landing-paper-police { bottom: 2.75rem; left: -6rem; }
+  .landing-paper-assessor { right: -7rem; bottom: 3.25rem; }
+  .landing-page .landing-hero-message h1 { font-size: clamp(6.5rem, 31vw, 9rem); }
+  .landing-tagline { gap: var(--landing-space-xl); width: calc(100% - 2rem); margin-top: var(--landing-space-lg); }
+  .landing-tagline > p { max-width: 25rem; font-size: 1rem; }
+  .landing-scroll-cue { bottom: calc(0.75rem + env(safe-area-inset-bottom)); font-size: 0.6875rem; }
+  .landing-facts,
+  .landing-steps { grid-template-columns: 1fr; gap: var(--landing-space-3xl); }
+  .landing-steps article { display: grid; grid-template-columns: minmax(7.25rem, 0.35fr) 1fr; gap: var(--landing-space-lg); }
+  .landing-page .landing-steps h3 { margin: 0; }
+  .landing-pilot-actions { align-items: stretch; flex-direction: column; width: min(100%, 22rem); }
+  .landing-button-ghost { min-width: 11.25rem; }
+  .landing-footer { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 430px) {
+  .landing-paper-claim { left: -7.75rem; }
+  .landing-paper-email { right: -10rem; }
+  .landing-paper-police { left: -7.5rem; }
+  .landing-paper-assessor { right: -8.5rem; }
+  .landing-section,
+  .landing-section-shell > .landing-section { padding-inline: var(--landing-space-xl); }
+  .landing-steps article { grid-template-columns: 1fr; gap: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-page *,
+  .landing-page *::before,
+  .landing-page *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+  .landing-paper { will-change: auto; }
+}
