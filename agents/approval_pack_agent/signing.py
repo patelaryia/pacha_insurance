@@ -13,6 +13,8 @@ durable event, resuming from whichever of `pack.note_sign_prepared`,
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import text
@@ -23,9 +25,10 @@ from approval_pack_agent.conversion import (
     sha256_hex,
     stamped_html,
 )
+from approval_pack_agent.models import NoteDraft
 from approval_pack_agent.note import NoteInputsInvalid, canonical_body_hash
 from approval_pack_agent.resolver import ACTOR, _json
-from claim_core import ClaimCoreError
+from claim_core import ClaimCoreError, new_ulid
 from cop_runtime.templates import TemplateRenderBlocked
 
 # Authority-matrix side effects are pack data in the exact PRD-02 §2.5 form.
@@ -66,6 +69,19 @@ class SigningService:
         self.config = service.config
         self.notes = service.notes
         self.workspace = service.workspace
+
+    @contextmanager
+    def resolution_scope(
+        self, item: Any, action: str, payload: dict[str, Any], actor: str
+    ) -> Iterator[None]:
+        """Hold the claim guard through validation and durable resolution."""
+
+        del action, payload, actor
+        if item.subtype != NOTE_SUBTYPE or not isinstance(item.claim_id, str):
+            yield
+            return
+        with self.service._claim_guard(item.claim_id, row_lock=False):
+            yield
 
     # -- routing ---------------------------------------------------------------
 
@@ -496,33 +512,39 @@ class SigningService:
     def _finalise_signature(
         self, claim_id: str, review: dict[str, Any], event: Any
     ) -> None:
-        prepared = self._correlated(claim_id, "pack.note_sign_prepared", review["id"])
-        if prepared is None:
-            # Nothing was prepared, so nothing may be signed. The absence is
-            # visible in the workspace as `unsigned`; no artifact is invented.
-            return
-        snapshot = prepared["payload"]
-        draft_id = str(snapshot["note_draft_id"])
-        signed_event = self.workspace._signed(claim_id, draft_id)
-        if signed_event is None:
-            signed_event_id = self._sign(claim_id, snapshot, event)
-        else:
-            signed_event_id = signed_event["id"]
-        if self._correlated(claim_id, "pack.routed", signed_event_id) is None:
-            self._route(claim_id, snapshot, signed_event_id, event)
-        claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
-            claim_id, ACTOR, paths=[]
-        )
-        if claim.status == "PACK_READY":
-            self.app.state.claim_service.transition_claim(
-                claim_id,
-                "IN_APPROVAL",
-                {
-                    "note_draft_id": draft_id,
-                    "note_signed_event_id": signed_event_id,
-                },
-                event.actor,
+        with self.service._claim_guard(claim_id, row_lock=False):
+            prepared = self._correlated(
+                claim_id, "pack.note_sign_prepared", review["id"]
             )
+            if prepared is None:
+                # Nothing was prepared, so nothing may be signed. The absence is
+                # visible in the workspace as `unsigned`; no artifact is invented.
+                return
+            snapshot = {
+                **prepared["payload"],
+                "prepared_event_id": prepared["id"],
+            }
+            draft_id = str(snapshot["note_draft_id"])
+            signed_event = self.workspace._signed(claim_id, draft_id)
+            if signed_event is None:
+                signed_event_id = self._sign(claim_id, snapshot, event)
+            else:
+                signed_event_id = signed_event["id"]
+            if self._correlated(claim_id, "pack.routed", signed_event_id) is None:
+                self._route(claim_id, snapshot, signed_event_id, event)
+            claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
+                claim_id, ACTOR, paths=[]
+            )
+            if claim.status == "PACK_READY":
+                self.app.state.claim_service.transition_claim(
+                    claim_id,
+                    "IN_APPROVAL",
+                    {
+                        "note_draft_id": draft_id,
+                        "note_signed_event_id": signed_event_id,
+                    },
+                    event.actor,
+                )
 
     def _sign(self, claim_id: str, snapshot: dict[str, Any], event: Any) -> str:
         signed_at = self.app.state.clock()
@@ -598,51 +620,56 @@ class SigningService:
                     "blob_key": result.blob_key,
                 }
             )
-        review_event_id = self.service._emit(
-            claim_id=claim_id,
-            event_type="review.created",
-            payload={
-                "type": "PACK_REVIEW",
-                "subtype": APPROVAL_SUBTYPE,
-                "capability_id": "pack.route",
-                "draft_id": snapshot["note_draft_id"],
-                "note_version": snapshot["note_version"],
-                "body_sha256": snapshot["body_sha256"],
-                "merged_event_id": snapshot["merged_pack_event_id"],
-                "merged_pack_sha256": snapshot["merged_pack_sha256"],
-                "note_signed_event_id": signed_event_id,
-                "note_signed_sha256": snapshot["artifact_sha256"],
-                "routing_amount_cents": route["amount_cents"],
-                "required_role": route["required_role"],
-                "route_provenance": route["provenance"],
-                "side_effects": rendered,
-                "facts": {
+        with self.service.sessions.begin() as session:
+            review_event_id = self.service._record(
+                session,
+                claim_id=claim_id,
+                event_type="review.created",
+                payload={
+                    "type": "PACK_REVIEW",
+                    "subtype": APPROVAL_SUBTYPE,
+                    "capability_id": "pack.route",
+                    "draft_id": snapshot["note_draft_id"],
+                    "note_version": snapshot["note_version"],
+                    "body_sha256": snapshot["body_sha256"],
+                    "merged_event_id": snapshot["merged_pack_event_id"],
+                    "merged_pack_sha256": snapshot["merged_pack_sha256"],
+                    "note_signed_event_id": signed_event_id,
+                    "note_signed_sha256": snapshot["artifact_sha256"],
                     "routing_amount_cents": route["amount_cents"],
                     "required_role": route["required_role"],
+                    "route_provenance": route["provenance"],
+                    "side_effects": rendered,
+                    "facts": {
+                        "routing_amount_cents": route["amount_cents"],
+                        "required_role": route["required_role"],
+                    },
+                    "risk": "an approved pack commits the insurer to the routed amount",
+                    "recommendation": (
+                        "read the merged pack and the signed note before approving"
+                    ),
+                    "resolution_schema": "PACK_REVIEW@2",
                 },
-                "risk": "an approved pack commits the insurer to the routed amount",
-                "recommendation": "read the merged pack and the signed note before approving",
-                "resolution_schema": "PACK_REVIEW@2",
-            },
-            correlation_id=signed_event_id,
-            actor=event.actor,
-        )
-        self.service._emit(
-            claim_id=claim_id,
-            event_type="pack.routed",
-            payload={
-                "note_signed_event_id": signed_event_id,
-                "note_draft_id": snapshot["note_draft_id"],
-                "review_event_id": review_event_id,
-                "routing_amount_cents": route["amount_cents"],
-                "required_role": route["required_role"],
-                "route_provenance": route["provenance"],
-                "side_effects": rendered,
-                "pack_version": route["pack_version"],
-            },
-            correlation_id=signed_event_id,
-            actor=event.actor,
-        )
+                correlation_id=signed_event_id,
+                actor=event.actor,
+            )
+            self.service._record(
+                session,
+                claim_id=claim_id,
+                event_type="pack.routed",
+                payload={
+                    "note_signed_event_id": signed_event_id,
+                    "note_draft_id": snapshot["note_draft_id"],
+                    "review_event_id": review_event_id,
+                    "routing_amount_cents": route["amount_cents"],
+                    "required_role": route["required_role"],
+                    "route_provenance": route["provenance"],
+                    "side_effects": rendered,
+                    "pack_version": route["pack_version"],
+                },
+                correlation_id=signed_event_id,
+                actor=event.actor,
+            )
 
     # -- PACK_REVIEW guard and finalisation -----------------------------------
 
@@ -747,74 +774,102 @@ class SigningService:
         event: Any,
         payload: dict[str, Any],
     ) -> None:
-        if self._correlated(claim_id, "review.created", review["id"]):
-            return
-        claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
-            claim_id, ACTOR, paths=[]
-        )
-        reasons = list(payload.get("reasons", []))
-        if claim.status == "IN_APPROVAL":
-            self.app.state.claim_service.transition_claim(
-                claim_id,
-                "PACK_READY",
-                {
-                    "review_id": review["id"],
-                    # The FSM owns the binding `{code, detail}` reject shape; the
-                    # corrected field path stays with the note revision block.
-                    "reasons": [
-                        {"code": reason["code"], "detail": reason["detail"]}
-                        for reason in reasons
-                    ],
-                },
-                event.actor,
+        with self.service._claim_guard(claim_id, row_lock=False):
+            if self._correlated(claim_id, "review.created", review["id"]):
+                return
+            claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
+                claim_id, ACTOR, paths=[]
             )
-        signed = self.service._rows(
-            "SELECT id, version, status, body FROM note_drafts WHERE id = :draft_id",
-            draft_id=review["payload"].get("draft_id"),
-        )
-        if not signed:
-            return
-        body = _json(signed[0]["body"]) or {}
-        rejection = {
-            "review_id": review["id"],
-            "rejected_by": event.actor,
-            "rejected_version": signed[0]["version"],
-            "signed_draft_id": signed[0]["id"],
-            "note_signed_event_id": review["payload"].get("note_signed_event_id"),
-            "reasons": reasons,
-        }
-        clone = {
-            key: value
-            for key, value in body.items()
-            if key not in {"lineage", "body_sha256"}
-        }
-        # The reasons live in their own visible block. They are never spliced
-        # into generated commentary (#250), and the signed version is retained.
-        clone["manager_rejection"] = rejection
-        clone["signable"] = False
-        version = self.notes._next_version(claim_id)
-        draft_id, stored = self.notes.persist(
-            claim_id,
-            version=version,
-            body=clone,
-            status="in_review",
-            edited_by=None,
-            lineage=None,
-        )
-        merged_payload = self._merged_payload(claim_id, body)
-        self.notes.open_note_review(
-            claim_id,
-            draft_id=draft_id,
-            version=version,
-            body=stored,
-            merged_event_id=str(body.get("merged_pack", {}).get("event_id")),
-            merged_payload=merged_payload,
-            review_artifact_blob_key=str(
-                review["payload"].get("note_signed_event_id") or ""
-            ),
-            correlation_id=review["id"],
-            manager_rejection=rejection,
-        )
+            reasons = list(payload.get("reasons", []))
+            if claim.status == "IN_APPROVAL":
+                self.app.state.claim_service.transition_claim(
+                    claim_id,
+                    "PACK_READY",
+                    {
+                        "review_id": review["id"],
+                        # The FSM owns the binding `{code, detail}` reject shape; the
+                        # corrected field path stays with the note revision block.
+                        "reasons": [
+                            {"code": reason["code"], "detail": reason["detail"]}
+                            for reason in reasons
+                        ],
+                    },
+                    event.actor,
+                )
+            signed = self.service._rows(
+                "SELECT id, version, status, body FROM note_drafts WHERE id = :draft_id",
+                draft_id=review["payload"].get("draft_id"),
+            )
+            if not signed:
+                return
+            body = _json(signed[0]["body"]) or {}
+            rejection = {
+                "review_id": review["id"],
+                "rejected_by": event.actor,
+                "rejected_version": signed[0]["version"],
+                "signed_draft_id": signed[0]["id"],
+                "note_signed_event_id": review["payload"].get(
+                    "note_signed_event_id"
+                ),
+                "reasons": reasons,
+            }
+            clone = {
+                key: value
+                for key, value in body.items()
+                if key not in {"lineage", "body_sha256"}
+            }
+            # The reasons live in their own visible block. They are never spliced
+            # into generated commentary (#250), and the signed version is retained.
+            clone["manager_rejection"] = rejection
+            clone["signable"] = False
+            draft_id = new_ulid()
+            clone["lineage"] = {
+                "root_draft_id": draft_id,
+                "parent_draft_id": None,
+                "review_id": None,
+            }
+            clone["body_sha256"] = canonical_body_hash(clone)
+            merged_event_id = str(body.get("merged_pack", {}).get("event_id"))
+            merged_payload = self._merged_payload(claim_id, body)
+            with self.service.sessions.begin() as session:
+                version = self.workspace._next_version(session, claim_id)
+                session.execute(
+                    text(
+                        "UPDATE note_drafts SET status = 'superseded' "
+                        "WHERE claim_id = :claim_id "
+                        "AND status IN ('draft', 'in_review')"
+                    ),
+                    {"claim_id": claim_id},
+                )
+                session.add(
+                    NoteDraft(
+                        id=draft_id,
+                        claim_id=claim_id,
+                        version=version,
+                        body=clone,
+                        status="in_review",
+                        edited_by=None,
+                        signed_by=None,
+                        signed_at=None,
+                    )
+                )
+                self.service._record(
+                    session,
+                    claim_id=claim_id,
+                    event_type="review.created",
+                    payload=self.notes.note_review_payload(
+                        draft_id=draft_id,
+                        version=version,
+                        body=clone,
+                        merged_event_id=merged_event_id,
+                        merged_payload=merged_payload,
+                        review_artifact_blob_key=str(
+                            review["payload"].get("note_signed_event_id") or ""
+                        ),
+                        manager_rejection=rejection,
+                    ),
+                    correlation_id=review["id"],
+                )
 
     def _merged_payload(self, claim_id: str, body: dict[str, Any]) -> dict[str, Any]:
         event_id = body.get("merged_pack", {}).get("event_id")

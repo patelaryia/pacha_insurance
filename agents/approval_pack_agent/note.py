@@ -1051,6 +1051,35 @@ class NoteService:
         can never resolve against a version the queue did not show (§4).
         """
 
+        payload = self.note_review_payload(
+            draft_id=draft_id,
+            version=version,
+            body=body,
+            merged_event_id=merged_event_id,
+            merged_payload=merged_payload,
+            review_artifact_blob_key=review_artifact_blob_key,
+            manager_rejection=manager_rejection,
+        )
+        return self._emit(
+            claim_id=claim_id,
+            event_type="review.created",
+            payload=payload,
+            correlation_id=correlation_id,
+        )
+
+    def note_review_payload(
+        self,
+        *,
+        draft_id: str,
+        version: int,
+        body: dict[str, Any],
+        merged_event_id: str,
+        merged_payload: dict[str, Any],
+        review_artifact_blob_key: str,
+        manager_rejection: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build the canonical NOTE_REVIEW payload for atomic callers."""
+
         payload: dict[str, Any] = {
             "type": "NOTE_REVIEW",
             "subtype": "approval_note",
@@ -1080,12 +1109,7 @@ class NoteService:
                 "review the manager's structured reasons, correct the cited claim "
                 "inputs, and regenerate the approval pack"
             )
-        return self._emit(
-            claim_id=claim_id,
-            event_type="review.created",
-            payload=payload,
-            correlation_id=correlation_id,
-        )
+        return payload
 
     def hand_off(
         self,

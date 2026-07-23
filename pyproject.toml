@@ -20,6 +20,7 @@ testpaths = ["tests"]
 pythonpath = ["platform", "agents", "packs", "tests"]
 markers = [
   "real_ocr: drives the real Tesseract binary; excluded from the two test jobs and run by ocr-smoke",
+  "postgres_required: must run against PostgreSQL on every pull request",
   "schema_isolated: needs its own empty database, not the shared truncated worker schema",
 ]
 

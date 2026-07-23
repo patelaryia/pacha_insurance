@@ -99,7 +99,7 @@ session tokens remain in session storage and are revalidated by the API.
 ## Approval-pack surfaces (PACKET-19)
 
 **S-2 readiness card.** The 13-row manifest card lives in the Claim-360 *Documents* tab
-(PRD-04 §4.3 fixes the seven tab names, so no eighth tab exists — register #256). Explicit
+(PRD-04 §4.3 fixes the seven tab names, so no eighth tab exists — register #257). Explicit
 rows offer only same-claim documents and communications Claim 360 already returned; items 12
 and 13 accept a PDF upload with a visible progress state and an `role="alert"` error. Generate
 submits the current readiness fingerprint and an idempotency key. A `READINESS_STALE` 409

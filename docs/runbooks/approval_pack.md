@@ -178,7 +178,10 @@ process dies between preparation and finalisation, Claim 360 and the workspace r
 `sign_state: signing_pending` — the resolution is never reported as lost. Replay resumes from
 the last durable event and produces no second signed artifact, `PACK_REVIEW`, or FSM hop:
 `pack.note_signed`, `pack.routed` and the `PACK_READY→IN_APPROVAL` transition are each guarded
-by their own evidence. Re-preparation is content-addressed, so an identical candidate reuses
+by their own evidence. Sign preparation and the durable resolution commit share the same
+per-claim guard, so an autosave cannot append a newer lineage version between them.
+`review.created{PACK_REVIEW}` and `pack.routed` commit in one transaction. Re-preparation is
+content-addressed, so an identical candidate reuses
 the same immutable key; a differing overwrite is refused as `409 UNCERTAIN_WRITE` with
 `EXCEPTION{uncertain_write}` rather than blind-writing a second artifact.
 
@@ -202,10 +205,10 @@ approval item exists. In-app notification to Head of Claims and the MD is live t
 
 `PACK_REVIEW{approval_pack}` is authorised against the immutable `required_role` in its
 payload, not `assessment.agreed_quote`. A wider band does not silently take another role's
-item: `scope=band` shows it only to the exact role, and a different role is `403
-FORBIDDEN_BAND` with an `authz.denied` event. Server-side resolution recomputes the routing
-input; a changed value is `409 APPROVAL_ROUTE_STALE`, the item stays open, and a fresh route
-is required.
+item: `scope=band`, `scope=pool`, `scope=mine`, and the direct item read all hide it from
+every other role. A different role attempting resolution is `403 FORBIDDEN_BAND` with an
+`authz.denied` event. Server-side resolution recomputes the routing input; a changed value is
+`409 APPROVAL_ROUTE_STALE`, the item stays open, and a fresh route is required.
 
 ## Manager approval, annotation, and rejection revision
 
@@ -227,7 +230,9 @@ is required.
 accepted from a browser. A cross-claim event id, a non-allowlisted event, or an unknown id is
 `404 ARTIFACT_NOT_FOUND`; an actor outside the approval-pack read roles is `403`. Responses
 carry `application/pdf`, `nosniff`, `private, no-store`, and an ETag equal to the recorded
-SHA-256. No public or portal route exists.
+SHA-256. Every successful read appends `pack.artifact_accessed` with the source event
+id/type, digest, and actor; neither the blob key nor bytes enter the event. Refused attempts
+create no access record. No public or portal route exists.
 
 ## ICON note entry
 

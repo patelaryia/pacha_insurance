@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { consoleError, type ConsoleError } from "../api/errors";
 import type {
   ApprovalNoteWorkspace as Workspace,
+  AutosaveResult,
   ConsoleApi,
   NoteSlot,
   ResolutionAction,
@@ -93,8 +94,12 @@ export function ApprovalNoteWorkspace({ item, api, onResolved }: Props) {
   const [pending, setPending] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const dirty = useRef(false);
+  const editRevision = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
+  const workspaceRef = useRef<Workspace | null>(null);
+  const saveInFlight = useRef<Promise<AutosaveResult | null> | null>(null);
+  const lastSaved = useRef<AutosaveResult | null>(null);
   // The autosave timer fires outside React's render cycle, so the text it saves
   // is read from a ref rather than a closed-over render snapshot.
   const latest = useRef<Record<string, string>>({});
@@ -103,6 +108,7 @@ export function ApprovalNoteWorkspace({ item, api, onResolved }: Props) {
     if (!api.getApprovalNote) return;
     try {
       const value = await api.getApprovalNote(item.id);
+      workspaceRef.current = value;
       setWorkspace(value);
       // After a reload or a crash the highest server version opens.
       latest.current = commentaryText(value);
@@ -154,47 +160,69 @@ export function ApprovalNoteWorkspace({ item, api, onResolved }: Props) {
     };
   }, [api, merged]);
 
-  const persist = useCallback(async () => {
-    if (!api.saveApprovalNote || !workspace || !dirty.current) return;
+  const persist = useCallback(async function persistNote(): Promise<AutosaveResult | null> {
+    if (saveInFlight.current) {
+      await saveInFlight.current;
+      return dirty.current ? persistNote() : lastSaved.current;
+    }
+    const current = workspaceRef.current;
+    if (!api.saveApprovalNote || !current || !dirty.current) return null;
+    const revision = editRevision.current;
     const body = {
-      base_draft_id: workspace.current_draft.id,
-      base_body_sha256: workspace.current_draft.body_sha256,
-      commentary: workspace.commentary_slots.map((slot) => ({
+      base_draft_id: current.current_draft.id,
+      base_body_sha256: current.current_draft.body_sha256,
+      commentary: current.commentary_slots.map((slot) => ({
         template_slot: slot,
         content: latest.current[slot] ?? "",
       })),
     };
     setSave({ kind: "saving" });
-    try {
-      const result = await api.saveApprovalNote!(
-        item.id,
-        body,
-        `${workspace.current_draft.id}:${JSON.stringify(body.commentary).length}:${Date.now()}`,
-      );
-      dirty.current = false;
-      setSave({ kind: "saved", at: formatEat(new Date().toISOString()) });
-      setWorkspace({
-        ...workspace,
-        current_draft: {
-          ...workspace.current_draft,
-          id: result.draft_id,
-          version: result.version,
-          body_sha256: result.body_sha256,
-        },
-      });
-    } catch (caught) {
-      const failure = consoleError(caught, "The approval note could not be saved.");
-      setSave({ kind: "failed", detail: `${failure.code}: ${failure.detail}` });
-      if (failure.code === "STALE_NOTE_DRAFT") {
-        // Never overwrite silently: reload the server version and keep the
-        // officer's local text in a clearly labelled recovery panel.
-        setRecovery({ ...latest.current });
-        await load();
+    const operation = (async (): Promise<AutosaveResult | null> => {
+      try {
+        const result = await api.saveApprovalNote!(
+          item.id,
+          body,
+          `${current.current_draft.id}:${JSON.stringify(body.commentary).length}:${Date.now()}`,
+        );
+        lastSaved.current = result;
+        // A response may only clear the exact edit revision it persisted. If
+        // the officer typed during the request, the queued timer saves again.
+        dirty.current = editRevision.current !== revision;
+        setSave({ kind: "saved", at: formatEat(new Date().toISOString()) });
+        const next = {
+          ...current,
+          current_draft: {
+            ...current.current_draft,
+            id: result.draft_id,
+            version: result.version,
+            body_sha256: result.body_sha256,
+          },
+        };
+        workspaceRef.current = next;
+        setWorkspace(next);
+        return result;
+      } catch (caught) {
+        const failure = consoleError(caught, "The approval note could not be saved.");
+        setSave({ kind: "failed", detail: `${failure.code}: ${failure.detail}` });
+        if (failure.code === "STALE_NOTE_DRAFT") {
+          // Never overwrite silently: reload the server version and keep the
+          // officer's local text in a clearly labelled recovery panel.
+          setRecovery({ ...latest.current });
+          await load();
+        }
+        return null;
       }
-    }
-  }, [api, item.id, load, workspace]);
+    })();
+    let tracked: Promise<AutosaveResult | null>;
+    tracked = operation.finally(() => {
+      if (saveInFlight.current === tracked) saveInFlight.current = null;
+    });
+    saveInFlight.current = tracked;
+    return tracked;
+  }, [api, item.id, load]);
 
   function edit(slot: string, value: string) {
+    editRevision.current += 1;
     dirty.current = true;
     latest.current = { ...latest.current, [slot]: value };
     setDraft((current) => ({ ...current, [slot]: value }));
@@ -213,17 +241,35 @@ export function ApprovalNoteWorkspace({ item, api, onResolved }: Props) {
     setPending(true);
     setError(null);
     try {
+      let signedDraft: { id: string; body_sha256: string } | null = null;
       if (action === "edit_approve") {
         // Edit→Approve autosaves first, then signs that exact saved version.
         // Prose never travels through the resolution endpoint.
         dirty.current = true;
-        await persist();
+        const saved = await persist();
+        if (!saved) return;
+        signedDraft = { id: saved.draft_id, body_sha256: saved.body_sha256 };
       }
-      const current = api.getApprovalNote ? await api.getApprovalNote(item.id) : workspace;
+      const current = signedDraft
+        ? null
+        : api.getApprovalNote
+          ? await api.getApprovalNote(item.id)
+          : workspace;
+      const draftToSign = signedDraft ?? (
+        current
+          ? {
+              id: current.current_draft.id,
+              body_sha256: current.current_draft.body_sha256,
+            }
+          : null
+      );
+      if (!draftToSign) {
+        throw new Error("The approval note version to sign is unavailable.");
+      }
       const payload: Record<string, unknown> = {
         capability_id: "pack.note_draft",
-        draft_id: current.current_draft.id,
-        body_sha256: current.current_draft.body_sha256,
+        draft_id: draftToSign.id,
+        body_sha256: draftToSign.body_sha256,
         diff: { typed_changes: [], prose_change_ratio: 0 },
       };
       if (action === "reject") payload.reason = reason.trim();

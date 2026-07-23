@@ -268,6 +268,18 @@ class NoteWorkspace:
             raise ClaimCoreError(
                 409, "ARTIFACT_UNAVAILABLE", "The immutable artifact is unreadable"
             ) from error
+        self.service._emit(
+            claim_id=claim_id,
+            event_type="pack.artifact_accessed",
+            payload={
+                "artifact_event_id": event_id,
+                "artifact_event_type": row["type"],
+                "artifact_sha256": digest if isinstance(digest, str) else None,
+                "actor": actor,
+            },
+            correlation_id=event_id,
+            actor=actor,
+        )
         return {
             "content": content,
             "sha256": digest if isinstance(digest, str) else None,
@@ -387,31 +399,37 @@ class NoteWorkspace:
             raise ClaimCoreError(
                 422, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key must be non-empty"
             )
-        review = self.review(review_id)
-        if review["status"] != "open":
-            raise ClaimCoreError(
-                409, "ALREADY_RESOLVED", "The approval-note review is no longer open"
-            )
-        claim_id = str(review["claim_id"])
-        claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
-            claim_id, actor, paths=[]
-        )
-        if claim.status != "PACK_READY":
-            raise ClaimCoreError(
-                409,
-                "SAVE_BLOCKED_ON_STATE",
-                "An approval note may only be edited while the claim is PACK_READY",
-            )
         digest = self._request_digest(
             base_draft_id=base_draft_id,
             base_body_sha256=base_body_sha256,
             commentary=commentary,
         )
-        root_draft_id = self.root_for_review(review)
-        _blockers, readiness = self.blockers(claim_id, actor)
-        contents = self._validate_commentary(claim_id, actor, readiness, commentary)
-
+        initial_review = self.review(review_id)
+        claim_id = str(initial_review["claim_id"])
         with self.service._claim_guard(claim_id, row_lock=False):
+            # Re-read every mutable authority after waiting for the claim guard.
+            # A sign resolution may have committed while this save was queued.
+            review = self.review(review_id)
+            if review["status"] != "open":
+                raise ClaimCoreError(
+                    409,
+                    "ALREADY_RESOLVED",
+                    "The approval-note review is no longer open",
+                )
+            claim, _fields, _blocked = self.app.state.claim_service.hydrate_claim(
+                claim_id, actor, paths=[]
+            )
+            if claim.status != "PACK_READY":
+                raise ClaimCoreError(
+                    409,
+                    "SAVE_BLOCKED_ON_STATE",
+                    "An approval note may only be edited while the claim is PACK_READY",
+                )
+            root_draft_id = self.root_for_review(review)
+            _blockers, readiness = self.blockers(claim_id, actor)
+            contents = self._validate_commentary(
+                claim_id, actor, readiness, commentary
+            )
             for event in self.service._events(claim_id, "pack.note_autosaved"):
                 if event["payload"].get("idempotency_key") != idempotency_key:
                     continue

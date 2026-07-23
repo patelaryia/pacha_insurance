@@ -38,8 +38,18 @@ from support.database import (
     require_droppable_name,
     with_database,
 )
+from support.tiers import requires_postgres
 
 _UNPATCHED_CREATE_ALL = MetaData.create_all
+
+
+def pytest_collection_modifyitems(items) -> None:  # noqa: ANN001 - pytest hook
+    """Apply the auditable PostgreSQL tier policy before marker selection."""
+
+    for item in items:
+        marker_names = {marker.name for marker in item.iter_markers()}
+        if requires_postgres(item.path, marker_names):
+            item.add_marker(pytest.mark.postgres_required)
 
 
 def _is_postgresql(url: str | None) -> bool:

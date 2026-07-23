@@ -77,6 +77,9 @@ def build_approval_pack_agent(
     app.state.review_queue.service.register_resolution_validator(
         "NOTE_REVIEW", service.signing.guard_note_review
     )
+    app.state.review_queue.service.register_resolution_scope(
+        "NOTE_REVIEW", service.signing.resolution_scope
+    )
     app.state.review_queue.service.register_resolution_validator(
         "PACK_REVIEW", service.signing.guard_pack_review
     )

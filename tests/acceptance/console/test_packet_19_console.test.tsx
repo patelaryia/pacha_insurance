@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   ApprovalNoteWorkspace as NoteWorkspace,
+  AutosaveResult,
   ConsoleApi,
   PackReadiness,
   ReviewItem,
@@ -41,6 +42,7 @@ const PACK_REVIEW = "01HP19PACKREVIEW00000000AA";
 const DRAFT = "01HP19DRAFT0000000000000AA";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
+const HASH_C = "c".repeat(64);
 
 const MANIFEST_IDS = [
   "policy_document", "intimation_email", "claim_form", "logbook", "driving_licence",
@@ -516,6 +518,65 @@ describe("NOTE_REVIEW approval-note workspace", () => {
     expect(request.payload.body_sha256).toBe(HASH_B);
     // Prose never travels through the resolution endpoint.
     expect(JSON.stringify(request.payload)).not.toContain("An edited summary.");
+  });
+
+  it("never signs the previous server draft when Save & Sign cannot save", async () => {
+    const client = api({
+      getApprovalNote: vi.fn(async () => noteWorkspace({ signable: true, blockers: [] })),
+      saveApprovalNote: vi.fn(async () => {
+        throw { code: "COMMENTARY_INVALID", detail: "The edited number is unsupported" };
+      }),
+    });
+    render(<Workspace item={noteItem()} api={client} />);
+    const field = await screen.findByTestId("commentary-incident_summary");
+    fireEvent.change(field, { target: { value: "An invalid edited summary 999." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save & Sign" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("autosave-state").textContent)
+        .toContain("COMMENTARY_INVALID"));
+    expect(client.resolveReview).not.toHaveBeenCalled();
+  });
+
+  it("queues text typed during an in-flight save onto the saved base version", async () => {
+    let releaseFirst: ((value: AutosaveResult) => void) | undefined;
+    const first = new Promise<AutosaveResult>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const saveApprovalNote = vi.fn()
+      .mockImplementationOnce(async () => first)
+      .mockResolvedValueOnce({
+        draft_id: "01HP19DRAFT0000000000000EE",
+        version: 3,
+        body_sha256: HASH_C,
+        parent_draft_id: "01HP19DRAFT0000000000000DD",
+        review_id: REVIEW,
+        recorded: true,
+      });
+    const client = api({ saveApprovalNote });
+    render(<Workspace item={noteItem()} api={client} />);
+    const field = await screen.findByTestId("commentary-incident_summary");
+
+    fireEvent.change(field, { target: { value: "First edit." } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(saveApprovalNote).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(field, { target: { value: "Second edit while saving." } });
+    fireEvent.blur(field);
+    releaseFirst?.({
+      draft_id: "01HP19DRAFT0000000000000DD",
+      version: 2,
+      body_sha256: HASH_B,
+      parent_draft_id: DRAFT,
+      review_id: REVIEW,
+      recorded: true,
+    });
+
+    await waitFor(() => expect(saveApprovalNote).toHaveBeenCalledTimes(2));
+    const [, secondBody] = saveApprovalNote.mock.calls[1];
+    expect(secondBody.base_draft_id).toBe("01HP19DRAFT0000000000000DD");
+    expect(secondBody.base_body_sha256).toBe(HASH_B);
+    expect(secondBody.commentary[0].content).toBe("Second edit while saving.");
   });
 
   it("requires a reason to reject and reports a server refusal", async () => {

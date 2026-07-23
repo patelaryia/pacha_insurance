@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from threading import RLock
+from threading import RLock, local
 from typing import Any
 
 from sqlalchemy import text
@@ -71,6 +71,7 @@ class ApprovalPackService:
         self.notes = NoteService(app, config, model_client=model_client, store=self.store)
         self.sessions = sessionmaker(bind=app.state.engine, expire_on_commit=False)
         self._claim_locks = tuple(RLock() for _ in range(64))
+        self._claim_guard_state = local()
         self.workspace = NoteWorkspace(self)
         self.signing = SigningService(self)
 
@@ -107,6 +108,26 @@ class ApprovalPackService:
 
         claim_lock = self._claim_locks[hash(claim_id) % len(self._claim_locks)]
         with claim_lock:
+            active = getattr(self._claim_guard_state, "active", None)
+            if active is None:
+                active = {}
+                self._claim_guard_state.active = active
+            nested = active.get(claim_id)
+            if nested is not None:
+                session, holds_row_lock = nested
+                if (
+                    row_lock
+                    and not holds_row_lock
+                    and session.bind is not None
+                    and session.bind.dialect.name == "postgresql"
+                ):
+                    session.execute(
+                        text("SELECT id FROM claims WHERE id = :claim_id FOR UPDATE"),
+                        {"claim_id": claim_id},
+                    )
+                    active[claim_id] = (session, True)
+                yield session
+                return
             with self.sessions.begin() as session:
                 if session.bind is not None and session.bind.dialect.name == "postgresql":
                     session.execute(
@@ -125,7 +146,11 @@ class ApprovalPackService:
                         text("SELECT id FROM claims WHERE id = :claim_id FOR UPDATE"),
                         {"claim_id": claim_id},
                     )
-                yield session
+                active[claim_id] = (session, row_lock)
+                try:
+                    yield session
+                finally:
+                    active.pop(claim_id, None)
 
     @contextmanager
     def _claim_transaction(self, claim_id: str) -> Iterator[Any]:

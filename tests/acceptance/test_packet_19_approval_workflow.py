@@ -18,8 +18,11 @@ import json
 import os
 import pathlib
 import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from types import SimpleNamespace
 from typing import Any
 
@@ -27,6 +30,8 @@ import pytest
 import yaml
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from claim_core import ClaimCoreError
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MOTOR_PACK = REPO / "packs" / "motor"
@@ -933,6 +938,65 @@ def test_one_idempotency_key_replays_exactly_once_and_conflicts_on_new_content(
     assert len(_drafts(fixture_env.app, claim.id)) == 2
 
 
+def test_autosave_waits_for_the_durable_sign_resolution_and_then_refuses(
+    fixture_env, monkeypatch,
+):
+    claim = _seed(fixture_env, suffix="LOCK")
+    current = _workspace(fixture_env, claim)
+    sections = {
+        section["template_slot"]: section
+        for section in current["current_draft"]["body"]["sections"]
+    }
+    commentary = [
+        {
+            "template_slot": slot,
+            "content": sections[slot]["content"],
+        }
+        for slot in current["commentary_slots"]
+    ]
+    signing = fixture_env.app.state.approval_pack_agent.signing
+    original_prepare = signing.prepare_signature
+    entered = Event()
+    release = Event()
+
+    def paused_prepare(review, payload, actor):
+        entered.set()
+        assert release.wait(timeout=5)
+        return original_prepare(review, payload, actor)
+
+    monkeypatch.setattr(signing, "prepare_signature", paused_prepare)
+    queue = fixture_env.app.state.review_queue.service
+    workspace = fixture_env.app.state.approval_pack_agent.workspace
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        resolving = pool.submit(
+            queue.resolve,
+            claim.review_id,
+            actor=OFFICER,
+            action="approve",
+            schema_version="NOTE_REVIEW@2",
+            payload=_sign_payload(claim.draft_id, claim.body_sha256),
+        )
+        assert entered.wait(timeout=5)
+        saving = pool.submit(
+            workspace.autosave,
+            claim.review_id,
+            actor=OFFICER,
+            idempotency_key="racing-save",
+            base_draft_id=claim.draft_id,
+            base_body_sha256=claim.body_sha256,
+            commentary=commentary,
+        )
+        time.sleep(0.05)
+        assert saving.done() is False
+        release.set()
+        assert resolving.result(timeout=5)["status"] == "resolved"
+        with pytest.raises(ClaimCoreError) as refused:
+            saving.result(timeout=5)
+    assert refused.value.code == "ALREADY_RESOLVED"
+    assert len(_drafts(fixture_env.app, claim.id)) == 1
+    assert _events(fixture_env.app, "pack.note_autosaved", claim.id) == []
+
+
 # --- 3. locked sections and injected numbers ----------------------------------------
 
 
@@ -1059,6 +1123,7 @@ def test_sign_grades_the_exact_saved_hash_and_replay_produces_one_of_everything(
     assert len(routed) == 1
     assert signed[0]["payload"]["body_sha256"] == signed_hash
     assert signed[0]["payload"]["signed_by"] == OFFICER
+    assert signed[0]["payload"]["prepared_event_id"] == prepared[0]["id"]
 
     drafts = {row["id"]: row for row in _drafts(fixture_env.app, claim.id)}
     assert drafts[signed_draft_id]["status"] == "signed"
@@ -1095,6 +1160,53 @@ def test_sign_grades_the_exact_saved_hash_and_replay_produces_one_of_everything(
     assert hashlib.sha256(artifact.content).hexdigest() == (
         signed[0]["payload"]["artifact_sha256"]
     )
+
+
+def test_route_review_and_route_index_commit_together_after_a_failure(
+    fixture_env, monkeypatch,
+):
+    claim = _seed(fixture_env, suffix="ROUTE")
+    _sign(fixture_env, claim)
+    resolved = _events(fixture_env.app, "review.resolved", claim.id)[0]
+    event = SimpleNamespace(
+        type="review.resolved",
+        payload=resolved["payload"],
+        actor=resolved["actor"],
+        claim_id=claim.id,
+        id=resolved["id"],
+    )
+    service = fixture_env.app.state.approval_pack_agent
+    original_record = service._record
+    failed = False
+
+    def fail_before_route_index(session, **kwargs):
+        nonlocal failed
+        if kwargs["event_type"] == "pack.routed" and not failed:
+            failed = True
+            raise RuntimeError("injected route-index failure")
+        return original_record(session, **kwargs)
+
+    monkeypatch.setattr(service, "_record", fail_before_route_index)
+    with pytest.raises(RuntimeError, match="route-index"):
+        service.consume(event)
+    approval_reviews = [
+        row
+        for row in _events(fixture_env.app, "review.created", claim.id)
+        if row["payload"].get("subtype") == "approval_pack"
+    ]
+    assert approval_reviews == []
+    assert _events(fixture_env.app, "pack.routed", claim.id) == []
+
+    monkeypatch.setattr(service, "_record", original_record)
+    service.consume(event)
+    service.consume(event)
+    approval_reviews = [
+        row
+        for row in _events(fixture_env.app, "review.created", claim.id)
+        if row["payload"].get("subtype") == "approval_pack"
+    ]
+    assert len(approval_reviews) == 1
+    assert len(_events(fixture_env.app, "pack.routed", claim.id)) == 1
 
 
 def test_note_reject_signs_nothing_and_keeps_the_claim_pack_ready(fixture_env):
@@ -1241,6 +1353,25 @@ def test_only_the_exact_required_role_sees_and_resolves_the_approval(fixture_env
     assert band(GM) == []
     assert band(CHAIRMAN) == []
     assert band(MD) == []
+    pool = fixture_env.client.get(
+        "/reviews?scope=pool&status=open", headers=_h(GM)
+    )
+    assert pool.status_code == 200
+    assert review_id not in {row["id"] for row in pool.json()["items"]}
+    hidden = fixture_env.client.get(f"/reviews/{review_id}", headers=_h(GM))
+    assert hidden.status_code == 404
+    assert hidden.json()["code"] == "REVIEW_NOT_FOUND"
+    # Even claim assignment cannot widen the immutable exact-role snapshot.
+    with fixture_env.app.state.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE claims SET assigned_to = :actor WHERE id = :claim_id"),
+            {"actor": GM, "claim_id": claim.id},
+        )
+    mine = fixture_env.client.get(
+        "/reviews?scope=mine&status=open", headers=_h(GM)
+    )
+    assert mine.status_code == 200
+    assert review_id not in {row["id"] for row in mine.json()["items"]}
 
     item = band(MANAGER)[0]
     payload = {
@@ -1451,6 +1582,86 @@ def test_manager_rejection_returns_pack_ready_and_captures_one_correction_case(
     assert "_capture" not in cases[0]["expected"]
 
 
+def test_manager_rejection_draft_and_review_are_atomic_on_replay(
+    fixture_env, monkeypatch,
+):
+    claim = _seed(fixture_env, suffix="REJECT")
+    _sign(fixture_env, claim)
+    _drain(fixture_env.app)
+    item = _reviews(fixture_env.app, claim.id, "PACK_REVIEW")[0]
+    rejected = _resolve(
+        fixture_env,
+        item["id"],
+        "reject",
+        "PACK_REVIEW@2",
+        _approval_payload(
+            item,
+            reason="Correct the quote.",
+            reasons=[
+                {
+                    "code": "figure_mismatch",
+                    "detail": "The quote is incorrect.",
+                    "field_path": "assessment.agreed_quote",
+                }
+            ],
+            diff={
+                "typed_changes": [
+                    {"path": "assessment.agreed_quote", "kind": "money"}
+                ],
+                "prose_change_ratio": 0,
+            },
+        ),
+        actor=MANAGER,
+    )
+    assert rejected.status_code == 200
+    resolved = next(
+        event
+        for event in _events(fixture_env.app, "review.resolved", claim.id)
+        if event["payload"].get("review_id") == item["id"]
+    )
+    event = SimpleNamespace(
+        type="review.resolved",
+        payload=resolved["payload"],
+        actor=resolved["actor"],
+        claim_id=claim.id,
+        id=resolved["id"],
+    )
+    service = fixture_env.app.state.approval_pack_agent
+    original_record = service._record
+    failed = False
+
+    def fail_before_revision_review(session, **kwargs):
+        nonlocal failed
+        if kwargs["event_type"] == "review.created" and not failed:
+            failed = True
+            raise RuntimeError("injected revision-review failure")
+        return original_record(session, **kwargs)
+
+    monkeypatch.setattr(service, "_record", fail_before_revision_review)
+    with pytest.raises(RuntimeError, match="revision-review"):
+        service.consume(event)
+    assert [row["status"] for row in _drafts(fixture_env.app, claim.id)] == [
+        "signed"
+    ]
+    assert [
+        row
+        for row in _events(fixture_env.app, "review.created", claim.id)
+        if row["correlation_id"] == item["id"]
+    ] == []
+
+    monkeypatch.setattr(service, "_record", original_record)
+    service.consume(event)
+    service.consume(event)
+    drafts = _drafts(fixture_env.app, claim.id)
+    assert [row["status"] for row in drafts] == ["signed", "in_review"]
+    revision_reviews = [
+        row
+        for row in _events(fixture_env.app, "review.created", claim.id)
+        if row["correlation_id"] == item["id"]
+    ]
+    assert len(revision_reviews) == 1
+
+
 def test_manager_rejection_without_a_field_path_stays_visibly_blocked(fixture_env):
     claim = _seed(fixture_env, suffix="B")
     _sign(fixture_env, claim)
@@ -1496,6 +1707,14 @@ def test_cross_claim_artifact_fetch_is_404_and_raw_blob_keys_are_never_accepted(
     )
     assert ok.status_code == 200
     assert ok.headers["etag"].strip('"') == merged["payload"]["sha256"]
+    accesses = _events(fixture_env.app, "pack.artifact_accessed", first.id)
+    assert len(accesses) == 1
+    assert accesses[0]["payload"] == {
+        "artifact_event_id": merged["id"],
+        "artifact_event_type": "pack.merged",
+        "artifact_sha256": merged["payload"]["sha256"],
+        "actor": OFFICER,
+    }
 
     crossed = fixture_env.client.get(
         f"/claims/{second.id}/approval-pack/artifacts/{merged['id']}", headers=_h()
@@ -1523,6 +1742,9 @@ def test_cross_claim_artifact_fetch_is_404_and_raw_blob_keys_are_never_accepted(
         headers=_h(OUTSIDER),
     )
     assert denied.status_code == 403
+    # Refused, cross-claim, raw-key, and non-artifact attempts create no access
+    # record; only bytes actually returned to an authorised actor are logged.
+    assert len(_events(fixture_env.app, "pack.artifact_accessed", first.id)) == 1
 
 
 # --- 9. the ICON seam stays a slot ---------------------------------------------------
@@ -1598,6 +1820,7 @@ def test_every_new_pack_event_is_mapped_through_the_single_ledger_writer(fixture
         "pack.note_sign_prepared",
         "pack.note_signed",
         "pack.routed",
+        "pack.artifact_accessed",
     ):
         assert ACTION_MAP[event_type] == event_type
 
@@ -1610,6 +1833,12 @@ def test_every_new_pack_event_is_mapped_through_the_single_ledger_writer(fixture
         key="ledger",
     )
     _sign(fixture_env, claim)
+    merged = _events(fixture_env.app, "pack.merged", claim.id)[0]
+    artifact = fixture_env.client.get(
+        f"/claims/{claim.id}/approval-pack/artifacts/{merged['id']}",
+        headers=_h(),
+    )
+    assert artifact.status_code == 200
     _drain(fixture_env.app)
     actions = {
         row["action"]
@@ -1624,6 +1853,7 @@ def test_every_new_pack_event_is_mapped_through_the_single_ledger_writer(fixture
         "pack.note_sign_prepared",
         "pack.note_signed",
         "pack.routed",
+        "pack.artifact_accessed",
     } <= actions
     detail = json.dumps(
         _rows(

@@ -66,6 +66,7 @@ ACTION_MAP = {
     "pack.note_sign_prepared": "pack.note_sign_prepared",
     "pack.note_signed": "pack.note_signed",
     "pack.routed": "pack.routed",
+    "pack.artifact_accessed": "pack.artifact_accessed",
 }
 
 EventRecorder = Callable[..., Event]

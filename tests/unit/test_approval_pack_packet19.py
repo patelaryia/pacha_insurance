@@ -1,7 +1,7 @@
 """PACKET-19 unit regressions for the decisions that carry a register entry.
 
 These cover the narrow, fail-closed behaviours the acceptance suite exercises
-end to end: the routing contract read, side-effect parsing (#255), the canonical
+end to end: the routing contract read, side-effect parsing (#256), the canonical
 body hash (#246), the subtype band override (#248), and the pack field-set slot
 (#252).
 """
@@ -34,7 +34,7 @@ def test_canonical_body_hash_excludes_its_own_field_and_is_order_stable():
     assert canonical_body_hash({**body, "signable": True}) != digest
 
 
-# --- side-effect parsing (#255) -----------------------------------------------------
+# --- side-effect parsing (#256) -----------------------------------------------------
 
 
 class _Signing:
@@ -131,7 +131,7 @@ def test_pack_review_at_2_binds_the_route_snapshot_and_the_fsm_reason_shape():
     }
     assert schema["properties"]["routing_amount_cents"]["type"] == "integer"
     reason = schema["$defs"]["rejection_reason"]
-    # #257: the FSM already binds `{code, detail}`; no reason enum is invented.
+    # #258: the FSM already binds `{code, detail}`; no reason enum is invented.
     assert set(reason["required"]) == {"code", "detail"}
     assert set(reason["properties"]) == {"code", "detail", "field_path"}
     assert "enum" not in reason["properties"]["code"]
