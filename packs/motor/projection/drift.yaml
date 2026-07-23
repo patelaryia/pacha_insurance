@@ -1,0 +1,33 @@
+# PACKET-21 §14 standing drift registry (register #290).
+#
+# PRD-09 requires a nightly reconciliation between the platform snapshot and the
+# target system, but neither the nightly EAT time, the ICON claim-status value
+# map, nor the target readback selectors are present in the source documents.
+# The slot, the status, and the blocker are shipped; the values are not invented.
+# Production Beat registration stays visibly disabled until PACKET-22 captures
+# them. The fixture registry under tests proves the within-24-hour mechanic.
+version: 1
+status: pending_capture
+blocked_on: PRD-09-nightly-map-and-time
+schedule:
+  day_of_week: "*"
+  hour: null
+  minute: null
+  timezone: Africa/Nairobi
+checks:
+  - id: icon_reserve_total
+    status: pending_capture
+    blocked_on: open-item-3
+    source_operation: icon.reserve_create
+    external_ref: external.icon.claim_no
+    claim_path: reserve.total
+    target_readback: null
+  # The ICON claim-status vocabulary and its mapping onto the PRD-00 FSM are
+  # uncaptured, so `claim_path` stays null rather than being guessed.
+  - id: icon_claim_status
+    status: pending_capture
+    blocked_on: open-item-3
+    source_operation: icon.claim_register
+    external_ref: external.icon.claim_no
+    claim_path: null
+    target_readback: null

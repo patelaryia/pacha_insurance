@@ -1,0 +1,24 @@
+# PACKET-21 §4 / register #296 — deployment target registry.
+#
+# Target connectivity is *deployment* configuration, not part of the signed
+# claim product pack, so it lives here rather than under `packs/`.
+#
+# Both records are fail-closed. No ICON or EDMS endpoint, service account, or
+# click path has been captured (open items 1/2/12), so `base_url` and
+# `secret_ref` are null and adapter construction refuses outright. Nothing here
+# is a credential: a live record must name an HTTPS endpoint inside the runner's
+# exact outbound allowlist and an AWS Secrets Manager *reference*.
+#
+# Fixture targets are injected from the test directory and never modify this file.
+version: 1
+systems:
+  icon:
+    status: blocked_on_inputs
+    blocked_on: open-item-1/open-item-2/open-item-12
+    base_url: null
+    secret_ref: null
+  edms:
+    status: blocked_on_inputs
+    blocked_on: open-item-1/open-item-2/open-item-12
+    base_url: null
+    secret_ref: null

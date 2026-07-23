@@ -19,6 +19,10 @@ series:
   - {id: chase_doc_type_cycle, status: live, window: eat_calendar}
   - {id: chase_broker_league, status: live, window: eat_calendar}
   - {id: chase_cycle_time, status: live, window: eat_calendar}
+  # PACKET-21 §15 / register #291: the denominator is the current
+  # `completed`+`diverged` row count. Failed and in-flight rows are excluded and
+  # a zero denominator reports null rather than a misleading zero.
+  - {id: projection_divergence_rate, status: live, window: point_in_time}
   - {id: autonomy_rate_trend, status: pending_capture, window: pending_capture}
   - {id: no_touch_trend, status: pending_capture, window: pending_capture}
   - {id: median_handling_trend, status: pending_capture, window: pending_capture}

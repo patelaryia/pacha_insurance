@@ -1,8 +1,10 @@
-"""Projection request, snapshot, idempotency, and paste-assist lifecycle.
+"""Projection request, snapshot, idempotency, paste-assist, and RPA facade.
 
-Nothing here writes to a target system. Paste-assist is authenticated human
-work, so it deliberately does not pass through ``execute_or_stage``: PACKET-21
-registers the first external executor behind the AR-2 gate.
+Paste-assist is authenticated human work, so it deliberately does not pass
+through ``execute_or_stage``. Every *external* write does: PACKET-21 registers
+the single deferred executor `projection.rpa.execute` behind the AR-2 gate and
+delegates the machinery to `rpa.py`, `reconcile.py`, and `drift.py`. This module
+stays the one curated facade the rest of the platform talks to.
 """
 
 from __future__ import annotations
@@ -23,8 +25,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from claim_core import ClaimCoreError, FieldWrite, new_ulid
 from claim_core.ledger import canonical_json
 from projection_agent.config import Operation, OperationRegistry
+from projection_agent.drift import DriftEngine
 from projection_agent.models import LEGAL_EDGES, Projection
-from projection_agent.paste import PasteEngine, SnapshotBlocked
+from projection_agent.paste import PasteEngine, SnapshotBlocked, encode_copy_value
+from projection_agent.reconcile import Mismatch, ReconciliationEngine, value_digest
+from projection_agent.rpa import RUNNER_ACTOR, RpaCoordinator
 
 ACTOR = "agent:projection"
 #: PRD-04 operational roles may read the Systems surface; `auditor` is read-only.
@@ -129,7 +134,13 @@ def _json(value: Any) -> Any:
 class ProjectionService:
     """The curated service exposed as ``app.state.projection_agent``."""
 
-    def __init__(self, app: Any, operations: OperationRegistry) -> None:
+    def __init__(
+        self,
+        app: Any,
+        operations: OperationRegistry,
+        *,
+        runner_authenticator: Any = None,
+    ) -> None:
         self.app = app
         self.operations = operations
         self.claims = app.state.claim_service
@@ -137,6 +148,17 @@ class ProjectionService:
         self.sessions = sessionmaker(bind=app.state.engine, expire_on_commit=False)
         self.paste = PasteEngine(app)
         self._locks = tuple(RLock() for _ in range(LOCK_STRIPES))
+        #: Absent until infra supplies one; the internal routes stay unmounted.
+        self.runner_authenticator = runner_authenticator
+        self.rpa = RpaCoordinator(self)
+        self.reconcile = ReconciliationEngine(self)
+        self.drift = DriftEngine(self)
+
+    @property
+    def rpa_actor(self) -> str:
+        """The runner's platform identity. Never a person, never a target login."""
+
+        return RUNNER_ACTOR
 
     # -- shared helpers --------------------------------------------------------
 
@@ -344,6 +366,10 @@ class ProjectionService:
             return ProjectionResult(
                 status="exists", operation=operation, projection_id=duplicate
             )
+        if definition.mode == "rpa":
+            # A live RPA row goes straight to the AR-2 gate; a blocked or
+            # ineligible configuration raises rather than silently pasting.
+            self.launch_rpa(projection_id, actor=actor)
         return ProjectionResult(
             status="created", operation=operation, projection_id=projection_id
         )
@@ -359,6 +385,9 @@ class ProjectionService:
     def consume(self, event: Any) -> None:
         """Consume `projection.requested`; client values are never trusted."""
 
+        if event.type == "review.resolved":
+            self.consume_resolution(event)
+            return
         if event.type != "projection.requested":
             return
         payload = _json(event.payload)
@@ -1065,6 +1094,519 @@ class ProjectionService:
                 )
             created.append(locked.id)
         return {"scanned": len(rows), "created": len(created), "rate_percent": rate}
+
+
+    # -- PACKET-21 RPA facade --------------------------------------------------
+
+    def capability_level(self, capability_id: str) -> str:
+        with self.app.state.engine.connect() as connection:
+            level = connection.execute(
+                text("SELECT current_level FROM capabilities WHERE id = :id"),
+                {"id": capability_id},
+            ).scalar()
+        if not isinstance(level, str):
+            raise ClaimCoreError(
+                409, "CAPABILITY_UNKNOWN", f"Capability {capability_id} is not registered"
+            )
+        return level
+
+    @staticmethod
+    def definition_version(row: Projection) -> str | None:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        definition = payload.get("operation_definition")
+        return definition.get("version") if isinstance(definition, dict) else None
+
+    def review_item(self, review_id: str) -> dict[str, Any] | None:
+        with self.app.state.engine.connect() as connection:
+            row = (
+                connection.execute(
+                    text(
+                        "SELECT id, type, subtype, status, payload, claim_id, "
+                        "resolution, resolution_payload FROM review_items WHERE id = :id"
+                    ),
+                    {"id": review_id},
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        return {**dict(row), "payload": _json(row["payload"]),
+                "resolution_payload": _json(row["resolution_payload"])}
+
+    def create_exception(
+        self, *, claim_id: str | None, subtype: str, payload: dict[str, Any]
+    ) -> None:
+        """Create one idempotent `EXCEPTION{subtype}` for this projection."""
+
+        projection_id = payload.get("projection_id")
+        for event in self._events(claim_id, "review.created"):
+            body = event["payload"]
+            if (
+                isinstance(body, dict)
+                and body.get("subtype") == subtype
+                and body.get("projection_id") == projection_id
+            ):
+                return
+        with self.sessions.begin() as session:
+            self._emit(
+                session,
+                claim_id=claim_id,
+                event_type="review.created",
+                payload={
+                    "review_id": new_ulid(),
+                    "type": "EXCEPTION",
+                    "subtype": subtype,
+                    **payload,
+                },
+                actor=ACTOR,
+            )
+
+    def launch_rpa(self, projection_id: str, *, actor: str = ACTOR) -> dict[str, Any]:
+        """Public entry point: take one queued RPA row through the AR-2 gate."""
+
+        return self.rpa.authorise(projection_id, actor=actor)
+
+    def lease_response(self, grant: Any, *, include_token: bool = True) -> dict[str, Any]:
+        """Build the one-time claim response: definition plus ephemeral values."""
+
+        operation = self.operations.get(grant.operation)
+        click_path = operation.click_path
+        assert click_path is not None  # a lease is only granted for a live path
+        row = self._row(grant.projection_id)
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        values: dict[str, str] = {}
+        for entry in payload.get("fields", ()):
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            value = entry.get("value")
+            if isinstance(path, str) and not path.startswith(("rule:", "literal:")):
+                # Every runner decrypt is access-logged against the runner's own
+                # platform identity, never a person's.
+                value = self.claims.reveal_snapshot_value(
+                    row.claim_id, path=path, value=value, actor=self.rpa_actor
+                )
+            values[str(entry.get("step_id"))] = encode_copy_value(
+                value,
+                value_type=str(entry.get("value_type")),
+                encoding=str(entry.get("external_encoding")),
+            )
+        body = grant.as_dict(definition=click_path.as_definition(), payload=values)
+        if not include_token:
+            body.pop("lease_token", None)
+        return body
+
+    def rpa_view(self, claim_id: str, projection_id: str, *, actor: str) -> dict[str, Any]:
+        """The Systems RPA panel. No selector, credential, or raw blob key."""
+
+        self.require_read_role(actor)
+        row = self._row(projection_id, claim_id=claim_id)
+        rpa = self.rpa.rpa_evidence(row)
+        lease = rpa.get("lease") if isinstance(rpa.get("lease"), dict) else {}
+        attempts = [
+            {
+                "attempt": record.get("attempt"),
+                "runner_id": record.get("runner_id"),
+                "leased_at": record.get("leased_at"),
+                "ended_at": record.get("ended_at"),
+                "last_completed_step": record.get("last_completed_step"),
+                "write_ids": list(record.get("write_ids") or ()),
+                "outcome": record.get("outcome"),
+                "reason_code": record.get("reason_code"),
+            }
+            for record in rpa.get("attempts") or ()
+            if isinstance(record, dict)
+        ]
+        divergence = row.divergence if isinstance(row.divergence, dict) else {}
+        catalogue = self.operations.get(row.operation)
+        circuit = self.rpa.circuit(row.operation)
+        return {
+            "projection_id": row.id,
+            "claim_id": row.claim_id,
+            "operation": row.operation,
+            "capability_id": catalogue.capability_id,
+            "definition_version": self.definition_version(row),
+            "snapshot_hash": (row.payload or {}).get("snapshot_hash"),
+            "mode": row.mode,
+            "status": row.status,
+            "substate": self.substate(row),
+            "gate": {
+                "state": "staged" if rpa.get("gate") else (
+                    "authorised" if rpa.get("authorisation") else "not_requested"
+                ),
+                "review_id": (rpa.get("gate") or {}).get("review_id"),
+            },
+            "run_id": rpa.get("run_id"),
+            "attempt": int(row.attempts or 0),
+            "attempts": attempts,
+            "lease": {
+                "runner_id": lease.get("runner_id"),
+                "expires_at": lease.get("expires_at"),
+                "healthy": bool(lease),
+            },
+            "current_step": (attempts[-1]["last_completed_step"] if attempts else None),
+            "evidence": [
+                {
+                    "evidence_id": frame["evidence_id"],
+                    "step_id": frame["step_id"],
+                    "phase": frame["phase"],
+                    "sha256": frame["sha256"],
+                    "captured_at": frame["captured_at"],
+                    "attempt": frame.get("attempt"),
+                    "url": (
+                        f"/console/claims/{row.claim_id}/projections/{row.id}"
+                        f"/evidence/{frame['evidence_id']}"
+                    ),
+                }
+                for frame in self.rpa.frames(row)
+            ],
+            "reconciliation": {
+                "status": (
+                    "diverged"
+                    if row.status == "diverged"
+                    else "reconciled" if row.status == "completed" else "pending"
+                ),
+                "mismatch_paths": [
+                    {
+                        "path": entry["path"],
+                        "kind": entry["kind"],
+                        "expected_sha256": entry["expected_sha256"],
+                        "actual_sha256": entry["actual_sha256"],
+                        "evidence_ids": entry.get("evidence_ids", []),
+                    }
+                    for entry in divergence.get("paths", ())
+                ],
+                "detected_by": divergence.get("detected_by"),
+            },
+            "circuit": {
+                "status": "open" if circuit else "closed",
+                "reason_code": (circuit or {}).get("reason_code"),
+                "definition_version": (circuit or {}).get("definition_version"),
+            },
+            "fallback": rpa.get("fallback"),
+            "terminal": rpa.get("terminal"),
+        }
+
+    def substate(self, row: Projection) -> str:
+        """The Systems substate label, derived only from durable evidence."""
+
+        rpa = self.rpa.rpa_evidence(row)
+        if row.status == "diverged":
+            return "diverged"
+        if row.status == "failed":
+            return "failed"
+        if rpa.get("fallback") is not None:
+            return "fallback_to_paste"
+        if row.status == "verifying":
+            return "reconciling"
+        if row.status == "executing" and row.mode == "rpa":
+            return "running"
+        if rpa.get("gate") is not None and rpa.get("authorisation") is None:
+            return "awaiting_confirmation"
+        if row.status == "completed":
+            return "completed"
+        return "queued"
+
+    def read_evidence(
+        self, claim_id: str, projection_id: str, evidence_id: str, *, actor: str
+    ) -> tuple[bytes, str]:
+        """Resolve a server-owned evidence key after same-claim RBAC (#284/#295)."""
+
+        self.require_read_role(actor)
+        row = self._row(projection_id, claim_id=claim_id)
+        frame = next(
+            (item for item in self.rpa.frames(row) if item["evidence_id"] == evidence_id),
+            None,
+        )
+        if frame is None:
+            raise ClaimCoreError(404, "EVIDENCE_NOT_FOUND", "Evidence was not found")
+        content = self.app.state.blob_store.get(frame["key"])
+        if hashlib.sha256(content).hexdigest() != frame["sha256"]:
+            raise ClaimCoreError(
+                409, "EVIDENCE_DIGEST_MISMATCH", "Stored evidence does not match its digest"
+            )
+        with self.sessions.begin() as session:
+            self._emit(
+                session,
+                claim_id=row.claim_id,
+                event_type="pii.decrypted",
+                payload={
+                    "resource_type": "projection_evidence",
+                    "projection_id": row.id,
+                    "evidence_id": evidence_id,
+                },
+                actor=actor,
+            )
+        return content, frame["sha256"]
+
+    # -- sampled paste readback capture (§12) ---------------------------------
+
+    def capture_paste_readback(
+        self,
+        review_id: str,
+        *,
+        actor: str,
+        observed: dict[str, Any],
+        screenshot: bytes | None = None,
+    ) -> dict[str, Any]:
+        """Store one officer-observed target capture without copying its values."""
+
+        self.require_operate_role(actor)
+        item = self.review_item(review_id)
+        if item is None or item["type"] != "PASTE_READBACK_CHECK":
+            raise ClaimCoreError(404, "REVIEW_NOT_FOUND", "Review item was not found")
+        if item["status"] != "open":
+            raise ClaimCoreError(409, "ALREADY_RESOLVED", "Review item is no longer open")
+        projection_id = (item["payload"] or {}).get("projection_id")
+        if not isinstance(projection_id, str):
+            raise ClaimCoreError(
+                409, "REVIEW_BLOCKED_ON_INPUTS", "The review names no projection"
+            )
+        row = self._row(projection_id)
+        if row.claim_id != item["claim_id"]:
+            raise ClaimCoreError(404, "REVIEW_NOT_FOUND", "Review item was not found")
+        if row.status != "completed":
+            raise ClaimCoreError(
+                409, "PROJECTION_STATE_STALE", "Only a completed projection can be sampled"
+            )
+        declared = self._declared_capture_keys(row)
+        unknown = sorted(set(observed) - set(declared))
+        if unknown:
+            raise ClaimCoreError(
+                422, "READBACK_KEY_UNKNOWN", f"Observed keys {unknown} are not declared"
+            )
+        missing = sorted(set(declared) - set(observed))
+        if missing:
+            raise ClaimCoreError(
+                422, "READBACK_REQUIRED", f"Observed values {missing} are required"
+            )
+        for key, value in observed.items():
+            if not isinstance(value, str) or not value.strip():
+                raise ClaimCoreError(
+                    422, "READBACK_MALFORMED", f"Observed {key!r} must be a non-empty string"
+                )
+        mismatches = self.reconcile.compare_observed(
+            row, self._split_observed(row, observed), actor=actor
+        )
+        capture_id = new_ulid()
+        evidence_id = None
+        if screenshot:
+            evidence_id = self._store_capture_evidence(row, capture_id, screenshot)
+        with self._guard(projection_id) as session:
+            locked = session.get(Projection, projection_id)
+            if locked is None:
+                raise ClaimCoreError(404, "PROJECTION_NOT_FOUND", "Projection was not found")
+            evidence = dict(locked.evidence) if isinstance(locked.evidence, dict) else {}
+            captures = dict(evidence.get("paste_readback_checks") or {})
+            captures[capture_id] = {
+                "review_id": review_id,
+                "captured_by": actor,
+                "captured_at": self.clock().isoformat(),
+                # Values are protected under the claim DEK, never plain.
+                "values": {
+                    key: self.claims.protect_snapshot_value(
+                        locked.claim_id, path=key, value=value
+                    )
+                    if key in self._declared_capture_keys(locked)
+                    else value
+                    for key, value in observed.items()
+                },
+                "mismatch_paths": sorted(mismatch.path for mismatch in mismatches),
+                "evidence_id": evidence_id,
+            }
+            evidence["paste_readback_checks"] = captures
+            locked.evidence = evidence
+        return {
+            "capture_id": capture_id,
+            "mismatch_paths": sorted(mismatch.path for mismatch in mismatches),
+            "hashes": {
+                mismatch.path: {
+                    "expected_sha256": value_digest(mismatch.expected),
+                    "actual_sha256": value_digest(mismatch.actual),
+                }
+                for mismatch in mismatches
+            },
+            "evidence_id": evidence_id,
+        }
+
+    def _declared_capture_keys(self, row: Projection) -> list[str]:
+        stored = row.readback if isinstance(row.readback, dict) else {}
+        return sorted(stored.get("paths", ()))
+
+    def _split_observed(self, row: Projection, observed: dict[str, Any]) -> dict[str, Any]:
+        del row
+        return {"inputs": {}, "outputs": dict(observed)}
+
+    def _store_capture_evidence(
+        self, row: Projection, capture_id: str, content: bytes
+    ) -> str:
+        digest = hashlib.sha256(content).hexdigest()
+        evidence_id = new_ulid()
+        key = (
+            f"projection-evidence/{row.claim_id}/{row.id}/paste_readback/"
+            f"{capture_id}/0001.png"
+        )
+        self.app.state.blob_store.put(key, content)
+        with self._guard(row.id) as session:
+            locked = session.get(Projection, row.id)
+            if locked is None:
+                raise ClaimCoreError(404, "PROJECTION_NOT_FOUND", "Projection was not found")
+            rpa = self.rpa.rpa_evidence(locked)
+            attempts = [dict(item) for item in (rpa.get("attempts") or ())]
+            record = next(
+                (item for item in attempts if item.get("attempt") == 0),
+                {"attempt": 0, "frames": []},
+            )
+            frames = [dict(frame) for frame in record.get("frames", [])]
+            frames.append(
+                {
+                    "evidence_id": evidence_id,
+                    "step_id": f"paste_readback:{capture_id}",
+                    "phase": "after",
+                    "sha256": digest,
+                    "sequence": len(frames) + 1,
+                    "captured_at": self.clock().isoformat(),
+                    "key": key,
+                }
+            )
+            record = {**record, "attempt": 0, "frames": frames}
+            self.rpa._upsert_attempt(rpa, record)
+            self.rpa.store_rpa_evidence(locked, rpa)
+        return evidence_id
+
+    def validate_paste_readback_resolution(
+        self, item: Any, action: str, payload: dict[str, Any], actor: str
+    ) -> None:
+        """Enforce §12: an opaque capture id, and no invented match."""
+
+        del actor
+        if action == "reject":
+            if not isinstance(payload.get("reason"), str) or not payload["reason"].strip():
+                raise ClaimCoreError(
+                    422, "PAYLOAD_INVALID", "A rejected sample requires a reason"
+                )
+            return
+        capture_id = payload.get("capture_id")
+        projection_id = (item.payload or {}).get("projection_id")
+        if not isinstance(capture_id, str) or not isinstance(projection_id, str):
+            raise ClaimCoreError(
+                409, "RESOLUTION_BLOCKED_ON_INPUTS", "A stored capture id is required"
+            )
+        row = self._row(projection_id)
+        evidence = row.evidence if isinstance(row.evidence, dict) else {}
+        capture = (evidence.get("paste_readback_checks") or {}).get(capture_id)
+        if not isinstance(capture, dict) or capture.get("review_id") != item.id:
+            raise ClaimCoreError(
+                409, "PROJECTION_CAPTURE_STALE", "That capture is not this review's"
+            )
+        mismatches = list(capture.get("mismatch_paths") or ())
+        if action == "approve" and mismatches:
+            raise ClaimCoreError(
+                409,
+                "RESOLUTION_BLOCKED_ON_INPUTS",
+                "The server comparison is not exact; approval is not available",
+            )
+        if action == "edit_approve":
+            declared = sorted(
+                change.get("path")
+                for change in (payload.get("diff") or {}).get("typed_changes", ())
+                if isinstance(change, dict)
+            )
+            if declared != sorted(mismatches) or not mismatches:
+                raise ClaimCoreError(
+                    409,
+                    "RESOLUTION_BLOCKED_ON_INPUTS",
+                    "The declared diff does not equal the server comparison",
+                )
+
+    def consume_resolution(self, event: Any) -> None:
+        """Apply resolved projection reviews. Idempotent and replay-safe."""
+
+        if event.type != "review.resolved":
+            return
+        payload = _json(event.payload)
+        if not isinstance(payload, dict):
+            return
+        if payload.get("type") == "DRAFT_RELEASE":
+            self.rpa.consume_review(payload, actor=getattr(event, "actor", ACTOR) or ACTOR)
+            return
+        if payload.get("type") != "PASTE_READBACK_CHECK":
+            return
+        review_id = payload.get("review_id")
+        item = self.review_item(review_id) if isinstance(review_id, str) else None
+        if item is None:
+            return
+        projection_id = (item["payload"] or {}).get("projection_id")
+        if not isinstance(projection_id, str):
+            return
+        if payload.get("resolution") == "rejected":
+            self.create_exception(
+                claim_id=item["claim_id"],
+                subtype="paste_readback_unavailable",
+                payload={
+                    "projection_id": projection_id,
+                    "review_id": review_id,
+                    "reason": payload.get("reason"),
+                },
+            )
+            return
+        if payload.get("resolution") != "edited":
+            return
+        capture_id = payload.get("capture_id")
+        row = self._row(projection_id)
+        evidence = row.evidence if isinstance(row.evidence, dict) else {}
+        capture = (evidence.get("paste_readback_checks") or {}).get(capture_id)
+        if not isinstance(capture, dict):
+            return
+        stored = row.readback if isinstance(row.readback, dict) else {}
+        values = stored.get("values") if isinstance(stored.get("values"), dict) else {}
+        mismatches = []
+        for path in capture.get("mismatch_paths") or ():
+            expected = self.claims.reveal_snapshot_value(
+                row.claim_id, path=path, value=values.get(path), actor=ACTOR
+            )
+            actual = self.claims.reveal_snapshot_value(
+                row.claim_id,
+                path=path,
+                value=(capture.get("values") or {}).get(path),
+                actor=ACTOR,
+            )
+            mismatches.append(
+                Mismatch(path=path, kind="text", expected=expected, actual=actual)
+            )
+        if not mismatches:
+            return
+        self.reconcile.diverge(
+            projection_id,
+            detected_by="paste_sample",
+            mismatches=mismatches,
+            actor=ACTOR,
+            reason_code=f"paste_sample_{capture_id}",
+        )
+
+    # -- portfolio metric (§15) ------------------------------------------------
+
+    def divergence_rate(self) -> dict[str, Any]:
+        """Point-in-time S-4 series. A zero denominator returns null, not zero."""
+
+        with self.app.state.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT status, COUNT(*) FROM projections "
+                    "WHERE status IN ('completed', 'diverged') GROUP BY status"
+                )
+            ).all()
+        counts = {status: int(count) for status, count in rows}
+        diverged = counts.get("diverged", 0)
+        reconciled = counts.get("completed", 0)
+        denominator = diverged + reconciled
+        return {
+            "diverged": diverged,
+            "reconciled": reconciled,
+            "rate_percent": None if denominator == 0 else round(diverged * 100 / denominator),
+            "basis": "current_projection_status",
+        }
 
 
 @dataclass(frozen=True)

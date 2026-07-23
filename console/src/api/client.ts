@@ -319,14 +319,39 @@ export class ConsoleApiClient implements ConsoleApi {
 
   async getPacks(): Promise<{
     packs: PackRow[];
-    adapter_health?: { status: string; owner: string };
+    adapter_health?: { status: string; owner: string } | import("./types").AdapterHealthRow[];
     user_roles?: Record<string, unknown>;
   }> {
     return (await this.json(await this.request("/console/ops/packs"))) as {
       packs: PackRow[];
-      adapter_health?: { status: string; owner: string };
+      adapter_health?: { status: string; owner: string } | import("./types").AdapterHealthRow[];
       user_roles?: Record<string, unknown>;
     };
+  }
+
+  async getProjectionRpa(claimId: string, projectionId: string) {
+    return (await this.json(await this.request(
+      `/console/claims/${encodeURIComponent(claimId)}/projections/`
+      + `${encodeURIComponent(projectionId)}/rpa`,
+    ))) as import("./types").ProjectionRpaView;
+  }
+
+  async getProjectionEvidence(url: string): Promise<ArrayBuffer> {
+    return (await this.request(url)).arrayBuffer();
+  }
+
+  async capturePasteReadback(reviewId: string, observed: Record<string, string>) {
+    return (await this.json(await this.request(
+      `/console/reviews/${encodeURIComponent(reviewId)}/paste-readback/capture`,
+      { method: "POST", body: stringifyLossless({ observed }) },
+    ))) as import("./types").PasteReadbackCapture;
+  }
+
+  async clearProjectionCircuit(operationId: string): Promise<Record<string, unknown>> {
+    return (await this.json(await this.request(
+      `/console/ops/projection-circuits/${encodeURIComponent(operationId)}/clear`,
+      { method: "POST" },
+    ))) as Record<string, unknown>;
   }
 
   async getCapabilities(): Promise<{ capabilities: CapabilityRow[] }> {

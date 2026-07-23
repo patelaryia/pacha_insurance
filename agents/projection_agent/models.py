@@ -23,16 +23,27 @@ MODES = frozenset({"paste_assist", "rpa", "api"})
 STATUSES = frozenset(
     {"queued", "executing", "verifying", "completed", "failed", "diverged"}
 )
-#: PACKET-20 owns only the paste-assist forward edges. `failed`/`diverged` are
-#: PACKET-21's, except the structural fail-closed edge in `service.py`.
+#: PACKET-20 owns the paste-assist forward edges; PACKET-21 §2 adds the RPA
+#: edges, the safe pre-write fallback, and the two divergence entries. A
+#: terminal `failed|diverged` row never returns to execution, so no edge leaves
+#: those states.
 LEGAL_EDGES = frozenset(
     {
         ("queued", "executing"),
         ("executing", "executing"),
         ("executing", "verifying"),
         ("verifying", "completed"),
+        # PACKET-21 §2.
+        ("executing", "queued"),  # safe pre-write RPA failure, same row
+        ("executing", "failed"),  # known terminal failure or uncertain write
+        ("verifying", "diverged"),  # immediate RPA readback mismatch
+        ("completed", "diverged"),  # sampled paste mismatch or standing drift
     }
 )
+#: Rows that may never be executed or mutated again.
+TERMINAL_STATUSES = frozenset({"failed", "diverged"})
+#: Rows whose `completed_at` must be set.
+CLOSED_STATUSES = frozenset({"completed", "failed", "diverged"})
 
 
 class Projection(Base):
@@ -71,4 +82,11 @@ class Projection(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-__all__ = ["LEGAL_EDGES", "MODES", "Projection", "STATUSES"]
+__all__ = [
+    "CLOSED_STATUSES",
+    "LEGAL_EDGES",
+    "MODES",
+    "Projection",
+    "STATUSES",
+    "TERMINAL_STATUSES",
+]

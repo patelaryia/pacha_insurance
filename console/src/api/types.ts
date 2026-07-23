@@ -269,6 +269,83 @@ export interface PasteAssistView {
   elapsed_seconds: number | null;
 }
 
+/** PACKET-21 §15: the Systems RPA panel. Ids, hashes, and codes only. */
+export interface ProjectionRpaView {
+  projection_id: string;
+  claim_id: string;
+  operation: string;
+  capability_id: string;
+  definition_version: string | null;
+  snapshot_hash: string | null;
+  mode: string;
+  status: ProjectionSummary["status"];
+  substate:
+    | "queued"
+    | "awaiting_confirmation"
+    | "running"
+    | "reconciling"
+    | "fallback_to_paste"
+    | "failed"
+    | "diverged"
+    | "completed";
+  gate: { state: string; review_id: string | null };
+  run_id: string | null;
+  attempt: number;
+  attempts: Array<{
+    attempt: number;
+    runner_id: string | null;
+    leased_at: string | null;
+    ended_at: string | null;
+    last_completed_step: string | null;
+    write_ids: string[];
+    outcome: string | null;
+    reason_code: string | null;
+  }>;
+  lease: { runner_id: string | null; expires_at: string | null; healthy: boolean };
+  current_step: string | null;
+  evidence: Array<{
+    evidence_id: string;
+    step_id: string;
+    phase: string;
+    sha256: string;
+    captured_at: string;
+    attempt: number | null;
+    url: string;
+  }>;
+  reconciliation: {
+    status: "pending" | "reconciled" | "diverged";
+    detected_by: string | null;
+    mismatch_paths: Array<{
+      path: string;
+      kind: string;
+      expected_sha256: string;
+      actual_sha256: string;
+      evidence_ids: string[];
+    }>;
+  };
+  circuit: { status: "open" | "closed"; reason_code: string | null; definition_version: string | null };
+  fallback: { reason_code: string; at: string; actor: string } | null;
+  terminal: { subtype: string; reason_code: string } | null;
+}
+
+/** PACKET-21 §15: one S-6 adapter/control row. Never a secret or a selector. */
+export interface AdapterHealthRow {
+  system: string;
+  configured_mode: string;
+  effective_mode: string;
+  status: "healthy" | "degraded" | "unavailable" | "circuit_open";
+  reason_code: string | null;
+  runner_last_seen_at: string | null;
+  circuit_operation_ids: string[];
+}
+
+export interface PasteReadbackCapture {
+  capture_id: string;
+  mismatch_paths: string[];
+  hashes: Record<string, { expected_sha256: string; actual_sha256: string }>;
+  evidence_id: string | null;
+}
+
 export interface Citation {
   claim_id: string;
   field_path: string;
@@ -393,9 +470,18 @@ export interface ConsoleApi {
   }): Promise<{ rows: LedgerRow[] }>;
   getPacks?(): Promise<{
     packs: PackRow[];
-    adapter_health?: { status: string; owner: string };
+    // The PACKET-12 placeholder shape is still accepted so a console built
+    // against an application without PRD-09 keeps its honest unavailable card.
+    adapter_health?: { status: string; owner: string } | AdapterHealthRow[];
     user_roles?: Record<string, unknown>;
   }>;
+  getProjectionRpa?(claimId: string, projectionId: string): Promise<ProjectionRpaView>;
+  getProjectionEvidence?(url: string): Promise<ArrayBuffer>;
+  capturePasteReadback?(
+    reviewId: string,
+    observed: Record<string, string>,
+  ): Promise<PasteReadbackCapture>;
+  clearProjectionCircuit?(operationId: string): Promise<Record<string, unknown>>;
   getCapabilities?(): Promise<{ capabilities: CapabilityRow[] }>;
   promoteCapability?(
     id: string,

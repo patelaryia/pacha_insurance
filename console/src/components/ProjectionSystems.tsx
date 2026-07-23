@@ -4,6 +4,7 @@ import { consoleError, type ConsoleError } from "../api/errors";
 import type {
   ConsoleApi,
   PasteAssistView,
+  ProjectionRpaView,
   ProjectionSummary,
   ProjectionSurface,
 } from "../api/types";
@@ -22,6 +23,18 @@ const STATUS_LABELS: Record<ProjectionSummary["status"], string> = {
   completed: "Completed",
   failed: "Failed",
   diverged: "Diverged",
+};
+
+/** PACKET-21 §15: substates are derived from durable evidence, never guessed. */
+const SUBSTATE_LABELS: Record<ProjectionRpaView["substate"], string> = {
+  queued: "Queued",
+  awaiting_confirmation: "Awaiting confirmation",
+  running: "Running",
+  reconciling: "Reconciling",
+  fallback_to_paste: "Fallback to paste",
+  failed: "Failed",
+  diverged: "Diverged",
+  completed: "Completed",
 };
 
 const AVAILABILITY_LABELS: Record<string, string> = {
@@ -56,6 +69,7 @@ export function ProjectionSystems({ api, claimId }: ProjectionSystemsProps) {
   const [error, setError] = useState<ConsoleError | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [copyFailure, setCopyFailure] = useState<string | null>(null);
+  const [rpa, setRpa] = useState<ProjectionRpaView | null>(null);
   const [readback, setReadback] = useState<Record<string, string>>({});
   const [attested, setAttested] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -91,6 +105,18 @@ export function ProjectionSystems({ api, claimId }: ProjectionSystemsProps) {
       setBusy(false);
     }
   }
+
+  const openRpa = useCallback(async (projectionId: string) => {
+    if (!api.getProjectionRpa) return;
+    setError(null);
+    try {
+      // The server is authoritative. Nothing here is optimistic: a completed
+      // state only ever comes from a reconciled server response.
+      setRpa(await api.getProjectionRpa(claimId, projectionId));
+    } catch (caught) {
+      setError(consoleError(caught, "The robotic run could not be read."));
+    }
+  }, [api, claimId]);
 
   async function openStrip(projectionId: string) {
     if (!api.getPasteAssist) return;
@@ -273,12 +299,96 @@ export function ProjectionSystems({ api, claimId }: ProjectionSystemsProps) {
                   >
                     Open paste strip
                   </button>
+                  <button
+                    data-testid={`open-rpa-${projection.id}`}
+                    onClick={() => void openRpa(projection.id)}
+                    aria-label={`Open robotic run for ${projection.operation}`}
+                  >
+                    Open robotic run
+                  </button>
                 </article>
               </li>
             ))}
           </ul>
         )}
       </section>
+
+      {rpa && (
+        <section aria-label="Robotic run" className="rpa-panel" data-testid="rpa-panel">
+          <h3>Robotic run — {humanOperation(rpa.operation)}</h3>
+          <p data-testid="rpa-substate">{SUBSTATE_LABELS[rpa.substate]}</p>
+          <dl className="fact-list">
+            <div><dt>Attempt</dt><dd>{rpa.attempt} of 3</dd></div>
+            <div><dt>Current step</dt><dd>{rpa.current_step ?? "Not started"}</dd></div>
+            <div>
+              <dt>Lease</dt>
+              <dd>
+                {rpa.lease.healthy && rpa.lease.expires_at
+                  ? `${rpa.lease.runner_id} until ${formatEat(rpa.lease.expires_at)}`
+                  : "No live lease"}
+              </dd>
+            </div>
+            <div>
+              <dt>Circuit breaker</dt>
+              <dd data-testid="rpa-circuit">
+                {rpa.circuit.status === "open"
+                  ? `Open — ${rpa.circuit.reason_code ?? "reason unavailable"}`
+                  : "Closed"}
+              </dd>
+            </div>
+          </dl>
+          {rpa.gate.review_id && rpa.substate === "awaiting_confirmation" && (
+            <p data-testid="rpa-awaiting-confirmation">
+              A confirmation is open in the review queue. Nothing has been sent
+              to the target system.{" "}
+              <a href={`/reviews/${rpa.gate.review_id}`}>Open the confirmation</a>
+            </p>
+          )}
+          {rpa.terminal?.subtype === "uncertain_write" && (
+            <p role="alert" data-testid="rpa-uncertain-write">
+              Uncertain write. A person must establish the target state before
+              anything else happens — this row is not available for paste assist
+              and there is no retry.
+            </p>
+          )}
+          {rpa.reconciliation.status === "diverged" && (
+            <p role="alert" data-testid="rpa-diverged">
+              Diverged, detected by {rpa.reconciliation.detected_by ?? "reconciliation"}.
+              Expected and actual values are shown only in the authorised
+              divergence workspace.{" "}
+              <a href="/reviews?type=EXCEPTION">Open the divergence review</a>
+            </p>
+          )}
+          {rpa.reconciliation.mismatch_paths.length > 0 && (
+            <ul data-testid="rpa-mismatch-paths">
+              {rpa.reconciliation.mismatch_paths.map((row) => (
+                <li key={row.path}>
+                  {row.path} ({row.kind}) ·{" "}
+                  <code>{row.expected_sha256.slice(0, 12)}</code> vs{" "}
+                  <code>{row.actual_sha256.slice(0, 12)}</code>
+                </li>
+              ))}
+            </ul>
+          )}
+          <h4 id="rpa-evidence-heading">Evidence frames</h4>
+          <ol aria-labelledby="rpa-evidence-heading" data-testid="rpa-evidence">
+            {rpa.evidence.map((frame) => (
+              <li key={frame.evidence_id} data-testid={`evidence-${frame.evidence_id}`}>
+                <a href={frame.url}>
+                  Step {frame.step_id} · {frame.phase} ·{" "}
+                  {formatEat(frame.captured_at)}
+                </a>
+              </li>
+            ))}
+          </ol>
+          <button
+            data-testid="rpa-refresh"
+            onClick={() => void openRpa(rpa.projection_id)}
+          >
+            Refresh robotic run
+          </button>
+        </section>
+      )}
 
       {strip && (
         <section aria-label="Paste assist strip" className="paste-strip">

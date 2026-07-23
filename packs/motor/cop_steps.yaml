@@ -20,3 +20,42 @@ step_definitions:
     steps:
       - {id: generate_commentary, expects_events: [pack.merged], produces: [model.called]}
       - {id: grade_and_queue, expects_events: [model.called], produces: [pack.note_drafted]}
+
+  # PACKET-21 §6: one exact projection COP definition per canonical `project.*`
+  # capability. These are stable stage ids only — target-form step detail stays
+  # in `projections.evidence`, and G-PROC checks just this coarse sequence.
+  - capability_id: project.icon.policy_read
+    steps: &projection_stages
+      - {id: authorise, expects_events: [projection.requested], produces: [review.created]}
+      - {id: lease, expects_events: [review.resolved], produces: []}
+      - {id: execute, expects_events: [], produces: []}
+      - {id: readback, expects_events: [], produces: []}
+      - {id: reconcile, expects_events: [], produces: [projection.completed]}
+  - capability_id: project.icon.claim_register
+    steps: *projection_stages
+  - capability_id: project.icon.reserve_create
+    steps: *projection_stages
+  - capability_id: project.icon.reserve_breakdown
+    steps: *projection_stages
+  - capability_id: project.icon.reserve_adjust
+    steps: *projection_stages
+  - capability_id: project.icon.assessor_payment_request
+    steps: *projection_stages
+  - capability_id: project.icon.note_entry
+    steps: *projection_stages
+  - capability_id: project.icon.claim_details_report
+    steps: *projection_stages
+  - capability_id: project.icon.salvage_register
+    steps: *projection_stages
+  - capability_id: project.icon.payment_voucher
+    steps: *projection_stages
+  - capability_id: project.edms.general_payments
+    steps: *projection_stages
+  - capability_id: project.edms.claims_workflow
+    steps: *projection_stages
+  - capability_id: project.edms.attach_and_tag
+    steps: *projection_stages
+  - capability_id: project.edms.claim_payment
+    steps: *projection_stages
+  - capability_id: project.edms.payment_workflow
+    steps: *projection_stages

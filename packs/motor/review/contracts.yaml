@@ -36,6 +36,13 @@ types:
     resolution_actions: [approve, edit_approve, reject]
     resolution_schema: DRAFT_RELEASE@1
     authorised_roles: *operational_roles
+    subtypes:
+      # PACKET-21 §6/#279: one-click confirmation of an exact RPA launch. No
+      # eighteenth review type is added; Edit->Approve changes only this row's
+      # mode to paste-assist and Reject launches nothing.
+      projection_rpa:
+        workspace_layout: projection_rpa_release
+        resolution_schema: DRAFT_RELEASE_PROJECTION@1
   MODE_CONFIRM:
     producing_events: [review.created]
     workspace_layout: mode_confirmation
@@ -85,6 +92,12 @@ types:
     resolution_actions: [approve, edit_approve, reject]
     resolution_schema: EXCEPTION@1
     authorised_roles: *operational_roles
+    subtypes:
+      # PACKET-21 §10/#286: a divergence records exactly one disposition. No
+      # disposition auto-corrects either side or reopens the old projection.
+      divergence:
+        workspace_layout: projection_divergence
+        resolution_schema: EXCEPTION_DIVERGENCE@1
   PROMOTION_SIGNOFF:
     producing_events: [review.created]
     workspace_layout: promotion_signoff
@@ -97,11 +110,14 @@ types:
     resolution_actions: [approve, edit_approve, reject]
     resolution_schema: SAMPLE_REVIEW@1
     authorised_roles: *operational_roles
+  # PACKET-21 §12/#287: @1 stays registered for replay of historical resolved
+  # items, but every new sample resolves against the opaque capture id in @2 so
+  # observed target values never enter review history.
   PASTE_READBACK_CHECK:
     producing_events: [review.created]
     workspace_layout: paste_readback
     resolution_actions: [approve, edit_approve, reject]
-    resolution_schema: PASTE_READBACK_CHECK@1
+    resolution_schema: PASTE_READBACK_CHECK@2
     authorised_roles: *operational_roles
   PROCEED_PARTIAL:
     producing_events: [review.created]

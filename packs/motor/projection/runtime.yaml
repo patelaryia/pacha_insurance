@@ -1,0 +1,31 @@
+# PACKET-21 §4 runner and reconciliation control values (registers #276/#282).
+#
+# Every timing, ceiling, and policy the RPA control plane obeys is pack data:
+# code carries no fallback literal. The PRD-09 §9.4 step ceilings (20s default,
+# 90s EDMS, 8min upload, 30s reflection poll, 10min reflection timeout) are
+# binding; the heartbeat, lease, reaper, and three-attempt ceiling are the
+# Packet-21 control-plane values.
+#
+# Nothing here activates a target system. `control_api_auth` stays
+# `blocked_on_inputs` until infra supplies a runner machine identity, and the
+# nightly drift time is still uncaptured, so its schedule stays pending.
+version: 1
+runner:
+  heartbeat_seconds: 30
+  lease_seconds: 120
+  reaper_seconds: 60
+  max_attempts: 3
+  default_step_timeout_seconds: 20
+  edms_step_timeout_seconds: 90
+  upload_timeout_seconds: 480
+  reflection_poll_seconds: 30
+  reflection_timeout_seconds: 600
+  screenshot_policy: before_and_after_every_step
+  session_policy: isolated_context_per_run
+control_api_auth:
+  status: blocked_on_inputs
+  blocked_on: runner-machine-identity
+drift:
+  schedule:
+    status: pending_capture
+    blocked_on: PRD-09-nightly-time

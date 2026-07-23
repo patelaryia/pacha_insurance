@@ -221,6 +221,16 @@ def build_ops_router(app: Any) -> APIRouter:
         _require(app, x_actor, PACK_READ_ROLES)
         return reads.packs()
 
+    @router.post("/projection-circuits/{operation_id}/clear")
+    def clear_projection_circuit(
+        operation_id: str,
+        x_actor: str = Header(alias="X-Actor"),
+    ) -> dict[str, Any]:
+        # PACKET-21 §11: only admin or claims-manager may clear, and only after
+        # a strictly newer definition version passes and the adapter is healthy.
+        _require(app, x_actor, CAPABILITY_WRITE_ROLES)
+        return reads.clear_projection_circuit(operation_id, actor=x_actor)
+
     @router.get("/capabilities")
     def capabilities(x_actor: str = Header(alias="X-Actor")) -> dict[str, Any]:
         _require(app, x_actor, CAPABILITY_READ_ROLES)
