@@ -56,6 +56,15 @@ def test_worker_name_is_the_base_plus_the_worker_id():
     assert worker_database_name("pacha_test", "gw11") == "pacha_test_gw11"
 
 
+def test_parallel_workers_get_distinct_databases_and_neither_is_the_base():
+    worker_zero = worker_database_name("pacha_test", "gw0")
+    worker_one = worker_database_name("pacha_test", "gw1")
+    assert worker_zero != worker_one
+    assert {worker_zero, worker_one}.isdisjoint({"pacha_test"})
+    assert all(is_droppable_name(name) for name in (worker_zero, worker_one))
+    assert not is_droppable_name("pacha_test")
+
+
 @pytest.mark.parametrize("worker_id", ["", "master"])
 def test_serial_runs_keep_the_configured_database(worker_id):
     assert worker_database_name("pacha_test", worker_id) == "pacha_test"
