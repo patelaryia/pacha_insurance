@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from threading import Lock
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import sessionmaker
 
 from claim_core.models import Event, EventDelivery
@@ -126,24 +126,65 @@ class Dispatcher:
         with self._dispatch_lock:
             return self._dispatch_once(consumers)
 
+    def _eligible_pairs(self, selected: list[str]) -> list[tuple[str, str]]:
+        """Prefilter delivery candidates without weakening the locked claim.
+
+        A consumer with no delivery row must still see historical events, so the
+        query is an outer join. Terminal rows are discarded in SQL; retry timing
+        and self-alert suppression are checked from the bulk result. The later
+        `_claim_attempt` remains the concurrency authority and rechecks all state
+        under the event-row lock.
+        """
+
+        if not selected:
+            return []
+        now = _aware(self._clock())
+        eligible: list[tuple[str, str]] = []
+        with self._sessions() as session:
+            for consumer in selected:
+                rows = session.execute(
+                    select(Event, EventDelivery)
+                    .outerjoin(
+                        EventDelivery,
+                        and_(
+                            EventDelivery.event_id == Event.id,
+                            EventDelivery.consumer == consumer,
+                        ),
+                    )
+                    .where(
+                        or_(
+                            EventDelivery.event_id.is_(None),
+                            EventDelivery.status.notin_({"succeeded", "dead_letter"}),
+                        )
+                    )
+                    .order_by(Event.seq)
+                )
+                for event, delivery in rows:
+                    if (
+                        event.type == "ops.alert"
+                        and event.payload.get("failed_consumer") == consumer
+                    ):
+                        continue
+                    if delivery is not None and not self._retry_due(event, delivery, now):
+                        continue
+                    eligible.append((event.id, consumer))
+        return eligible
+
     def _dispatch_once(self, consumers: Iterable[str] | None = None) -> int:
         selected = list(self._consumers) if consumers is None else list(consumers)
         unknown = set(selected) - set(self._consumers)
         if unknown:
             raise ValueError(f"unknown consumers: {sorted(unknown)}")
-        with self._sessions() as session:
-            event_ids = list(session.scalars(select(Event.id).order_by(Event.seq)))
         attempted = 0
-        for event_id in event_ids:
-            for consumer_name in selected:
-                event = self._claim_attempt(event_id, consumer_name)
-                if event is None:
-                    continue
-                attempted += 1
-                try:
-                    self._consumers[consumer_name](event)
-                except Exception as error:  # noqa: BLE001 - isolation is the contract
-                    self._fail(event, consumer_name, error)
-                else:
-                    self._succeed(event.id, consumer_name)
+        for event_id, consumer_name in self._eligible_pairs(selected):
+            event = self._claim_attempt(event_id, consumer_name)
+            if event is None:
+                continue
+            attempted += 1
+            try:
+                self._consumers[consumer_name](event)
+            except Exception as error:  # noqa: BLE001 - isolation is the contract
+                self._fail(event, consumer_name, error)
+            else:
+                self._succeed(event.id, consumer_name)
         return attempted
