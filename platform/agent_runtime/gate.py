@@ -23,12 +23,15 @@ class Action:
     type: str
     payload: dict[str, Any]
     grader_id: str | None = None
+    log_payload: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.type, str) or not self.type.strip():
             raise ValueError("action type must be a non-empty string")
         if not isinstance(self.payload, dict):
             raise TypeError("action payload must be a mapping")
+        if self.log_payload is not None and not isinstance(self.log_payload, dict):
+            raise TypeError("action log payload must be a mapping")
 
 
 class ExecutionRefused(RuntimeError):
@@ -178,15 +181,25 @@ class AutonomyGate:
         subtype: str | None = None,
     ) -> str:
         review_id = new_ulid()
+        staged_action: dict[str, Any] = {
+            "type": action.type,
+            "payload": dict(action.payload),
+        }
+        recipients = action.payload.get("to_party_ids")
+        if action.type == "communication.send" and isinstance(recipients, list):
+            staged_action["to_party_ids"] = list(recipients)
         payload: dict[str, Any] = {
             "review_id": review_id,
             "type": review_type,
             "agent_run_id": run_id,
             "capability_id": capability_id,
-            "action": {"type": action.type, "payload": dict(action.payload)},
+            "action": staged_action,
         }
         if subtype is not None:
             payload["subtype"] = subtype
+        retry_of = action.payload.get("retry_of")
+        if isinstance(retry_of, str):
+            payload["retry_of"] = retry_of
         with self.runner.sessions.begin() as session:
             self.app.state.record_event(
                 session,
@@ -248,6 +261,8 @@ class AutonomyGate:
                 "review_type": None,
                 "sampled": False,
             }
+            if action.log_payload is not None:
+                outcome["log_payload"] = dict(action.log_payload)
             if owns_run:
                 self.runner.finish_action(run_id, status="completed", outcome=outcome)
             return outcome

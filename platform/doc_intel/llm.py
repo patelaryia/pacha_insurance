@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from datetime import timedelta
-from typing import Any, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
 
 from jsonschema import ValidationError, validate
 
@@ -17,6 +17,8 @@ class ModelResult(TypedDict):
     data: dict[str, Any]
     cost_usd: float
     model_id: str
+    input_tokens: NotRequired[int]
+    output_tokens: NotRequired[int]
 
 
 class ModelClient(Protocol):
@@ -112,7 +114,19 @@ class ModelWrapper:
         if not isinstance(model_id, str):
             raise ValidationError("model result model_id must be a string")
         validate(instance=data, schema=schema)
-        return {"data": data, "cost_usd": float(cost), "model_id": model_id}
+        result: ModelResult = {
+            "data": data,
+            "cost_usd": float(cost),
+            "model_id": model_id,
+        }
+        for key in ("input_tokens", "output_tokens"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValidationError(f"model result {key} must be a non-negative integer")
+            result[key] = value
+        return result
 
     @staticmethod
     def _elapsed_seconds(start: Any, end: Any) -> float:

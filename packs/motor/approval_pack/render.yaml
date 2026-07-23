@@ -1,0 +1,25 @@
+# PRD-08 §8.3 conversion policy (register #226/#227).
+# The renderer is offline by construction: no HTTP(S), file, or websocket
+# scheme may be fetched, and no remote font or image is ever resolved.
+version: 1
+html:
+  network_enabled: false
+  allowed_schemes: [data, cid]
+  page: A4
+  orientation: portrait
+  margin_mm: 18
+  viewport_width_px: 1240
+  viewport_height_px: 1754
+  print_css_enabled: true
+  timeout_seconds: 30
+  render_time_zone: UTC
+  timestamp_header_format: "Rendered {timestamp} EAT"
+  timestamp_time_zone: Africa/Nairobi
+photos:
+  per_page: 2
+  caption_format: "{filename} — received {received_date} EAT"
+  caption_time_zone: Africa/Nairobi
+store:
+  retention: claim_record
+  object_lock_status: local_write_once
+  blocked_on: "register #30/#116: S3 Object Lock adapter certification"

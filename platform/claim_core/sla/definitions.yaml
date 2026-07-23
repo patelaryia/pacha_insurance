@@ -22,13 +22,14 @@ definitions:
     status: live
   - id: assessor_turnaround
     name: Assessor turnaround
-    start_event: pending_capture
-    stop_event: null
+    start_event: assessment.dispatched
+    stop_event: assessment.report_received
+    key_field: assessor_party_id
     warn_after: 3d
     breach_after: 5d
     escalate_to_role: pending_capture
     calendar: business
-    status: pending_capture
+    status: live
   - id: approval_dwell
     name: Approval dwell
     start_event: pending_capture

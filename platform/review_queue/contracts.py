@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -79,8 +80,12 @@ class ContractRegistry:
                 raise ValueError(f"{type_name} workspace_layout is required")
             if actions != RESOLUTION_ACTIONS:
                 raise ValueError(f"{type_name} resolution_actions must be the closed action list")
-            if schema_ref != f"{type_name}@1":
-                raise ValueError(f"{type_name} resolution_schema must be {type_name}@1")
+            if not isinstance(schema_ref, str) or re.fullmatch(
+                rf"{re.escape(type_name)}@[1-9][0-9]*", schema_ref
+            ) is None:
+                raise ValueError(
+                    f"{type_name} resolution_schema must be a positive versioned schema"
+                )
             if not (
                 isinstance(roles, list)
                 and roles
@@ -120,7 +125,9 @@ class ContractRegistry:
                 subtype_schema_ref = values.get("resolution_schema")
                 if not isinstance(subtype_workspace, str) or not subtype_workspace:
                     raise ValueError(f"{type_name}/{subtype} workspace_layout is required")
-                if not isinstance(subtype_schema_ref, str) or not subtype_schema_ref.endswith("@1"):
+                if not isinstance(subtype_schema_ref, str) or re.fullmatch(
+                    r"[A-Z0-9_]+@[1-9][0-9]*", subtype_schema_ref
+                ) is None:
                     raise ValueError(f"{type_name}/{subtype} resolution_schema is invalid")
                 subtype_schema_path = review_dir / "schemas" / f"{subtype_schema_ref}.json"
                 try:

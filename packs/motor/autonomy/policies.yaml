@@ -19,11 +19,17 @@ capabilities:
   - {id: triage.coverage_check, max_level: L3, initial_level: L1, policy: {}}
   - {id: triage.decline_draft, max_level: L2, initial_level: L1, policy: {}}
   - {id: triage.ex_gratia, max_level: L1, initial_level: L1, policy: {}}
-  - {id: assessment.mode_confirm, max_level: L2, policy: {}}
+  - {id: assessment.mode_confirm, max_level: L2, initial_level: L2, policy: {}}
+  - {id: assessment.dispatch, max_level: L3, initial_level: L1, policy: {}}
+  - {id: assessment.mode_shadow, max_level: L0, initial_level: L0, policy: {}}
   - {id: assessment.consistency_flag, max_level: L2, policy: {}}
-  - {id: pack.merge, max_level: L4, policy: {}}
-  - {id: pack.note_draft, max_level: L3, policy: {}}
-  - {id: pack.route, max_level: L4, policy: {}}
+  # PRD-08: merge and note each cross their own gate. pack.note_draft is capped
+  # at L3 by the constitution — drafting and queueing only; signature is human.
+  # pack.route is configuration-only until PACKET-19; approval authority is not
+  # a capability and is never routed through it.
+  - {id: pack.merge, max_level: L4, initial_level: L1, policy: {}}
+  - {id: pack.note_draft, max_level: L3, initial_level: L1, policy: {}}
+  - {id: pack.route, max_level: L4, initial_level: L1, policy: {}}
   - {id: chase.checklist, max_level: L4, policy: {}}
   - {id: chase.reminder, max_level: L4, initial_level: L1, policy: {}}
   - {id: chase.rerequest, max_level: L4, initial_level: L1, policy: {}}

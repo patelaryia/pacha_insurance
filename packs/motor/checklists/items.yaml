@@ -22,3 +22,7 @@ items:
     kind: document
     doc_type: cert_of_incorporation
     physical: false
+  # PACKET-16 (#190): PRD-07 §7.4 assessor-report chase reuse. Registered in
+  # the spec commit so the PACKET-15 registry pin stays exact; the chase
+  # engine only instantiates it from the PACKET-16 dispatch flow.
+  assessor_report: {kind: document, doc_type: assessor_report, physical: false}

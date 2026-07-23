@@ -159,4 +159,6 @@ class AnthropicModelClient:
             "data": data,
             "cost_usd": float(cost),
             "model_id": getattr(response, "model", model_id),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
         }

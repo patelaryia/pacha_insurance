@@ -82,6 +82,12 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
     return configured
 
 
+def checklist_tables() -> tuple[Any, ...]:
+    """Expose the PRD-06 checklist tables to packages that read them."""
+
+    return (ChaseChecklist.__table__, ChaseItem.__table__)
+
+
 class ChaseAgent:
     """Application-owned facade exposing the deterministic Beat tick."""
 
@@ -122,4 +128,4 @@ def build_chase_agent(app: Any, *, config: dict[str, Any] | None = None) -> Chas
     return agent
 
 
-__all__ = ["ChaseAgent", "build_chase_agent"]
+__all__ = ["ChaseAgent", "build_chase_agent", "checklist_tables"]

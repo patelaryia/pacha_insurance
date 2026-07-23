@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import re
 from collections import Counter
@@ -12,6 +14,7 @@ from typing import Any, Literal
 
 import yaml
 from json_logic import jsonLogic
+from pypdf import PdfReader
 from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
@@ -268,6 +271,14 @@ class CitationGrader(Grader):
         return RawGrade("pass", {"code": "CITATION_VERIFIED"})
 
 
+NUMERIC_CLAIM_PROPERTIES = {
+    "text": {"type": "string"},
+    "field_path": {"type": "string"},
+    "source_kind": {"enum": ["claim_field", "calc_run", "savings_ledger"]},
+    "source_ref": {"type": "string"},
+    "observed_value": {"type": ["string", "integer"]},
+    "value_type": {"type": "string"},
+}
 GNOTE_SCHEMA = {
     "type": "object",
     "required": [
@@ -282,14 +293,23 @@ GNOTE_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["text", "field_path", "observed_value", "value_type"],
                 "additionalProperties": False,
-                "properties": {
-                    "text": {"type": "string"},
-                    "field_path": {"type": "string"},
-                    "observed_value": {"type": ["string", "integer"]},
-                    "value_type": {"type": "string"},
-                },
+                "properties": NUMERIC_CLAIM_PROPERTIES,
+                # PRD-08 identifies a source kind and ref. `field_path` is the
+                # deprecated spelling of {claim_field, <path>} and is checked with
+                # exactly the same comparison (register #236).
+                "oneOf": [
+                    {
+                        "required": [
+                            "text",
+                            "source_kind",
+                            "source_ref",
+                            "observed_value",
+                            "value_type",
+                        ]
+                    },
+                    {"required": ["text", "field_path", "observed_value", "value_type"]},
+                ],
             },
         },
         "unsupported_assertions": {"type": "array", "items": {"type": "string"}},
@@ -298,10 +318,31 @@ GNOTE_SCHEMA = {
     },
 }
 NUMERIC_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
+COMMENTARY_NODE = re.compile(
+    r'<div class="commentary" data-slot="(?P<slot>[a-z_]+)">(?P<body>.*?)</div>',
+    re.DOTALL,
+)
+HTML_TAG = re.compile(r"<[^>]+>")
+
+
+def money_display(cents: int) -> str:
+    """Format integer KES cents exactly as the T-01 body renders them."""
+
+    shillings, remainder = divmod(abs(cents), 100)
+    sign = "-" if cents < 0 else ""
+    if remainder == 0:
+        return f"KES {sign}{shillings:,}"
+    return f"KES {sign}{shillings:,}.{remainder:02d}"
 
 
 class NoteGrader(Grader):
-    """Grade T-01 prose and independently verify every numeric observation."""
+    """Grade T-01 commentary and independently verify every numeric observation.
+
+    Only the three rendered commentary nodes are graded; cover text, citation
+    labels, and the locked computed sections are excluded (register #232). An
+    artifact with no commentary nodes is graded whole, which is strictly
+    stricter than skipping it (register #236).
+    """
 
     def __init__(self, harness: Any) -> None:
         super().__init__(harness, "G-NOTE", "artifact", "major")
@@ -309,6 +350,59 @@ class NoteGrader(Grader):
     @staticmethod
     def _tokens(text_value: str) -> Counter[str]:
         return Counter(token.replace(",", "") for token in NUMERIC_TOKEN.findall(text_value))
+
+    @staticmethod
+    def _commentary(note: str) -> tuple[dict[str, str], str]:
+        sections = {
+            match.group("slot"): HTML_TAG.sub(" ", match.group("body"))
+            for match in COMMENTARY_NODE.finditer(note)
+        }
+        if not sections:
+            return {}, note
+        return sections, "\n".join(sections[slot] for slot in sections)
+
+    def _resolve(
+        self, claim_id: str, numeric_claim: dict[str, Any], actor: str
+    ) -> tuple[Any, str, str] | None:
+        """Return (value, value_type, display) for one cited source, or None."""
+
+        kind = numeric_claim.get("source_kind")
+        reference = numeric_claim.get("source_ref")
+        if kind is None:
+            kind, reference = "claim_field", numeric_claim.get("field_path")
+        if not isinstance(reference, str):
+            return None
+        if kind == "claim_field":
+            try:
+                _claim, fields, _blocked = self.harness.claim_service.hydrate_claim(
+                    claim_id, actor, paths=[reference]
+                )
+            except Exception:  # noqa: BLE001 - inaccessible fields fail closed
+                return None
+            field = fields.get(reference)
+            if field is None:
+                return None
+            display = (
+                money_display(field.value)
+                if field.value_type == "money"
+                else str(field.value)
+            )
+            return field.value, field.value_type, display
+        table, column = (
+            ("calc_runs", "output") if kind == "calc_run" else ("savings_ledger", "saving")
+        )
+        with self.harness.engine.connect() as connection:
+            value = connection.execute(
+                text(
+                    f"SELECT {column} FROM {table} WHERE id = :row_id "  # noqa: S608
+                    "AND claim_id = :claim_id"
+                ),
+                {"row_id": reference, "claim_id": claim_id},
+            ).scalar()
+        value = _decoded_json(value)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return None
+        return value, "money", money_display(value)
 
     def grade(self, subject: dict[str, Any], actor: str) -> RawGrade:
         claim_id = subject.get("claim_id")
@@ -327,13 +421,15 @@ class NoteGrader(Grader):
                 {"code": "ARTIFACT_READ_ERROR", "error_type": type(error).__name__},
             )
         config = self.harness.config["model_graders"]["G-NOTE"]
+        sections, graded_text = self._commentary(note)
         try:
             response = self.harness.model_call(
                 "G-NOTE",
                 schema=GNOTE_SCHEMA,
                 inputs={
                     "_claim_id": claim_id,
-                    "note": note,
+                    "note": graded_text,
+                    "sections": sections,
                     "rubric_ref": config.get("rubric_ref"),
                     "required_section_ids": config.get("required_section_ids", []),
                 },
@@ -347,7 +443,7 @@ class NoteGrader(Grader):
         reported_tokens: Counter[str] = Counter()
         for numeric_claim in claims:
             reported_tokens.update(self._tokens(numeric_claim["text"]))
-        if reported_tokens != self._tokens(note):
+        if reported_tokens != self._tokens(graded_text):
             return RawGrade("fail", {"code": "NUMERIC_TOKEN_OMISSION"})
         if (
             response["unsupported_assertions"]
@@ -355,32 +451,28 @@ class NoteGrader(Grader):
             or response["tone_ok"] is not True
         ):
             return RawGrade("fail", {"code": "RUBRIC_FAILURE"})
-        paths = list(dict.fromkeys(item["field_path"] for item in claims))
-        try:
-            _claim, fields, _blocked = self.harness.claim_service.hydrate_claim(
-                claim_id,
-                actor,
-                paths=paths,
-            )
-        except Exception as error:  # noqa: BLE001 - inaccessible fields fail closed
-            return RawGrade(
-                "fail",
-                {"code": "FIELD_RESOLUTION_FAILED", "error_type": type(error).__name__},
-            )
         for numeric_claim in claims:
-            value_type = numeric_claim["value_type"]
-            field = fields.get(numeric_claim["field_path"])
+            resolved = self._resolve(claim_id, numeric_claim, actor)
+            if resolved is None:
+                return RawGrade("fail", {"code": "UNSUPPORTED_NUMBER"})
+            value, value_type, display = resolved
+            declared = numeric_claim["value_type"]
+            if numeric_claim.get("source_kind") is None:
+                if (
+                    declared not in {"money", "date"}
+                    or value_type != declared
+                    or not CitationGrader._exact_numeric(
+                        declared, numeric_claim["observed_value"], value
+                    )
+                ):
+                    return RawGrade("fail", {"code": "STRUCTURED_VALUE_MISMATCH"})
+                continue
             if (
-                field is None
-                or value_type not in {"money", "date"}
-                or field.value_type != value_type
-                or not CitationGrader._exact_numeric(
-                    value_type,
-                    numeric_claim["observed_value"],
-                    field.value,
-                )
+                value_type != declared
+                or numeric_claim["observed_value"] != value
+                or self._tokens(numeric_claim["text"]) != self._tokens(display)
             ):
-                return RawGrade("fail", {"code": "STRUCTURED_VALUE_MISMATCH"})
+                return RawGrade("fail", {"code": "NUMERIC_SOURCE_MISMATCH"})
         return RawGrade("pass", {"code": "NOTE_VERIFIED"})
 
 
@@ -581,7 +673,54 @@ class TemplateGrader(Grader):
     def __init__(self, harness: Any) -> None:
         super().__init__(harness, "G-TPL", "artifact", "critical")
 
+    def _merged_pack(self, subject: dict[str, Any]) -> RawGrade:
+        """Deterministically verify a PRD-08 merged pack against its manifest."""
+
+        blob_key = subject.get("blob_key")
+        manifest = subject.get("manifest")
+        digest = subject.get("sha256")
+        if not isinstance(blob_key, str) or not isinstance(manifest, list) or not manifest:
+            return RawGrade("error", {"code": "INVALID_MERGED_PACK_SUBJECT"})
+        try:
+            content = self.harness.blob_store.get(blob_key)
+        except Exception as error:  # noqa: BLE001 - a missing artifact fails closed
+            return RawGrade(
+                "fail",
+                {"code": "ARTIFACT_OR_INPUT_MISSING", "error_type": type(error).__name__},
+            )
+        if hashlib.sha256(content).hexdigest() != digest:
+            return RawGrade("fail", {"code": "PACK_DIGEST_MISMATCH"})
+        pages = 0
+        for item in manifest:
+            sources = item.get("sources")
+            if not isinstance(sources, list) or not sources:
+                return RawGrade(
+                    "fail",
+                    {"code": "PACK_ITEM_UNRESOLVED", "item": item.get("item_id")},
+                )
+            for source in sources:
+                span = source.get("pack_pages")
+                if (
+                    not isinstance(span, list)
+                    or len(span) != 2
+                    or span[0] < 2
+                    or span[1] < span[0]
+                ):
+                    return RawGrade("fail", {"code": "PACK_PAGE_RANGE_INVALID"})
+                pages = max(pages, int(span[1]))
+        try:
+            reader = PdfReader(io.BytesIO(content))
+        except Exception as error:  # noqa: BLE001 - unparseable output fails closed
+            return RawGrade(
+                "fail", {"code": "PACK_UNREADABLE", "error_type": type(error).__name__}
+            )
+        if len(reader.pages) < pages:
+            return RawGrade("fail", {"code": "PACK_PAGE_COUNT_MISMATCH"})
+        return RawGrade("pass", {"code": "MERGED_PACK_VALID", "items": len(manifest)})
+
     def grade(self, subject: dict[str, Any], actor: str) -> RawGrade:
+        if subject.get("artifact_kind") == "merged_pack":
+            return self._merged_pack(subject)
         claim_id = subject.get("claim_id")
         template_id = subject.get("template_id")
         blob_key = subject.get("blob_key")

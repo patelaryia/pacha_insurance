@@ -16,7 +16,7 @@ class ChaseChecklist(Base):
     __tablename__ = "chase_checklists"
     __table_args__ = (
         CheckConstraint(
-            "purpose IN ('claim_docs', 'surrender')",
+            "purpose IN ('claim_docs', 'surrender', 'assessor_report')",
             name="ck_chase_checklists_purpose",
         ),
         CheckConstraint(
@@ -32,6 +32,11 @@ class ChaseChecklist(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     blocking: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    requester_party_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("parties.id", name="fk_chase_checklists_requester_party_id"),
+        comment="Explicit requester for assessor-report checklists; null uses intimation sender.",
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

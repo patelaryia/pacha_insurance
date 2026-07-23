@@ -115,7 +115,23 @@ class ChecklistService:
             )
         return str(values[0]) if len(values) == 1 else None
 
-    def requester(self, claim_id: str) -> tuple[str | None, str]:
+    def requester(
+        self,
+        claim_id: str,
+        requester_party_id: str | None = None,
+    ) -> tuple[str | None, str]:
+        if requester_party_id is not None:
+            with self.app.state.engine.connect() as connection:
+                row = connection.execute(
+                    text(
+                        "SELECT id, role FROM parties WHERE id = :party_id "
+                        "AND claim_id = :claim_id"
+                    ),
+                    {"party_id": requester_party_id, "claim_id": claim_id},
+                ).first()
+            if row is None or str(row[1]) != "assessor":
+                return None, "assessor"
+            return str(row[0]), "assessor"
         with self.app.state.engine.connect() as connection:
             rows = connection.execute(
                 text(
@@ -139,6 +155,64 @@ class ChecklistService:
             return None, "client"
         row = senders[0]
         return str(row[0]), "broker" if str(row[1]) in {"broker", "agent"} else "client"
+
+    def create_assessor_report(
+        self,
+        *,
+        claim_id: str,
+        requester_party_id: str,
+        correlation_id: str,
+        now: datetime | None = None,
+    ) -> str:
+        """Create the one-item PRD-07 checklist already requested by T-11."""
+
+        requested_at = aware(now or self.app.state.clock())
+        with self.sessions.begin() as session:
+            existing = session.scalar(
+                select(ChaseChecklist)
+                .where(
+                    ChaseChecklist.claim_id == claim_id,
+                    ChaseChecklist.purpose == "assessor_report",
+                    ChaseChecklist.requester_party_id == requester_party_id,
+                )
+                .order_by(ChaseChecklist.created_at, ChaseChecklist.id)
+                .limit(1)
+            )
+            if existing is not None:
+                return existing.id
+            definition = self.registry["assessor_report"]
+            checklist = ChaseChecklist(
+                id=new_ulid(),
+                claim_id=claim_id,
+                purpose="assessor_report",
+                status="open",
+                blocking=False,
+                requester_party_id=requester_party_id,
+                created_at=requested_at,
+            )
+            session.add(checklist)
+            session.flush()
+            item = ChaseItem(
+                id=new_ulid(),
+                checklist_id=checklist.id,
+                item_id="assessor_report",
+                state="requested",
+                physical=bool(definition["physical"]),
+                requested_at=requested_at,
+                reminder_count=0,
+                next_reminder_at=requested_at
+                + timedelta(days=int(self.config["cadence_days"][0])),
+            )
+            session.add(item)
+            session.flush()
+            self._emit(
+                session,
+                claim_id=claim_id,
+                event_type="chase.item_requested",
+                payload=self.event_payload(checklist, item),
+                correlation_id=correlation_id,
+            )
+            return checklist.id
 
     def insured_party(self, claim_id: str) -> str | None:
         with self.app.state.engine.connect() as connection:
@@ -307,6 +381,7 @@ class ChecklistService:
                     purpose="claim_docs",
                     status="open",
                     blocking=False,
+                    requester_party_id=None,
                     created_at=aware(event.occurred_at),
                 )
                 session.add(checklist)
@@ -372,6 +447,7 @@ class ChecklistService:
                 purpose="surrender",
                 status="open",
                 blocking=True,
+                requester_party_id=None,
                 created_at=now,
             )
             session.add(checklist)

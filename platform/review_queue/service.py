@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -46,6 +47,22 @@ class ReviewService:
         self.sessions = sessions
         self.contracts = contracts
         self.authorizer = authorizer
+        self._resolution_validators: dict[
+            str, Callable[[ReviewItem, str, dict[str, Any], str], None]
+        ] = {}
+
+    def register_resolution_validator(
+        self,
+        type_name: str,
+        validator: Callable[[ReviewItem, str, dict[str, Any], str], None],
+    ) -> None:
+        """Install one package-owned fail-closed validator for a review type."""
+
+        if type_name in self._resolution_validators:
+            raise ValueError(f"resolution validator {type_name!r} is already registered")
+        if not callable(validator):
+            raise ValueError(f"resolution validator {type_name!r} must be callable")
+        self._resolution_validators[type_name] = validator
 
     @staticmethod
     def _not_found(review_id: str) -> ClaimCoreError:
@@ -555,6 +572,61 @@ class ReviewService:
             item.resolution_payload = null()
             item.resolution_schema_version = None
 
+    def cancel(self, review_id: str, *, actor: str, reason: str) -> dict[str, Any]:
+        """Withdraw one open item that a newer producer version superseded.
+
+        This is not a human decision: it records no resolution and grants no
+        approval. Only the package that produced the item may withdraw it.
+        """
+
+        if not isinstance(reason, str) or not reason.strip():
+            raise ClaimCoreError(422, "PAYLOAD_INVALID", "Cancellation requires a reason")
+        # Producer cancellation is an internal lifecycle operation, not a new
+        # approval authority.  Match the immutable actor on the originating
+        # review.created event before taking the mutable projection-row lock.
+        with self.sessions() as read_session:
+            candidate = self._item(read_session, review_id)
+            producer = read_session.execute(
+                text(
+                    "SELECT actor FROM events WHERE id = :source_event_id "
+                    "AND type = 'review.created'"
+                ),
+                {"source_event_id": candidate.source_event_id},
+            ).scalar()
+            read_session.expunge(candidate)
+        if candidate.type != "NOTE_REVIEW" or candidate.subtype != "approval_note":
+            raise ClaimCoreError(
+                409,
+                "CANCELLATION_NOT_ALLOWED",
+                "Only a superseded approval-note review may be cancelled",
+            )
+        if producer != actor:
+            self._deny(candidate, actor, "FORBIDDEN_ROLE")
+        with self.sessions.begin() as session:
+            item = self._item(session, review_id, lock=True)
+            if item.status != "open":
+                raise ClaimCoreError(409, "ALREADY_RESOLVED", "Review item is no longer open")
+            item.status = "cancelled"
+            item.resolved_at = self.app.state.clock()
+            claim_id = item.claim_id
+            item_type = item.type
+            subtype = item.subtype
+            self.app.state.record_event(
+                session,
+                claim_id=claim_id,
+                event_type="review.cancelled",
+                payload={
+                    "review_id": review_id,
+                    "type": item_type,
+                    "subtype": subtype,
+                    "source_event_id": item.source_event_id,
+                    "reason": reason,
+                },
+                actor=actor,
+                correlation_id=review_id,
+            )
+        return {"id": review_id, "status": "cancelled"}
+
     def resolve(
         self,
         review_id: str,
@@ -600,6 +672,9 @@ class ReviewService:
         except ValueError as error:
             raise ClaimCoreError(422, "PAYLOAD_INVALID", str(error)) from error
         self._validate_action_payload(action, item.type, payload)
+        validator = self._resolution_validators.get(item.type)
+        if validator is not None:
+            validator(item, action, payload, actor)
         decline_reason = None
         decline_release_recipients: list[str] | None = None
         if (

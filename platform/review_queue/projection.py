@@ -1,4 +1,4 @@
-"""Idempotent review.created projection consumer and history backfill."""
+"""Idempotent review lifecycle projection consumer and history backfill."""
 
 from __future__ import annotations
 
@@ -19,9 +19,26 @@ class ReviewProjection:
         self._sessions = sessions
 
     def consume(self, event: object) -> None:
-        if event.type != "review.created":
+        if event.type not in {"review.created", "review.cancelled"}:
             return
         payload = dict(event.payload) if isinstance(event.payload, dict) else {}
+        if event.type == "review.cancelled":
+            source_event_id = payload.get("source_event_id")
+            if not isinstance(source_event_id, str):
+                return
+            with self._sessions.begin() as session:
+                item = session.scalar(
+                    select(ReviewItem).where(
+                        ReviewItem.source_event_id == source_event_id
+                    )
+                )
+                if item is None or item.status == "cancelled":
+                    return
+                if item.status != "open":
+                    return
+                item.status = "cancelled"
+                item.resolved_at = event.occurred_at
+            return
         requested_type = payload.get("type")
         known = requested_type in REVIEW_ITEM_TYPES
         item_type = str(requested_type) if known else "EXCEPTION"
@@ -63,7 +80,7 @@ class ReviewProjection:
             rows = session.execute(
                 text(
                     "SELECT id, claim_id, type, payload, occurred_at FROM events "
-                    "WHERE type = 'review.created' ORDER BY seq"
+                    "WHERE type IN ('review.created', 'review.cancelled') ORDER BY seq"
                 )
             ).mappings()
             events = []

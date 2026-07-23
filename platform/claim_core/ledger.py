@@ -23,6 +23,7 @@ ACTION_MAP = {
     "claim.status_changed": "fsm.transition",
     "review.created": "review.action",
     "review.resolved": "review.resolved",
+    "review.cancelled": "review.cancelled",
     "authz.denied": "authz.denied",
     "claim.created": "claim.created",
     "claim.assigned": "claim.assigned",
@@ -47,6 +48,19 @@ ACTION_MAP = {
     "chase.complete": "chase.complete",
     "chase.cancelled": "chase.cancelled",
     "fraud.signal": "fraud.signal",
+    "assessment.mode_item_created": "assessment.mode_item_created",
+    "assessment.mode_decided": "assessment.mode_decided",
+    "assessment.dispatched": "assessment.dispatched",
+    "assessment.report_received": "assessment.report_received",
+    "assessment.selection_completed": "assessment.selection_completed",
+    "projection.requested": "projection.requested",
+    "savings.recorded": "savings.recorded",
+    "template.rendered": "template.rendered",
+    "pack.sources_selected": "pack.sources_selected",
+    "pack.item_uploaded": "pack.item_uploaded",
+    "pack.generation_refused": "pack.generation_refused",
+    "pack.merged": "pack.merged",
+    "pack.note_drafted": "pack.note_drafted",
 }
 
 EventRecorder = Callable[..., Event]

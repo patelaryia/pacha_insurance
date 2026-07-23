@@ -25,6 +25,8 @@ MOTOR_TEMPLATE_IDS = {
     "T-01", "T-02", "T-02b", "T-03", "T-04", "T-05", "T-06", "T-06a",
     "T-06r-broker", "T-06r-client", "T-07", "T-08", "T-08b",
     "T-09", "T-10", "T-11", "T-12", "T-13",
+    # Owner-amended for PACKET-16 (#190): assessor reminder tone variant.
+    "T-06r-assessor",
 }
 
 ENUM_PATHS = {"salvage.election"}
@@ -217,7 +219,8 @@ def test_motor_template_registry_all_pending_capture(harness):
     _, _, runtime = harness
     registry = runtime.template_registry("motor", "1.0.0")
     assert set(registry.ids()) == MOTOR_TEMPLATE_IDS
-    for template_id in MOTOR_TEMPLATE_IDS:
+    assert registry.get("T-01").status == "live"
+    for template_id in MOTOR_TEMPLATE_IDS - {"T-01"}:
         assert registry.get(template_id).status == "pending_capture", template_id
 
 

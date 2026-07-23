@@ -46,6 +46,8 @@ SURRENDER_AUTO_ITEMS = {
 REGISTRY_ITEM_IDS = {
     *BASE_ITEM_IDS, "incident_description", "logbook_original", "keys_physical",
     "kra_pin_cert", "bank_discharge_letter", "cert_of_incorporation",
+    # Owner-amended for PACKET-16 (§7.4 assessor_report reuse; precedent #174).
+    "assessor_report",
 }
 
 BODY_CLEAN = (

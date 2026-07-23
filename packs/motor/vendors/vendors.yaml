@@ -1,0 +1,17 @@
+version: 1
+standard_fees:
+  physical: 638000
+  desk: 0
+  reinspection: 290000
+shadow:
+  purpose: assessment_mode_shadow
+  prompt_ref: assessment_mode_shadow@1
+  model_config_ref: doc_intel.yaml
+  tier: MODEL_HEAVY
+  max_cost_usd: 0.25
+  claim_daily_budget_usd: 8.00
+  claim_lifetime_budget_usd: 12.00
+  platform_daily_budget_usd: 10.00
+vendors: []
+status: pending_capture
+blocked_on: ["register 186: assessor firm seeds and per-firm schedules"]
