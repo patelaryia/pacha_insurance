@@ -54,6 +54,8 @@ ACTION_MAP = {
     "assessment.report_received": "assessment.report_received",
     "assessment.selection_completed": "assessment.selection_completed",
     "projection.requested": "projection.requested",
+    "projection.completed": "projection.completed",
+    "projection.failed": "projection.failed",
     "savings.recorded": "savings.recorded",
     "template.rendered": "template.rendered",
     "pack.sources_selected": "pack.sources_selected",

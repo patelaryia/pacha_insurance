@@ -29,6 +29,29 @@ EXPLICIT_MONEY_ADJACENT = frozenset(
     }
 )
 
+# Register #273: canonical PRD-09 §9.6 capability ids are `project.<operation>`,
+# so the bare-id money-adjacent set above cannot classify them. Their ceilings
+# are constitution, not pack data — reserve, assessor-payment, general-payment,
+# and salvage paths stay below L4, and PRD-12's three payment workflows stay at
+# L2 until that gate opens. Pack policy may tighten these, never widen them.
+PROJECTION_CEILINGS = {
+    "project.icon.policy_read": "L4",
+    "project.icon.claim_register": "L4",
+    "project.icon.reserve_create": "L3",
+    "project.icon.reserve_breakdown": "L3",
+    "project.icon.reserve_adjust": "L3",
+    "project.icon.assessor_payment_request": "L3",
+    "project.icon.note_entry": "L4",
+    "project.icon.claim_details_report": "L4",
+    "project.icon.salvage_register": "L3",
+    "project.icon.payment_voucher": "L2",
+    "project.edms.general_payments": "L3",
+    "project.edms.claims_workflow": "L4",
+    "project.edms.attach_and_tag": "L4",
+    "project.edms.claim_payment": "L2",
+    "project.edms.payment_workflow": "L2",
+}
+
 FALLBACK_POLICY: dict[str, int] = {
     "l1_l2_items": 25,
     "l1_l2_grader_pass_percent": 96,
@@ -61,6 +84,10 @@ def constitutional_ceiling(capability_id: str) -> str:
         raise ValueError(f"{capability_id!r} is not a capability")
     if capability_id in EXPLICIT_CEILINGS:
         return EXPLICIT_CEILINGS[capability_id]
+    if capability_id in PROJECTION_CEILINGS:
+        return PROJECTION_CEILINGS[capability_id]
+    if capability_id.startswith("project."):
+        raise ValueError(f"{capability_id!r} is not a registered projection capability")
     if (
         capability_id.startswith(("settlement.", "salvage."))
         or capability_id in EXPLICIT_MONEY_ADJACENT
@@ -142,6 +169,7 @@ __all__ = [
     "CapabilityPolicy",
     "LEVELS",
     "LEVEL_RANK",
+    "PROJECTION_CEILINGS",
     "constitutional_ceiling",
     "load_policies",
 ]

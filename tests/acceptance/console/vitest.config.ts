@@ -61,6 +61,7 @@ export default async function protectedAcceptanceConfig() {
         path.resolve(here, "test_packet_11_console.test.tsx"),
         path.resolve(here, "test_packet_12_console.test.tsx"),
         path.resolve(here, "test_packet_19_console.test.tsx"),
+        path.resolve(here, "test_packet_20_console.test.tsx"),
         path.resolve(consoleRoot, "src/**/*.test.{ts,tsx}"),
       ],
       coverage: {

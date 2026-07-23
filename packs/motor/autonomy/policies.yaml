@@ -40,9 +40,26 @@ capabilities:
   - {id: salvage.publish, max_level: L3, policy: {}}
   - {id: salvage.close_and_rank, max_level: L3, policy: {}}
   - {id: settlement.eft_match, max_level: L3, initial_level: L0, policy: {}}
-  - {id: icon.claim_register, max_level: L4, initial_level: L0, policy: {}}
-  - {id: icon.reserve_adjust, max_level: L3, initial_level: L0, policy: {}}
-  - {id: icon.assessor_payment_request, max_level: L3, initial_level: L0, policy: {}}
-  - {id: icon.payment_voucher, max_level: L3, initial_level: L0, policy: {}}
-  - {id: edms.attach_and_tag, max_level: L4, policy: {}}
-  - {id: edms.claims_workflow, max_level: L4, policy: {}}
+  # PRD-09 §9.6 / register #262: capability ids are `project.<operation>`. The six
+  # provisional bare `icon.*`/`edms.*` seeds from PACKET-08 are retired here; an
+  # existing database carrying durable evidence for one of them fails startup with
+  # LEGACY_PROJECTION_CAPABILITY_IN_USE instead of being rewritten.
+  #
+  # Paste-assist launches at L1 because the officer performs the target write.
+  # PRD-11/PRD-12-owned rows stay L0 until their owner packet. Ceilings mirror the
+  # register #273 constitution in eval_harness/policies.py and only tighten it.
+  - {id: project.icon.policy_read, max_level: L4, initial_level: L1, policy: {}}
+  - {id: project.icon.claim_register, max_level: L4, initial_level: L1, policy: {}}
+  - {id: project.icon.reserve_create, max_level: L3, initial_level: L1, policy: {}}
+  - {id: project.icon.reserve_breakdown, max_level: L3, initial_level: L1, policy: {}}
+  - {id: project.icon.reserve_adjust, max_level: L3, initial_level: L1, policy: {}}
+  - {id: project.icon.assessor_payment_request, max_level: L3, initial_level: L1, policy: {}}
+  - {id: project.icon.note_entry, max_level: L4, initial_level: L1, policy: {}}
+  - {id: project.icon.claim_details_report, max_level: L4, initial_level: L1, policy: {}}
+  - {id: project.icon.salvage_register, max_level: L3, initial_level: L0, policy: {}}
+  - {id: project.icon.payment_voucher, max_level: L2, initial_level: L0, policy: {}}
+  - {id: project.edms.general_payments, max_level: L3, initial_level: L1, policy: {}}
+  - {id: project.edms.claims_workflow, max_level: L4, initial_level: L1, policy: {}}
+  - {id: project.edms.attach_and_tag, max_level: L4, initial_level: L1, policy: {}}
+  - {id: project.edms.claim_payment, max_level: L2, initial_level: L0, policy: {}}
+  - {id: project.edms.payment_workflow, max_level: L2, initial_level: L0, policy: {}}

@@ -4,6 +4,7 @@ import { consoleError, type ConsoleError } from "../api/errors";
 import type { Citation, Claim360, ConsoleApi, ReviewItem } from "../api/types";
 import { ApprovalPackReadiness } from "../components/ApprovalPackReadiness";
 import { CitationOverlay } from "../components/CitationOverlay";
+import { ProjectionSystems } from "../components/ProjectionSystems";
 import { formatStructured } from "../lib/json";
 import { formatKes, parseCents } from "../lib/money";
 import { formatEat } from "../lib/time";
@@ -294,7 +295,12 @@ export function Claim360Page({ api, claimId }: Claim360PageProps) {
         )}
         {activeTab === "Systems" && (
           <div><p className="workspace-kicker">External projection</p><h2>Systems</h2>
-            {claim.availability.systems?.status === "not_available" ? <p className="availability-state">Not available until {claim.availability.systems.owner} is installed.</p> : claim.systems.length === 0 ? <p className="empty-state">No committed system projection facts.</p> : <div className="record-grid">{claim.systems.map((item, index) => { const row = record(item); return <article key={String(row.id ?? index)}><h3>{humanLabel(String(row.system ?? row.event_type ?? "system"))}</h3><Facts value={row} omit={["id", "system", "event_type"]} /></article>; })}</div>}
+            {/* PRD-09 §9.3 / PACKET-20: the operation catalogue and paste strip
+                replace the unavailable placeholder inside the existing Systems
+                tab. PRD-04 §4.3 fixes the seven tab names, so no eighth tab is
+                invented. */}
+            <ProjectionSystems api={api} claimId={claimId} />
+            {claim.systems.length > 0 && <div className="record-grid">{claim.systems.map((item, index) => { const row = record(item); return <article key={String(row.id ?? index)}><h3>{humanLabel(String(row.system ?? row.event_type ?? "system"))}</h3><Facts value={row} omit={["id", "system", "event_type"]} /></article>; })}</div>}
           </div>
         )}
         {activeTab === "Communications" && (

@@ -12,6 +12,7 @@ from assessment_agent.vendors import Vendor  # noqa: F401 - PACKET-16 metadata
 from chase_agent.models import ChaseChecklist, ChaseItem  # noqa: F401 - PACKET-15 metadata
 from claim_core.models import Base
 from doc_intel.stages import DocumentStage  # noqa: F401 - registers Packet-04 metadata
+from projection_agent.models import Projection  # noqa: F401 - PACKET-20 metadata
 
 config = context.config
 if config.config_file_name is not None:

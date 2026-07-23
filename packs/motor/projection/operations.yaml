@@ -1,0 +1,156 @@
+# PRD-09 §9.2 registered operation catalogue for the motor pack (register #263).
+#
+# Availability is honest: no ICON or EDMS click path has been captured, so every
+# PRD-09-owned row is `pending_capture` on open item 3 and carries no
+# `click_path_ref`. PRD-11/PRD-12-owned rows are registered so the blocker is
+# visible in Claim-360 Systems, and stay `blocked_on_inputs` until their owner
+# packet. PACKET-20 cannot switch any row live.
+version: 1
+
+# Register #271: the weekly paste readback sample is pack data, never code.
+paste_readback_sampling:
+  rate_percent: 10
+  schedule:
+    day_of_week: mon
+    hour: 8
+    minute: 0
+    timezone: Africa/Nairobi
+
+operations:
+  - id: icon.policy_read
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: icon.claim_register
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: icon.reserve_create
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: icon.reserve_breakdown
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  # PRD-09 §9.2 v1.1 names open item 17 for the residual-release path.
+  - id: icon.reserve_adjust
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-17
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: icon.assessor_payment_request
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  # The PRD-08 hand-off slot in approval_pack/icon.yaml stays empty and separate;
+  # PACKET-22 replaces the slot and this operation together (register #252).
+  - id: icon.note_entry
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: icon.claim_details_report
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: icon.salvage_register
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: blocked_on_inputs
+    blocked_on: PRD-11
+    click_path_ref: null
+    owner_prd: PRD-11
+
+  - id: icon.payment_voucher
+    version: 1.0.0
+    system: icon
+    mode: paste_assist
+    status: blocked_on_inputs
+    blocked_on: PRD-12/GP-1
+    click_path_ref: null
+    owner_prd: PRD-12
+
+  - id: edms.general_payments
+    version: 1.0.0
+    system: edms
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: edms.claims_workflow
+    version: 1.0.0
+    system: edms
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: edms.attach_and_tag
+    version: 1.0.0
+    system: edms
+    mode: paste_assist
+    status: pending_capture
+    blocked_on: open-item-3
+    click_path_ref: null
+    owner_prd: PRD-09
+
+  - id: edms.claim_payment
+    version: 1.0.0
+    system: edms
+    mode: paste_assist
+    status: blocked_on_inputs
+    blocked_on: PRD-12/GP-1
+    click_path_ref: null
+    owner_prd: PRD-12
+
+  - id: edms.payment_workflow
+    version: 1.0.0
+    system: edms
+    mode: paste_assist
+    status: blocked_on_inputs
+    blocked_on: PRD-12/GP-1
+    click_path_ref: null
+    owner_prd: PRD-12

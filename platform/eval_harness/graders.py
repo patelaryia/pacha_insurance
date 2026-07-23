@@ -7,6 +7,7 @@ import io
 import json
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -101,6 +102,20 @@ class ValueGrader(Grader):
     def __init__(self, harness: Any) -> None:
         super().__init__(harness, "G-VAL", "field", "critical")
         self._validators = self._target_validators()
+        # PRD-09 readback formats are captured configuration, not doc-intel
+        # schema targets, so their owner registers them at build time. No tenth
+        # grader id is invented: the same critical G-VAL grades them.
+        self._external: dict[str, tuple[str, Callable[[Any], bool]]] = {}
+
+    def register_external_validator(
+        self, path: str, *, name: str, check: Callable[[Any], bool]
+    ) -> None:
+        """Register one captured validator for an external readback field path."""
+
+        registered = self._external.get(path)
+        if registered is not None and registered[0] != name:
+            raise ValueError(f"conflicting external validators for {path!r}")
+        self._external[path] = (name, check)
 
     @staticmethod
     def _target_validators() -> dict[str, str]:
@@ -123,8 +138,9 @@ class ValueGrader(Grader):
         path = subject.get("path")
         if not isinstance(claim_id, str) or not isinstance(path, str):
             return RawGrade("error", {"code": "INVALID_SUBJECT_REF"})
+        external = self._external.get(path)
         validator = self._validators.get(path)
-        if validator is None:
+        if validator is None and external is None:
             return RawGrade("error", {"code": "NO_SCHEMA_TARGET_MAPPING", "path": path})
         _claim, fields, _blocked = self.harness.claim_service.hydrate_claim(
             claim_id,
@@ -134,6 +150,13 @@ class ValueGrader(Grader):
         field = fields.get(path)
         if field is None:
             return RawGrade("error", {"code": "CURRENT_FIELD_MISSING", "path": path})
+        if external is not None:
+            name, check = external
+            passed = check(field.value)
+            return RawGrade(
+                "pass" if passed else "fail",
+                {"validator": name, "outcome": "pass" if passed else "fail"},
+            )
         outcome = validate_field(validator, field.value, today=self.harness.clock().date())
         result: GradeOutcome = "pass" if outcome.outcome in {"pass", "not_applicable"} else "fail"
         return RawGrade(result, {"validator": validator, "outcome": outcome.outcome})
@@ -877,6 +900,16 @@ class GraderRegistry:
         ]
         self._entries = {entry.grader_id: entry for entry in entries}
 
+    def register_external_validator(
+        self, path: str, *, name: str, check: Callable[[Any], bool]
+    ) -> None:
+        """Forward a captured PRD-09 readback validator to the critical G-VAL."""
+
+        grader = self._entries["G-VAL"]
+        if not isinstance(grader, ValueGrader):
+            raise RuntimeError("G-VAL is not the live value grader")
+        grader.register_external_validator(path, name=name, check=check)
+
     def activate_gcomm(self) -> None:
         """Install deterministic G-COMM when its AR-3 producer is available."""
 
@@ -982,25 +1015,47 @@ class EvalConsumer:
             with self.harness.engine.connect() as connection:
                 row = (
                     connection.execute(
-                        text("SELECT source_type, path FROM claim_fields WHERE id = :field_id"),
+                        text(
+                            "SELECT source_type, source_ref, path FROM claim_fields "
+                            "WHERE id = :field_id"
+                        ),
                         {"field_id": field_id},
                     )
                     .mappings()
                     .first()
                 )
-            if row is not None and row["source_type"] == "extraction":
-                subject = {
-                    "claim_id": event.claim_id,
-                    "field_id": field_id,
-                    "path": row["path"],
-                    "source_event_id": event.id,
-                }
+            if row is None:
+                return
+            subject = {
+                "claim_id": event.claim_id,
+                "field_id": field_id,
+                "path": row["path"],
+                "source_event_id": event.id,
+            }
+            if row["source_type"] == "extraction":
                 if not self._already_graded("G-VAL", "field_id", field_id):
                     self.harness.grade("G-VAL", subject, actor="agent:eval")
                 if self.harness.graders.get("G-CITE").status == "live" and not self._already_graded(
                     "G-CITE", "field_id", field_id
                 ):
                     self.harness.grade("G-CITE", subject, actor="agent:eval")
+                return
+            # PRD-09 §9.5: a projection readback is graded against its captured
+            # validator before it can count as autonomy evidence.
+            if row["source_type"] == "projection_readback":
+                source_ref = _decoded_json(row["source_ref"])
+                operation = (
+                    source_ref.get("operation")
+                    if isinstance(source_ref, dict)
+                    else None
+                )
+                if not isinstance(operation, str) or not operation.startswith(
+                    ("icon.", "edms.")
+                ):
+                    return
+                subject["capability_id"] = f"project.{operation}"
+                if not self._already_graded("G-VAL", "field_id", field_id):
+                    self.harness.grade("G-VAL", subject, actor="agent:eval")
 
 
 __all__ = ["EvalConsumer", "GraderRegistry", "GraderResult", "RawGrade"]
