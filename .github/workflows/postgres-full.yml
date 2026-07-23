@@ -1,6 +1,8 @@
 name: PostgreSQL full rehearsal
 
 on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
   push:
     branches: [main]
   schedule:
@@ -18,6 +20,9 @@ concurrency:
 jobs:
   test-postgres-full:
     name: tests (PostgreSQL full)
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci-full-postgres')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
