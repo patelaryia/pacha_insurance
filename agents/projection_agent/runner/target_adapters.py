@@ -24,6 +24,7 @@ from projection_agent.config import ClickPath
 from projection_agent.runner.browser import (
     BrowserSession,
     ExactExecutor,
+    ReflectionTimeout,
     SelectorDrift,
     StepFrame,
     TargetKnownFailure,
@@ -136,6 +137,7 @@ class TargetAdapter:
         probe: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         on_frame: Callable[[StepFrame], None] | None = None,
         heartbeat: Callable[[], None] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.system = system
         self._session_factory = session_factory
@@ -145,6 +147,7 @@ class TargetAdapter:
         self._probe = probe
         self._on_frame = on_frame
         self._heartbeat = heartbeat
+        self._sleep = sleep
         self._click_paths: dict[str, ClickPath] = {}
 
     def register(self, click_path: ClickPath) -> None:
@@ -188,6 +191,7 @@ class TargetAdapter:
             timeouts=self._timeouts,
             heartbeat=self._heartbeat,
             on_frame=self._on_frame,
+            **({"sleep": self._sleep} if self._sleep is not None else {}),
         )
         try:
             trace = executor.run(values)
@@ -204,6 +208,59 @@ class TargetAdapter:
             )
         except TargetKnownFailure as failure:
             handler = click_path.handler_for(failure.signature)
+            if handler == "duplicate_filename":
+                claim_id = payload.get("claim_id")
+                if not isinstance(claim_id, str) or len(claim_id) < 6:
+                    return OpResult(
+                        outcome="known_failure",
+                        last_completed_step=executor.trace.last_completed_step,
+                        write_ids=tuple(executor.trace.write_ids),
+                        readback_keys={},
+                        evidence_ids=(),
+                        reason_code="duplicate_filename_claim_id_missing",
+                    )
+                try:
+                    trace = executor.retry_duplicate_filename(
+                        failure.step_id, claim_id_suffix=claim_id[-6:].upper()
+                    )
+                    outputs = executor.read_outputs()
+                    inputs = executor.read_inputs()
+                except TargetKnownFailure:
+                    return OpResult(
+                        outcome="known_failure",
+                        last_completed_step=executor.trace.last_completed_step,
+                        write_ids=tuple(executor.trace.write_ids),
+                        readback_keys={},
+                        evidence_ids=(),
+                        reason_code="edms_duplicate_filename_collision",
+                    )
+                except ReflectionTimeout:
+                    return OpResult(
+                        outcome="uncertain_write",
+                        last_completed_step=executor.trace.last_completed_step,
+                        write_ids=tuple(executor.trace.write_ids),
+                        readback_keys={},
+                        evidence_ids=(),
+                        reason_code="slow_reflection_timeout",
+                    )
+                except SelectorDrift as drift:
+                    return OpResult(
+                        outcome="ui_drift",
+                        last_completed_step=executor.trace.last_completed_step,
+                        write_ids=tuple(executor.trace.write_ids),
+                        readback_keys={},
+                        evidence_ids=(),
+                        reason_code=drift.reason_code,
+                    )
+                else:
+                    return OpResult(
+                        outcome="submitted",
+                        last_completed_step=trace.last_completed_step,
+                        write_ids=tuple(trace.write_ids),
+                        readback_keys={"inputs": inputs, "outputs": outputs},
+                        evidence_ids=(),
+                        reason_code=None,
+                    )
             return OpResult(
                 outcome="known_failure" if handler else "uncertain_write",
                 last_completed_step=executor.trace.last_completed_step,
@@ -211,6 +268,15 @@ class TargetAdapter:
                 readback_keys={},
                 evidence_ids=(),
                 reason_code=handler or "unmapped_target_signature",
+            )
+        except ReflectionTimeout:
+            return OpResult(
+                outcome="uncertain_write",
+                last_completed_step=executor.trace.last_completed_step,
+                write_ids=tuple(executor.trace.write_ids),
+                readback_keys={},
+                evidence_ids=(),
+                reason_code="slow_reflection_timeout",
             )
         except Exception:  # noqa: BLE001 - an unknown response is never a guess
             return OpResult(

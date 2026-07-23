@@ -110,13 +110,18 @@ class RunnerClient:
             )
 
         adapter = self.adapter_factory(job, on_frame=on_frame, heartbeat=heartbeat)
+        # Revalidate the authoritative platform lease immediately before the
+        # sole lawful Adapter.execute call. The receipt alone is not a bearer
+        # credential and cannot prove that its lease remains current.
+        heartbeat()
         result = execute_authorised_adapter(
             adapter,
             receipt=receipt,
             op=job["operation"],
-            payload={"values": job["payload"]},
+            payload={"values": job["payload"], "claim_id": job["claim_id"]},
             run_id=job["run_id"],
             now=self.clock(),
+            lease_token=token,
         )
         if not isinstance(result, OpResult):  # pragma: no cover - contract guard
             raise TypeError("an adapter must return the closed OpResult contract")

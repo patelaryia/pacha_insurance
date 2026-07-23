@@ -149,6 +149,7 @@ def _probe_factory(target: Any) -> Any:
 
     def probe(operation_id: str, keys: dict[str, Any]) -> dict[str, Any]:
         del operation_id
+        target.last_probe_keys = dict(keys)
         if "drift_check" in keys:
             return {"value": target.values.get("#reserveShillings")}
         by_selector = {selector: step for step, _p, _e, selector in EDMS_FIELD_PATHS}
@@ -157,6 +158,9 @@ def _probe_factory(target: Any) -> Any:
              if selector in by_selector}
             for record in target.records
         ]
+        expected = keys.get("policy_number")
+        if expected is not None:
+            records = [record for record in records if record.get("s1") == expected]
         return {
             "matches": len(records),
             "record": records[0] if records else {},
@@ -864,6 +868,61 @@ def test_only_the_gate_helper_may_call_adapter_execute():
         assert not guard.scan_text(text_body), path
 
 
+def test_work_receipt_is_bound_to_the_exact_operation_and_lease_token():
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    import pytest
+
+    from agent_runtime import WorkReceipt, execute_authorised_adapter
+    from agent_runtime.gate import ExecutionRefused
+
+    class Adapter:
+        system = "edms"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, op, payload, run_id):
+            del op, payload, run_id
+            self.calls += 1
+            return "executed"
+
+    token = "lease-token"
+    receipt = WorkReceipt(
+        run_id="run-1",
+        projection_id="projection-1",
+        operation="edms.claims_workflow",
+        definition_version="1.0.0",
+        attempt=1,
+        expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        lease_token_sha256=hashlib.sha256(token.encode()).hexdigest(),
+    )
+    adapter = Adapter()
+    common = {
+        "adapter": adapter,
+        "receipt": receipt,
+        "payload": {},
+        "run_id": "run-1",
+        "now": datetime.now(UTC),
+    }
+    with pytest.raises(ExecutionRefused, match="adapter_receipt_operation_mismatch"):
+        execute_authorised_adapter(
+            **common, op="edms.a_different_write", lease_token=token
+        )
+    with pytest.raises(ExecutionRefused, match="adapter_lease_token_mismatch"):
+        execute_authorised_adapter(
+            **common, op="edms.claims_workflow", lease_token="other-token"
+        )
+    assert adapter.calls == 0
+    assert (
+        execute_authorised_adapter(
+            **common, op="edms.claims_workflow", lease_token=token
+        )
+        == "executed"
+    )
+
+
 # --- 9/10/11. lease, token, and attempts ----------------------------------------------
 
 
@@ -894,7 +953,8 @@ def test_the_raw_lease_token_is_never_stored_and_stale_callbacks_fail(env):
     assert token not in json.dumps(row)
     assert lease["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
 
-    for bad_token in ("", "deadbeef", token[:-1] + "0"):
+    changed_token = token[:-1] + ("0" if token[-1] != "0" else "1")
+    for bad_token in ("", "deadbeef", changed_token):
         with pytest.raises(ClaimCoreError) as error:
             env.control_plane.heartbeat(
                 projection_id, token=bad_token, runner_id="runner-fixture"
@@ -1102,7 +1162,7 @@ def test_selector_failure_after_a_possible_write_is_uncertain_and_offers_no_retr
 # --- 16/17. the two EDMS known failures ------------------------------------------------
 
 
-def test_a_duplicate_filename_renames_once_exactly_and_then_fails_visibly(env):
+def test_a_duplicate_filename_renames_once_exactly_and_completes(env):
     from projection_agent.runner.browser import TargetKnownFailure
 
     claim_id = _seed(env)
@@ -1113,11 +1173,32 @@ def test_a_duplicate_filename_renames_once_exactly_and_then_fails_visibly(env):
     _drain(env.app)
     row = _projection(env, projection_id)
     attempt = row["evidence"]["rpa"]["attempts"][0]
-    assert attempt["outcome"] == "known_failure"
-    assert attempt["reason_code"] == "duplicate_filename"
-    assert row["status"] == "failed"
+    assert attempt["outcome"] == "submitted"
+    assert row["status"] == "completed"
+    assert env.target.duplicate_retry_attempts == 1
+    assert env.target.uploaded_filenames == [f"claim.pdf__{claim_id[-6:].upper()}1"]
     # A signature nobody captured is uncertain, never a guessed known failure.
     assert TargetKnownFailure("s15", "EDMS-UNSEEN").signature == "EDMS-UNSEEN"
+
+
+def test_a_second_duplicate_filename_collision_is_terminal_and_never_retried(env):
+    claim_id = _seed(env)
+    projection_id = _request(env, claim_id).projection_id
+    _drain(env.app)
+    env.target.raise_signature = "EDMS-DUP-FILENAME"
+    env.target.duplicate_retry_collision = True
+    env.runner.run_once()
+    _drain(env.app)
+    row = _projection(env, projection_id)
+    attempt = row["evidence"]["rpa"]["attempts"][0]
+    assert attempt["outcome"] == "known_failure"
+    assert attempt["reason_code"] == "edms_duplicate_filename_collision"
+    assert env.target.duplicate_retry_attempts == 1
+    assert row["status"] == "failed"
+    assert any(
+        review["subtype"] == "edms_duplicate_filename_collision"
+        for review in _reviews(env, claim_id)
+    )
 
 
 def test_an_unmapped_target_signature_is_uncertain_write_not_a_guessed_handler(env):
@@ -1144,7 +1225,21 @@ def test_edms_reflection_polling_is_pack_configured_and_never_resubmits(env):
     env.runner.run_once()
     _drain(env.app)
     assert len(env.target.records) == 1  # submitted exactly once, never resubmitted
+    assert env.target.reflection_polls == 20
     assert _projection(env, projection_id)["status"] == "failed"
+
+
+def test_edms_reflection_polling_stops_at_the_first_exact_readback(env):
+    claim_id = _seed(env)
+    projection_id = _request(env, claim_id).projection_id
+    _drain(env.app)
+    env.target.reflect = False
+    env.target.reflect_after_polls = 2
+    env.runner.run_once()
+    _drain(env.app)
+    assert env.target.reflection_polls == 2
+    assert len(env.target.records) == 1
+    assert _projection(env, projection_id)["status"] == "completed"
 
 
 # --- 18/19. crash recovery -------------------------------------------------------------
@@ -1182,7 +1277,6 @@ def test_a_runner_killed_after_submit_probes_first_and_creates_no_duplicate(env)
         session.fill(selector, _target_value(env, claim_id, selector), timeout_seconds=1)
     session.click("role=button[name='Submit']", timeout_seconds=1)
     session.close()
-    _record_last_step(env, projection_id, job, "s15", ["submit_workflow"])
     env.clock.advance(seconds=200)
 
     recovered = env.app.state.projection_agent.rpa.reap_leases()
@@ -1192,6 +1286,29 @@ def test_a_runner_killed_after_submit_probes_first_and_creates_no_duplicate(env)
     row = _projection(env, projection_id)
     assert row["status"] in {"completed", "diverged"}
     assert row["status"] == "completed"
+    assert env.target.last_probe_keys["policy_number"] == _target_value(
+        env, claim_id, "#policyNo"
+    )
+
+
+def test_a_crash_after_a_write_before_frame_is_never_blindly_requeued(env):
+    claim_id = _seed(env)
+    projection_id = _request(env, claim_id).projection_id
+    _drain(env.app)
+    job = env.control_plane.claim(runner_id="runner-fixture", systems=("edms",))
+    env.control_plane.upload_evidence(
+        projection_id,
+        "s15",
+        token=job["lease_token"],
+        runner_id="runner-fixture",
+        phase="before",
+        content=b"PNG:s15:before",
+    )
+    env.clock.advance(seconds=200)
+    recovered = env.app.state.projection_agent.rpa.reap_leases()
+    assert recovered["recovered"][0]["outcome"] == "uncertain_write"
+    assert _projection(env, projection_id)["status"] == "failed"
+    assert env.control_plane.claim(runner_id="runner-fixture", systems=("edms",)) is None
 
 
 def test_an_ambiguous_or_unavailable_probe_is_uncertain_and_executes_nothing(env):
@@ -1404,6 +1521,42 @@ def test_incomplete_evidence_diverges_rather_than_completing(env):
     assert row["divergence"]["reason_code"] == "evidence_incomplete"
 
 
+def test_unknown_last_step_cannot_make_partial_evidence_complete(env):
+    claim_id = _seed(env)
+    projection_id = _request(env, claim_id).projection_id
+    _drain(env.app)
+    job = env.control_plane.claim(runner_id="runner-fixture", systems=("edms",))
+    for phase in ("before", "after"):
+        env.control_plane.upload_evidence(
+            projection_id,
+            "s1",
+            token=job["lease_token"],
+            runner_id="runner-fixture",
+            phase=phase,
+            content=f"PNG:s1:{phase}".encode(),
+        )
+    env.control_plane.post_result(
+        projection_id,
+        token=job["lease_token"],
+        runner_id="runner-fixture",
+        result={
+            "outcome": "submitted",
+            "last_completed_step": "not-in-definition",
+            "write_ids": ["submit_workflow"],
+            "readback_keys": {
+                "inputs": _observed_inputs(env, claim_id),
+                "outputs": {"folder_ref": "EDMS/2026/004521"},
+            },
+            "evidence_ids": [],
+            "reason_code": None,
+        },
+    )
+    _drain(env.app)
+    row = _projection(env, projection_id)
+    assert row["status"] == "diverged"
+    assert row["divergence"]["reason_code"] == "evidence_incomplete"
+
+
 # --- 22. PII containment ---------------------------------------------------------------
 
 
@@ -1436,6 +1589,8 @@ def test_pii_is_absent_from_jobs_at_rest_events_reviews_runs_and_health(env):
     row = _projection(env, projection_id)
     # The payload snapshot keeps the stored envelope, never plaintext PII.
     assert "Grace Wanjiru" not in json.dumps(row["payload"])
+    for secret in secrets:
+        assert secret not in json.dumps(row["evidence"])
     health = json.dumps(env.app.state.projection_agent.rpa.systems_health())
     for secret in secrets:
         assert secret not in health

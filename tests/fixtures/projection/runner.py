@@ -46,6 +46,17 @@ def build_fixture_adapter(
 ) -> TargetAdapter:
     """Construct one adapter bound to the synthetic target."""
 
+    def sleep(seconds: float) -> None:
+        target.reflection_polls += 1
+        if (
+            target.reflect_after_polls is not None
+            and target.reflection_polls >= target.reflect_after_polls
+        ):
+            target.reflect = True
+        advance = getattr(clock, "advance", None)
+        if callable(advance):
+            advance(seconds=int(seconds))
+
     return TargetAdapter(
         system,  # type: ignore[arg-type]
         session_factory=target.session,
@@ -55,6 +66,7 @@ def build_fixture_adapter(
         probe=probe,
         on_frame=on_frame,
         heartbeat=heartbeat,
+        sleep=sleep,
     )
 
 

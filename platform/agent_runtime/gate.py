@@ -14,7 +14,9 @@ leased, authenticated work receipt issued by the projection control API.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -124,6 +126,7 @@ def execute_authorised_adapter(
     payload: dict[str, Any],
     run_id: str,
     now: datetime,
+    lease_token: str,
 ) -> Any:
     """The one lawful `Adapter.execute` call site (PACKET-21 §3).
 
@@ -135,6 +138,14 @@ def execute_authorised_adapter(
         raise ExecutionRefused("adapter_receipt_missing")
     if receipt.run_id != run_id:
         raise ExecutionRefused("adapter_receipt_run_mismatch")
+    operation_id = op if isinstance(op, str) else getattr(op, "id", None)
+    if operation_id != receipt.operation:
+        raise ExecutionRefused("adapter_receipt_operation_mismatch")
+    if not isinstance(lease_token, str) or not lease_token:
+        raise ExecutionRefused("adapter_lease_token_missing")
+    presented_hash = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+    if not secrets.compare_digest(presented_hash, receipt.lease_token_sha256):
+        raise ExecutionRefused("adapter_lease_token_mismatch")
     if _aware(receipt.expires_at) <= _aware(now):
         raise ExecutionRefused("adapter_lease_expired")
     system = getattr(adapter, "system", None)

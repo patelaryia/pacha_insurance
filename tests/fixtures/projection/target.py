@@ -32,6 +32,13 @@ class SyntheticTarget:
     raise_signature: str | None = None
     #: Set true to make the reference never appear (slow EDMS reflection).
     reflect: bool = True
+    reflect_after_polls: int | None = None
+    reflection_polls: int = 0
+    original_filename: str = "claim.pdf"
+    uploaded_filenames: list[str] = field(default_factory=list)
+    duplicate_retry_collision: bool = False
+    duplicate_retry_attempts: int = 0
+    last_probe_keys: dict[str, Any] = field(default_factory=dict)
     logged_in: bool = True
     module: str = "Claims Workflow"
     open_sessions: int = 0
@@ -132,6 +139,20 @@ class SyntheticSession(BrowserSession):
         if assertion == "module":
             return self.target.module == equals
         return False
+
+    def retry_duplicate_filename(
+        self, *, claim_id_suffix: str, collision_number: int, timeout_seconds: int
+    ) -> None:
+        self._live()
+        del timeout_seconds
+        self.target.duplicate_retry_attempts += 1
+        renamed = (
+            f"{self.target.original_filename}__{claim_id_suffix}{collision_number}"
+        )
+        self.target.uploaded_filenames.append(renamed)
+        if self.target.duplicate_retry_collision:
+            raise TargetKnownFailure("s15", "EDMS-DUP-FILENAME")
+        self.click("role=button[name='Submit']", timeout_seconds=1)
 
 
 __all__ = ["CREDENTIAL_SELECTORS", "SyntheticSession", "SyntheticTarget"]

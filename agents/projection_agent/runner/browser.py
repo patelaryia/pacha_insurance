@@ -18,6 +18,7 @@ test process. The production session is constructed in the runner container.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -46,6 +47,14 @@ class TargetKnownFailure(Exception):
         super().__init__(signature)
 
 
+class ReflectionTimeout(Exception):
+    """A known-slow EDMS write did not become visible within its pack budget."""
+
+    def __init__(self, step_id: str) -> None:
+        self.step_id = step_id
+        super().__init__(step_id)
+
+
 class BrowserSession(Protocol):
     """The minimal exact-execution surface one isolated context must provide."""
 
@@ -66,6 +75,10 @@ class BrowserSession(Protocol):
     def screenshot(self) -> bytes: ...
 
     def assert_precondition(self, assertion: str, equals: str | None) -> bool: ...
+
+    def retry_duplicate_filename(
+        self, *, claim_id_suffix: str, collision_number: int, timeout_seconds: int
+    ) -> None: ...
 
     def close(self) -> None: ...
 
@@ -100,12 +113,14 @@ class ExactExecutor:
         timeouts: Any,
         heartbeat: Callable[[], None] | None = None,
         on_frame: Callable[[StepFrame], None] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.session = session
         self.click_path = click_path
         self.timeouts = timeouts
         self.heartbeat = heartbeat or (lambda: None)
         self.on_frame = on_frame
+        self.sleep = sleep
         self.trace = ExecutionTrace()
         self._values: dict[str, str] = {}
 
@@ -137,24 +152,43 @@ class ExactExecutor:
         if count > 1:
             raise SelectorDrift(step.id, "selector_multiple_matches")
 
-    def _assert_postcondition(self, step: Step) -> None:
+    def _postcondition_passes(self, step: Step) -> bool:
         postcondition = step.postcondition
         if postcondition is None:
-            return
+            return True
         kind = postcondition.kind
         if kind == "visible":
-            passed = self.session.visible(postcondition.selector)
+            return self.session.visible(postcondition.selector)
         elif kind == "absent":
-            passed = self.session.count(postcondition.selector) == 0
+            return self.session.count(postcondition.selector) == 0
         elif kind == "exact_value":
-            passed = self.session.value_of(postcondition.selector) == self._expected(step)
+            return self.session.value_of(postcondition.selector) == self._expected(step)
         elif kind == "text_contains":
             text = self.session.text_of(postcondition.selector) or ""
-            passed = str(postcondition.value) in text
-        else:  # pragma: no cover - the loader closes the vocabulary
-            passed = False
-        if not passed:
-            raise SelectorDrift(step.id, f"postcondition_{kind}")
+            return str(postcondition.value) in text
+        return False  # pragma: no cover - the loader closes the vocabulary
+
+    def _assert_postcondition(self, step: Step) -> None:
+        if self._postcondition_passes(step):
+            return
+        if (
+            step.is_external_write
+            and any(
+                failure.handler == "slow_reflection"
+                for failure in self.click_path.known_failures
+            )
+        ):
+            elapsed = 0
+            interval = self.timeouts.reflection_poll_seconds
+            while elapsed < self.timeouts.reflection_timeout_seconds:
+                self.heartbeat()
+                self.sleep(interval)
+                elapsed += interval
+                if self._postcondition_passes(step):
+                    return
+            raise ReflectionTimeout(step.id)
+        kind = step.postcondition.kind if step.postcondition is not None else "missing"
+        raise SelectorDrift(step.id, f"postcondition_{kind}")
 
     def _expected(self, step: Step) -> str | None:
         return self._values.get(step.id)
@@ -166,25 +200,57 @@ class ExactExecutor:
 
         self._values = dict(values)
         self._assert_preconditions()
-        for step in self.click_path.steps:
-            timeout = self.timeouts.step_timeout(step.timeout_class or "default")
-            self.heartbeat()
-            self._capture(step.id, "before")
-            try:
-                self._resolve(step)
-                if step.write_id is not None:
-                    # Recorded *before* dispatch: once the action is issued the
-                    # target may have written, whatever happens next. A failed
-                    # postcondition after this point is `uncertain_write`, never
-                    # a safe pre-write fallback.
-                    self.trace.write_ids.append(step.write_id)
-                self._act(step, timeout)
-                self._assert_postcondition(step)
-            except SelectorDrift:
-                self._capture(step.id, "failure")
-                raise
-            self._capture(step.id, "after")
-            self.trace.last_completed_step = step.id
+        self._run_from(0)
+        return self.trace
+
+    def _run_from(self, start: int) -> None:
+        for step in self.click_path.steps[start:]:
+            self._execute_step(step)
+
+    def _execute_step(self, step: Step) -> None:
+        timeout = self.timeouts.step_timeout(step.timeout_class or "default")
+        self.heartbeat()
+        self._capture(step.id, "before")
+        try:
+            self._resolve(step)
+            if step.write_id is not None and step.write_id not in self.trace.write_ids:
+                # Recorded *before* dispatch: once the action is issued the
+                # target may have written, whatever happens next.
+                self.trace.write_ids.append(step.write_id)
+            self._act(step, timeout)
+            self._assert_postcondition(step)
+        except (SelectorDrift, TargetKnownFailure, ReflectionTimeout):
+            self._capture(step.id, "failure")
+            raise
+        self._capture(step.id, "after")
+        self.trace.last_completed_step = step.id
+
+    def retry_duplicate_filename(self, step_id: str, *, claim_id_suffix: str) -> ExecutionTrace:
+        """Run the one captured EDMS duplicate-filename recovery, exactly once."""
+
+        index = next(
+            (index for index, step in enumerate(self.click_path.steps) if step.id == step_id),
+            None,
+        )
+        if index is None:
+            raise SelectorDrift(step_id, "duplicate_failure_step_unknown")
+        step = self.click_path.steps[index]
+        timeout = self.timeouts.step_timeout(step.timeout_class or "default")
+        self.heartbeat()
+        self._capture(step.id, "before")
+        try:
+            self.session.retry_duplicate_filename(
+                claim_id_suffix=claim_id_suffix,
+                collision_number=1,
+                timeout_seconds=timeout,
+            )
+            self._assert_postcondition(step)
+        except (SelectorDrift, TargetKnownFailure, ReflectionTimeout):
+            self._capture(step.id, "failure")
+            raise
+        self._capture(step.id, "after")
+        self.trace.last_completed_step = step.id
+        self._run_from(index + 1)
         return self.trace
 
     def _act(self, step: Step, timeout: int) -> None:
@@ -227,6 +293,7 @@ __all__ = [
     "CREDENTIAL_SCREEN",
     "ExactExecutor",
     "ExecutionTrace",
+    "ReflectionTimeout",
     "SelectorDrift",
     "StepFrame",
     "TargetKnownFailure",

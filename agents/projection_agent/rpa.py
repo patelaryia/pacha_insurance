@@ -31,8 +31,9 @@ from agent_runtime import Action, DeferredAction, WorkReceipt
 from claim_core import ClaimCoreError, new_ulid
 from claim_core.models import PlatformState
 from projection_agent.adapters import AdapterHealth, AdapterUnavailable, OpResult
-from projection_agent.config import Operation
+from projection_agent.config import Operation, OperationConfigError
 from projection_agent.models import Projection
+from projection_agent.paste import encode_copy_value
 
 #: The one registered deferred action type (PACKET-21 §6).
 RPA_ACTION_TYPE = "projection.rpa.execute"
@@ -775,6 +776,18 @@ class RpaCoordinator:
             attempt = int(lease["attempt"])
             rpa = self.rpa_evidence(locked)
             record = self._attempt_record(rpa, attempt)
+            operation = self.operations.get(locked.operation)
+            click_path = operation.click_path
+            if click_path is None:
+                raise ClaimCoreError(
+                    409, "PROJECTION_DEFINITION_MISSING", "Projection definition is unavailable"
+                )
+            try:
+                step = click_path.step(step_id)
+            except OperationConfigError as error:
+                raise ClaimCoreError(
+                    422, "EVIDENCE_STEP_UNKNOWN", "Evidence step is not in the leased definition"
+                ) from error
             frames = [dict(frame) for frame in record.get("frames", [])]
             sequence = len(frames) + 1
             key = EVIDENCE_KEY.format(
@@ -796,7 +809,20 @@ class RpaCoordinator:
                     "key": key,
                 }
             )
-            record = {**record, "attempt": attempt, "frames": frames}
+            durable_writes = list(record.get("write_ids") or ())
+            if step.write_id is not None and phase in {"before", "after", "failure"}:
+                if step.write_id not in durable_writes:
+                    durable_writes.append(step.write_id)
+            durable_last = record.get("last_completed_step")
+            if phase == "after":
+                durable_last = step.id
+            record = {
+                **record,
+                "attempt": attempt,
+                "frames": frames,
+                "last_completed_step": durable_last,
+                "write_ids": durable_writes,
+            }
             self._upsert_attempt(rpa, record)
             self.store_rpa_evidence(locked, rpa)
         return {"evidence_id": evidence_id, "sha256": digest, "sequence": sequence}
@@ -834,6 +860,8 @@ class RpaCoordinator:
         if sequences != sorted(sequences) or len(set(sequences)) != len(sequences):
             return False
         executed = self._executed_steps(row, result)
+        if not executed:
+            return False
         return all({"before", "after"} <= phases.get(step_id, set()) for step_id in executed)
 
     def _executed_steps(self, row: Projection, result: OpResult) -> list[str]:
@@ -844,6 +872,9 @@ class RpaCoordinator:
         ordered = [step.id for step in click_path.steps]
         if result.last_completed_step is None or result.last_completed_step not in ordered:
             return []
+        if result.outcome in {"submitted", "completed_existing"}:
+            if not ordered or result.last_completed_step != ordered[-1]:
+                return []
         return ordered[: ordered.index(result.last_completed_step) + 1]
 
     # -- result ----------------------------------------------------------------
@@ -868,15 +899,20 @@ class RpaCoordinator:
             if record.get("outcome") is not None:
                 # An exact repeated callback returns the stored outcome.
                 return {"status": locked.status, "outcome": record["outcome"], "replayed": True}
+            durable_writes = list(record.get("write_ids") or ())
+            for write_id in result.write_ids:
+                if write_id not in durable_writes:
+                    durable_writes.append(write_id)
             record = {
                 **record,
                 "attempt": attempt,
                 "ended_at": self.clock().isoformat(),
-                "last_completed_step": result.last_completed_step,
-                "write_ids": list(result.write_ids),
+                "last_completed_step": (
+                    result.last_completed_step or record.get("last_completed_step")
+                ),
+                "write_ids": durable_writes,
                 "outcome": result.outcome,
                 "reason_code": result.reason_code,
-                "readback_keys": dict(result.readback_keys),
             }
             self._upsert_attempt(rpa, record)
             rpa.pop("lease", None)
@@ -899,7 +935,13 @@ class RpaCoordinator:
             claim_id=claim_id,
             run_id=run_id,
             subtype=(
-                "uncertain_write" if result.outcome == "uncertain_write" else "projection_failed"
+                "uncertain_write"
+                if result.outcome == "uncertain_write"
+                else (
+                    "edms_duplicate_filename_collision"
+                    if result.reason_code == "edms_duplicate_filename_collision"
+                    else "projection_failed"
+                )
             ),
             reason_code=result.reason_code or result.outcome,
             result=result,
@@ -1042,7 +1084,15 @@ class RpaCoordinator:
         record = self._attempt_record(rpa, attempt)
         write_ids = list(record.get("write_ids") or ())
         last_step = record.get("last_completed_step")
-        wrote = bool(write_ids) or _write_reached(click_path, last_step)
+        possible_write_frame = any(
+            isinstance(frame, dict)
+            and frame.get("step_id") in {
+                step.id for step in (click_path.write_steps if click_path is not None else ())
+            }
+            and frame.get("phase") in {"before", "after", "failure"}
+            for frame in record.get("frames") or ()
+        )
+        wrote = bool(write_ids) or possible_write_frame or _write_reached(click_path, last_step)
         probe, observed = self._probe(row, operation)
         if probe == "exact_match":
             with self.service._guard(row.id) as session:
@@ -1062,7 +1112,11 @@ class RpaCoordinator:
                     "inputs": dict(observed.get("record") or {}),
                     "outputs": dict(observed.get("outputs") or {}),
                 },
-                evidence_ids=(),
+                evidence_ids=tuple(
+                    str(frame["evidence_id"])
+                    for frame in record.get("frames") or ()
+                    if isinstance(frame, dict) and isinstance(frame.get("evidence_id"), str)
+                ),
                 reason_code="recovered_prior_completion",
             )
             self.service.reconcile.reconcile(row.id, result=result, actor=RUNNER_ACTOR)
@@ -1109,7 +1163,29 @@ class RpaCoordinator:
         probe = click_path.retry_probe
         if probe is None:
             return "unavailable", {}
-        keys = {key.target: key.from_step for key in probe.keys}
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        by_step = {
+            str(entry.get("step_id")): entry
+            for entry in payload.get("fields") or ()
+            if isinstance(entry, dict)
+        }
+        keys: dict[str, str] = {}
+        try:
+            for key in probe.keys:
+                entry = by_step[key.from_step]
+                path = entry.get("path")
+                value = entry.get("value")
+                if isinstance(path, str) and not path.startswith(("rule:", "literal:")):
+                    value = self.service.claims.reveal_snapshot_value(
+                        row.claim_id, path=path, value=value, actor=RUNNER_ACTOR
+                    )
+                keys[key.target] = encode_copy_value(
+                    value,
+                    value_type=str(entry.get("value_type")),
+                    encoding=str(entry.get("external_encoding")),
+                )
+        except (KeyError, ClaimCoreError, TypeError, ValueError):
+            return "unavailable", {}
         try:
             found = adapter.readback(operation.id, keys)
         except AdapterUnavailable:
