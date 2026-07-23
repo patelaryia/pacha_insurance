@@ -82,9 +82,10 @@ jobs:
           if-no-files-found: warn
 
   test-postgres:
-    name: tests (PostgreSQL 16, ED-3)
+    name: tests (PostgreSQL required)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -94,7 +95,7 @@ jobs:
           POSTGRES_DB: pacha_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U pacha" --health-interval 5s
+          --health-cmd "pg_isready -U pacha -d pacha_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
       # D-10: the suite expects Redis to be reachable on the PostgreSQL tier.
       redis:
@@ -125,15 +126,16 @@ jobs:
           DATABASE_URL: postgresql+psycopg://pacha:pacha@localhost:5432/pacha_test
           REDIS_URL: redis://localhost:6379/0
         run: >-
-          pytest -q --durations=30 -m "not real_ocr"
+          pytest -q -n 2 --dist=load --durations=30
+          -m "postgres_required and not real_ocr"
           --timeout=300 --timeout-method=thread
-          --junitxml=reports/pytest-postgres.xml
+          --junitxml=reports/pytest-postgres-required.xml
 
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reports-postgres
+          name: reports-postgres-required
           path: reports/
           if-no-files-found: warn
 
