@@ -62,7 +62,10 @@ CREATE TABLE note_drafts (
 
 Console `NOTE_REVIEW` workspace (extends S-1): left = note editor — computed fields **locked** (read-only, citation superscripts), commentary editable with tracked diff; right = merged PDF viewer. Autosave every 5s to a new draft version (nothing is ever lost — the sold feature). Officer **Sign** action: writes `signed_by`, freezes the version, renders final PDF artifact, transitions FSM → PACK_READY → IN_APPROVAL, routes per authority matrix (PRD-02 §2.5), creates the approval item in the right manager's S-3 queue, fires R-12/T-03 when > 4M. Manager Reject returns to PACK_READY with structured reasons → new draft version pre-seeded with reasons; every rejection auto-captures a `production_correction` test case (3.5).
 
-ICON transport at launch: signed note renders additionally as a **paste-assist field set** (PRD-09 §9.4) ordered to ICON's note form; RPA transport supersedes it later — same artifact, different adapter mode.
+ICON transport at launch: signed note renders additionally as a
+**paste-assist field set** (PRD-09 §9.3) ordered to ICON's note form. A
+separately accepted vendor executor may later perform the UI entry — same
+artifact and Pacha reconciliation contract, different execution mode.
 
 ### 8.6 Capabilities
 

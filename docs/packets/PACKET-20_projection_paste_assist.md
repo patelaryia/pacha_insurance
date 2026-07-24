@@ -15,16 +15,21 @@
 > **Acceptance:** new protected backend and console Packet-20 suites. The
 > builder does not weaken or rewrite Packet-01–19 acceptance fixtures.
 >
-> **Next packet:** PACKET-21 — adapter boundary, outbound-only RPA runner,
-> reconciliation, drift detection, evidence, fallback, and adapter health.
+> **Architecture-freeze note (2026-07-24):** PACKET-20's permanent
+> paste-assist scope remains valid. The former PACKET-21 custom-runner hand-off
+> below is frozen and superseded by ADR-003. PACKET-21 must be reissued as a
+> vendor-executor evaluation/control contract; PACKET-22 must be reissued after
+> vendor selection. Neither is complete.
 
 ## 0. CTO disposition and slice boundary
 
-PRD-09 is cut into three packets:
+The original PRD-09 cut was:
 
 1. **PACKET-20:** durable projection substrate + permanent paste-assist mode;
-2. **PACKET-21:** RPA runtime + the zero-silent-divergence control plane;
-3. **PACKET-22:** captured ICON/EDMS operation activation and live acceptance.
+2. **PACKET-21:** now frozen before issue; reissue for purchased-executor
+   evaluation + Pacha's zero-silent-divergence control plane;
+3. **PACKET-22:** now frozen; reissue for selected-operation activation and live
+   acceptance.
 
 This packet provides a useful, permanently supported human path without making
 an external-system write from platform code. It owns:

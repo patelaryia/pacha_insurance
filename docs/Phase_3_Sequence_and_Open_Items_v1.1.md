@@ -1,27 +1,50 @@
 ## Phase 3 sequence
 
-PRD-10 weeks 12–15 (one engineer; reuses PRD-07 dispatch + PRD-06 patterns heavily) → PRD-11 weeks 14–20 (the portal is the long pole: bidder onboarding + pen-test before first live lot) → PRD-12 weeks 18–22 build, **go-live strictly gated by GP-1**, realistically week 26+ → PRD-13 motor-pack hardening continuous, fire-pack test weeks 16–22 in parallel (per the R4 plan). Nothing here blocks the analyst-equivalence trial, which needs only R2 scope.
+**Temporal implementation approved 2026-07-24:** the CTO/owner accepted
+Temporal on technical, privacy, operations and procurement grounds. Implement
+T01→T08 in `architecture/TEMPORAL_IMPLEMENTATION_MASTER_PLAN.md`. Because Pacha
+is not live, migrate the whole codebase without a production dual-run and
+remove Celery/Redis orchestration before launch. T09/T10 Cloud/RDS evidence is
+the separate go-live gate.
+
+After T08: PRD-10 → PRD-11 auction-provider integration → PRD-12 (**also gated
+by GP-1**) → PRD-13 continuous.
+
+PRD-11 no longer includes a bidder portal. Provider RFI/due diligence and
+controlled export/import replace bidder onboarding and portal penetration-test
+work. Neither PRD-11 nor a purchased executor is required to pass the
+analyst-equivalence trial.
+
+### Frozen packets
+
+- **PACKET-21:** frozen before issue/implementation. Its custom Playwright
+  runner scope is superseded by ADR-003. It is not complete and must be reissued
+  as the vendor-evaluation and executor-control contract.
+- **PACKET-22:** issued draft found untracked; frozen, not complete, and requires
+  reissue after PACKET-21 and vendor selection. Its live activation evidence
+  cannot be collected against the superseded runner design.
 
 ## Master open-items register (consolidated ❓ — all discovery/decision, none code-blocking)
 
 | #   | Item                                                                                                                    | Blocks                         | Owner              |
 | --- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------ |
-| 1   | Shared mailbox + `svc-pacha-icon`/`svc-pacha-edms` service accounts (in writing, longest lead)                          | ED-5, RPA L2+                  | Aryia → Mayfair IT |
-| 2   | DG-1: ICON/EDMS browser-accessibility confirmation; ICON test instance existence                                        | PRD-09 RPA mode                | Aryia + IT         |
-| 3   | Click-path recording sessions (1 day × ICON, EDMS) + dropdown value-map screenshots                                     | RPA ops leaving L1             | Aryia + Gilbert    |
+| 1   | Shared mailbox + least-privilege `svc-pacha-icon`/`svc-pacha-edms` service accounts (in writing, longest lead)           | ED-5, vendor executor L2+      | Aryia → Mayfair IT |
+| 2   | ICON/EDMS target reachability, test-instance existence and vendor-executor compatibility                                | PRD-09 vendor executor mode    | Aryia + IT         |
+| 3   | Target operation capture: exact field order, encodings, readbacks, failure signatures and value maps                    | vendor operations leaving L1  | Aryia + Gilbert    |
 | 4   | Rule definitions R-01/R-04/R-16; R-06 threshold (Q-02); R-11 waiver conditions                                          | those rules only               | Aryia (embed)      |
 | 5   | C-04; C-07 verbatim; **payable formula** (single highest-value capture — feeds T-01, T-13)                              | PRD-08 L2, PRD-12              | Aryia + CM         |
 | 6   | Verbatim templates: T-05, T-08/T-08b, T-09, T-10, T-11, T-12, T-13, T-02b; duty-paid source; re-inspection fee schedule | per-template `pending_capture` | Aryia (embed)      |
 | 7   | ≥100-claim anonymised corpus request per §3.6 strata                                                                    | L2 promotions anywhere         | Aryia → CM         |
 | 8   | DG-2: EFT form origin/format (mailbox vs drive hook)                                                                    | PRD-12 S8                      | Aryia + Finance    |
-| 9   | ODQ-8: bidder KYC depth, bond rules, committee quorum                                                                   | PRD-11 S6/S8 config            | Aryia + HOC        |
+| 9   | Auction committee quorum, provider result/attestation format and direct-negotiation authority                            | PRD-11 award/import config     | Aryia + HOC        |
 | 10  | DV channel (via broker vs direct); statutory settlement clock trigger/duration (legal confirm)                          | PRD-12 S1 config, reporting    | Aryia + legal      |
-| 11  | ODPC processor registration + DPIA (incl. af-south-1 transfer + LLM ZDR documentation)                                  | production go-live only        | Aryia              || 12 | **DG-3:** network path AWS ↔ ICON/EDMS (internet + IP allowlist vs LAN-only → on-prem runner host per ED-3a) — **in the same written IT request as item 1** | runner host provisioning only (architecture is host-agnostic per ED-3a) | Aryia → Mayfair IT |
+| 11  | ODPC processor registration + DPIA (af-south-1, LLM ZDR, Temporal region/history/codec, executor and auction providers) | production go-live             | Aryia              |
+| 12  | Target network path and vendor desktop/runtime placement for Power Automate first, UiPath only if required               | vendor executor activation     | Aryia → Mayfair IT |
 | 13 | HOC approval band: distinct role or ≡ CM at Mayfair | PRD-04 band config | Aryia + CM |
 | 14 | Verify the 277,476 figure vs fixture FX-1's reconstruction (139,200 garage door line) with Gilbert | nothing (FX-1 is canonical regardless) | Aryia |
 | 15 | Legacy open-book export from ICON (CSV) for ramp-day-0 stub import (trial doc v1.1) | trial ramp day 0 | Aryia + IT |
 | 16 | Reg-plate pattern verification against the corpus, week 1 (PRD-01 `kenya_reg` v1.1 set) | thread-match accuracy tuning | Eng + corpus |
-| 17 | `icon.reserve_adjust` click-path recording (append to the item-3 recording sessions) | PRD-10 matched_under automation | Aryia + Gilbert |
+| 17 | `icon.reserve_adjust` target operation capture (append to item 3) | PRD-10 matched_under automation | Aryia + Gilbert |
 
 **v1.1 priority note on item 5:** three captures are prioritised above all template verbatims, in one CM + Gilbert sitting this week: (a) **C-08 payable formula** (feeds T-01, T-13, routing amount); (b) **R-06 threshold** (`assessment.mode_confirm` cannot leave L2 until it lands); (c) **C-07 verbatim, both variants** (write-off claims progress to SALVAGE_BIDDING but not SETTLEMENT until captured).
 
@@ -288,3 +311,12 @@ PRD-10 weeks 12–15 (one engineer; reuses PRD-07 dispatch + PRD-06 patterns hea
 | 273 | Canonical `project.*` ids would evade PACKET-08's provisional bare-id money-adjacent ceiling set, and reserve/general-payment operations are plainly money-adjacent despite not all being listed there | Hard-code canonical projection classification: reserve create/breakdown/adjust, assessor-payment request, general-payments, and salvage-register max L3; payment voucher and both EDMS payment workflows max L2 until PRD-12's gate, never above the constitution. Pack policy may tighten, never widen | CTO, PACKET-20 |
 | 274 | PRD-09 §9.3 requires a copy strip and a validated readback but fixes neither a verification floor for a value an officer is told to type into ICON, nor a declaration format for the captured `assert_format` validator, target encodings, or literal values | Take the narrowest safe behaviour in the click-path loader and snapshot builder: a paste copy row requires `system_confirmed` or `human_verified` and an `extracted` value blocks with `field_under_verified:<path>`; `external_encoding` is mandatory and closed per value type (`money → cents\|shillings`, `date`/`datetime → iso`, `string`/`enum → raw`, everything else rejected); a literal needs an explicit `value_kind: literal`; and `assert_format` must name a validator declared in the same per-operation YAML as `{status: live, pattern}` or `{status: pending_capture, blocked_on}`, with a pending format refusing every readback value (`422 READBACK_FORMAT_PENDING_CAPTURE`). Generated values and value maps have no captured declaration format, so a live path using one fails startup rather than being interpreted | Builder ED-11 flag, PACKET-20 |
 | 275 | Register #262 requires the six provisional bare `icon.*`/`edms.*` capability seeds to be removed from pack policy data, but two protected fixtures still assert against them: `tests/acceptance/test_packet_08_eval_autonomy.py::test_capabilities_seeded_with_constitution_ceilings` pins `autonomy.level("icon.claim_register") == "L0"` and `tests/acceptance/test_packet_13_agent_runtime.py::test_gate_l0_logs_l1_drafts_l2_confirms` gates on `capability_id="icon.claim_register"` | Owner-side fixture correction required, as for #237/#238/#259. The builder shipped the spec-correct removal and did not edit either protected suite. Minimal correction: in PACKET-08, assert the dark-launch level against a capability that is still L0 by construction (`project.icon.salvage_register`, PRD-11-owned) rather than a paste-assist capability that now launches at L1; in PACKET-13, drive the L0 gate case with `project.icon.salvage_register`. Both preserve the assertions' meaning — a registered capability whose launch level is L0 — without weakening any check | CTO fixture correction pending, PACKET-20 |
+| 276 | Temporal Cloud namespace credentials and the approved exact region must be supplied for T09/T10 | Does not block T01–T08. Cloud deployment and go-live evidence remain `blocked_on_inputs`; never commit credentials or invent latency/recovery evidence | CTO approval 2026-07-24, T09/T10 |
+| 277 | Temporal privacy/security posture approved for implementation; KMS Codec, history retention/access and cross-border controls still require staging verification | Implement the control-only schema and KMS envelope Codec exactly as the master plan. T10 evidence, not redesign, closes the go-live check | CTO approval 2026-07-24, T01/T10 |
+| 278 | Temporal vendor/procurement accepted by the CTO/owner; observed Actions/storage/egress and final pilot cost remain unmeasured | Implement now. Capture actual staging usage in T10 and attach the cost projection before go-live | CTO approval 2026-07-24, T10 |
+| 279 | Temporal migration design is fixed in the master plan | Pacha is not live: implement T01–T08 sequentially, use no dual-runtime selector, and remove runner/reaper/Beat/Celery/Redis before launch | CTO approval 2026-07-24, T01–T08 |
+| 280 | Power Automate Desktop vs UiPath control fit, licensing, target support, service identity, evidence export, selector-healing disablement, data location and exit terms are unresolved | Paste-assist remains the only accepted mode. Run Power Automate RFI/control trial first; keep vendor execution `blocked_on_inputs`; reissue PACKET-21/22 after selection | CTO architecture freeze, ADR-003 |
+| 281 | Auction provider, RFI criteria, result schema, attestation, data-processing terms, API availability, SLA, penetration-test evidence and exit export are unresolved | Build only provider-neutral whitelist/export/import slots. No provider selection, bidder portal, bidder KYC or bid transport exists in Pacha; PRD-11 live activation stays blocked | CTO architecture freeze, ADR-004 |
+| 282 | PACKET-21 is referenced by PACKET-20 but absent; the untracked PACKET-22 draft depends on its superseded custom runner scope | Mark both frozen, not complete. PACKET-20 paste-assist stays valid. Reissue PACKET-21 as vendor executor evaluation/control and PACKET-22 as selected-operation activation only after owner approval | CTO architecture freeze |
+| 283 | The existing document ingestion path has no managed-malware safe-result gate before normalisation/extraction | Preserve current non-production mechanics; production upload ingestion is blocked until S3 quarantine + GuardDuty Malware Protection safe-result release is implemented and verified. Never treat an unscanned upload as safe | CTO architecture freeze, ADR-002 |
+| 284 | Temporal requires stable Workflow identity and projection metadata absent from the original `agent_runs` DDL | Owner-approved schema is now binding in Section 0.5 and the Temporal master plan. T02 ships Alembic `0016_temporal_runtime.py`, including exact legacy-development-row backfill and clean PostgreSQL/SQLite downgrade | CTO approval 2026-07-24, T02 |
