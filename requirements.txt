@@ -6,6 +6,8 @@ alembic>=1.13
 python-ulid>=2.5
 celery>=5.4
 redis>=5.0
+temporalio==1.30.0  # ADR-001 durable orchestration; pinned per master plan §5
+boto3>=1.35,<2  # Secrets Manager mTLS material and KMS Payload Codec keys
 cryptography>=43.0
 PyYAML>=6.0
 psycopg[binary]>=3.2
