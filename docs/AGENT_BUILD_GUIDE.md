@@ -11,6 +11,12 @@ Read in this order. On any conflict, the earlier document wins.
 3. `PRD-00` … `PRD-13` — build specs. Field lists, schemas, enums, and thresholds in these documents are **the spec**: implement exactly what is written, no more, no less.
 4. `Full-System_Acceptance_Trial_v1.1.md` — the exit test. Every metric here must be computable from platform data you are building; if you notice a metric that your implementation cannot produce, that is a register item (§5).
 5. `Phase_3_Sequence_and_Open_Items_v1.1.md` — the open-items register. Items marked ❓ or `blocked_on_inputs`/`pending_capture` are **known, deliberate gaps**: build the slot, the status, and the visible blocked state — never invent the missing value.
+6. `architecture/ADR-001` … `ADR-004` — rationale and acceptance gates for the
+   2026-07-24 orchestration/build-vs-buy freeze. They clarify the binding
+   Section-0 decisions and do not override them.
+7. `architecture/TEMPORAL_IMPLEMENTATION_MASTER_PLAN.md` — the owner-approved
+   T00–T10 implementation packets. It fixes package layout, contracts, retries,
+   queues, migration order and acceptance; it does not override Section 0/0.5.
 
 All documents are v1.1 and self-consistent. If you find a residual conflict, that is a register item, not a judgment call.
 
@@ -18,9 +24,20 @@ All documents are v1.1 and self-consistent. If you find a residual conflict, tha
 
 **Phase 1 (start now, this order):** PRD-00 → PRD-01 → PRD-02 → PRD-03 → PRD-04. PRD-00 is the substrate; nothing else compiles without it. PRD-03's grader/autonomy machinery must exist before any agent PRD ships, because AR-2 routes every side-effect through capability levels.
 
-**Phase 2:** PRD-05 → PRD-06 → PRD-07 → PRD-08 → PRD-09 (paste-assist mode of PRD-09 ships in week 1 of Phase 2; RPA mode follows DG-1/DG-3 and click-path capture).
+**Phase 2:** PRD-05 → PRD-06 → PRD-07 → PRD-08 → PRD-09 paste-assist.
+Paste-assist remains a permanent safe mode. The former custom-RPA follow-on is
+frozen; any purchased executor integration requires a reissued packet and the
+vendor gate in ADR-003.
 
-**Phase 3:** per the Phase 3 sequence document — PRD-10 → PRD-11 → PRD-12 (gated by GP-1) → PRD-13 continuous.
+**Temporal implementation is now first:** the CTO/owner approved Temporal on
+2026-07-24. Implement T01→T08 in the Temporal implementation master plan,
+one packet/PR at a time. Pacha is not live, so there is no production dual-run:
+all durable workflows and schedules move to Temporal and Celery/Redis
+orchestration is removed before launch. T09/T10 infrastructure and Cloud/RDS
+evidence are the separate go-live gate.
+
+**Phase 3 after T08:** PRD-10 → PRD-11 auction-provider integration → PRD-12
+(also gated by GP-1) → PRD-13 continuous.
 
 Pack scaffolding (PRD-13 repo format, build pipeline, conformance suite) is built alongside Phase 1 — PRD-01/02 consume pack artifacts from day one.
 
@@ -37,7 +54,13 @@ Pack scaffolding (PRD-13 repo format, build pipeline, conformance suite) is buil
 9. **The review-item type enum is closed (PRD-04 v1.1).** Seventeen types, exactly. New cases are `EXCEPTION` subtypes. Every type ships its four-part contract including a versioned resolution-payload JSON schema.
 10. **Ledger is single-writer (PRD-00 v1.1).** All audit appends via the concurrency=1 queue. Nothing else writes `audit_ledger`.
 11. **Autonomy ceilings are hard-coded constitution:** `triage.ex_gratia` = L1 permanent; `triage.decline_draft` release = human; consistency flags (CC-5 class) = L2; `pack.note_draft` sign = human, max L3; `salvage.award` is not a capability; no L4 anywhere money-adjacent; approval authority is not a capability at all.
-12. **Portal isolation (PRD-11).** The `lot_public` projection whitelist is the only data crossing the portal boundary; the insured-name-grep test must pass on every portal response.
+12. **Auction-provider isolation (PRD-11).** The `lot_export` whitelist is the
+    only data crossing the provider boundary; insured/policy identifier scans
+    must pass on every outbound artifact. Pacha exposes no bidder portal.
+13. **Workflow-history minimisation (AR-1).** Temporal history contains opaque
+    ids, hashes, statuses and non-sensitive control data only. Claim facts,
+    documents, customer/bank data and other PII are loaded inside Activities
+    from Pacha's authorised stores and never appear in workflow payloads.
 
 ## 4. Conventions
 
@@ -68,15 +91,17 @@ The register, not the codebase, is where ambiguity goes to die.
 | R-01/R-04/R-16, R-11 conditions | rule slots registered, `blocked_on_inputs`, visibly | open item 4 |
 | T-05/T-08/T-08b/T-09/T-10/T-11/T-12/T-13/T-02b verbatims | registry entries `pending_capture` | open item 6 |
 | `icon.reserve_adjust` click-path | op registered `pending_capture`; matched_under prompts officer-manual console task | open item 17 |
-| ICON test instance | if none: first 25 RPA runs on real claims at L2 with officer watching (the ladder already requires this) | open item 2 |
-| Runner host (on-prem vs Fargate) | build the outbound-only container per ED-3a; host-agnostic | open item 12 (DG-3) |
-| Bidder KYC depth / bond / quorum | defaults per PRD-11 (2-of-3 quorum); config slots | open item 9 |
+| ICON/EDMS test instance | vendor execution stays blocked; do not substitute first live claims for staging acceptance | open item 2 / ADR-003 |
+| RPA vendor and target reachability | keep paste-assist; no custom runner; vendor execution stays `blocked_on_inputs` | ADR-003 / open items 1–3 |
+| Auction provider, result format and committee quorum | provider integration slots only; no bidder portal or provider selection | ADR-004 / open item 9 |
 | DV channel / statutory clock | config slots, `pack config` defaults per PRD-12 | open item 10 |
 
 ## 7. v1.1 change log (what moved since v1.0, for reviewers)
 
 - **ED-8 money (cents end-to-end)** — corrected `money_kes`, R-12 literal, all fixtures.
-- **ED-3a runner topology** — pessimistic-case outbound-only RPA container; DG-3 decides host only.
+- **2026-07-24 architecture freeze:** ADR-001–004 supersede the custom durable
+  runner, custom Playwright executor and bidder-portal direction. Existing code
+  remains until its separate migration gate passes.
 - **PRD-00:** complete FSM (24 states incl. WITHDRAWN/VOID; decline-from-anywhere with CM approval post-triage; EX_GRATIA_REVIEW = substatus); `external.*` fields canonical in `claim_fields`, `claims.external_refs` demoted to cache; write concurrency (optimistic retry + per-claim advisory lock, atomic batches); events `seq` + 5s watermark replay; single-writer hash-chain ledger + audit-degraded mode; SLA `calendar` attribute; `dek_wrapped`, `value_search` blind index, `assigned_to`.
 - **PRD-01:** DOC_SPLIT stage (v1.0 human boundaries, v1.1 agent proposals); `vision_bbox` citation mode (×0.9 confidence; handwritten forms expected in FIELD_VERIFY); Swahili structured-fields-in-scope + gloss never a rule input; `kenya_reg` full pattern set; page renders 180d.
 - **PRD-02:** routing amount = C-08 payable, fallback reserve.total (routes upward); inclusive band bounds; C-08 registered; `effective_from` demoted to documentation; template `locale`.
@@ -86,10 +111,18 @@ The register, not the codebase, is where ambiguity goes to die.
 - **PRD-06:** items.yaml registry (physical/field_request kinds — 422 path closed); per-checklist 48h deferral; suppression list extended to WITHDRAWN/VOID; send-window compliance.
 - **PRD-07:** corrupted worked example struck; canonical fixture **FX-1** + billable-header/evidence-line semantics; tiles sum header rows only.
 - **PRD-08:** `pre_projection_pack` deleted (RESERVED = computed locally); manifest items 12–13 `source: projection_readback|upload`, non-waivable; payable = C-08; network-disabled Chromium HTML→PDF policy, byte-stable regeneration.
-- **PRD-09:** ops added `icon.reserve_adjust` (pending_capture), `icon.assessor_payment_request` (not behind GP-1, L3 cap + permanent sampling); readback → canonical `external.icon.claim_no`; PASTE_READBACK_CHECK item; ED-3a runner reference.
+- **PRD-09:** paste-assist retained; vendor-neutral purchased executor contract
+  replaces the custom runner; Pacha still owns idempotency, evidence, readback,
+  divergence and `uncertain_write`; `icon.assessor_payment_request` remains
+  outside GP-1 with L3 cap + permanent sampling.
 - **PRD-10:** `repair.payment_ready` registered field = formal PRD-12 trigger; invoice ambiguity → EXCEPTION; matched_under officer-manual until reserve_adjust captured.
-- **PRD-11:** bids append-only + partial unique + `in_counter`; login page, nothing between lots; 14d election deadline, never auto-surrender; 48h counter-expiry Beat job; nullable reserve_estimate → `no_baseline` recovery rows; WAF + ASVS-L1 pen test, zero high/critical; KYC_VERIFY item.
+- **PRD-11:** outsourced auction execution; Pacha owns eligibility,
+  minimal lot export, verified result import, committee award and recovery
+  ledger; no bidder identity, KYC, bid transport or portal.
 - **PRD-12:** EFT exact-amount, ±5 business days, claim_no wins, EFT_MATCH item; S1 trigger includes `repair.payment_ready`; assessor/towing payment scope note.
 - **PRD-13:** items.yaml + holidays.yaml in the pack layout; sha256 signing per ED-10; pinning sole versioning authority.
-- **Trial:** 8-week structure (4 ramp + 4 measured), counters accrue from ramp day 1, legacy stub import, re-key metric restated (≤1 paste-assist / 0 RPA), first-pass approval ≥95% with Reject-only rework definition.
+- **Trial:** 8-week structure (4 ramp + 4 measured), counters accrue from ramp
+  day 1, legacy stub import, re-key metric restated (≤1 paste-assist / 0 for an
+  accepted vendor-executed operation), first-pass approval ≥95% with
+  Reject-only rework definition.
 - **Section 0.5:** AR-1a reaper (acks_late + 15-min heartbeat, 3 attempts); AR-3 scope + AR-3a send window; AR-3b Graph mechanics (poll authoritative); AR-4a full budget table + $8/day / $12 lifetime per-claim ceilings; AR-5 notify module.

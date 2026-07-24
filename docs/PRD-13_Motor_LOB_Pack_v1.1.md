@@ -30,7 +30,9 @@ packs/motor/
   sla/definitions.yaml, holidays.yaml   # holidays.yaml (v1.1): KE public-holiday calendar (AR-3a / calendars)
   consistency/checks.yaml      # CC-1..CC-5
   manifest/approval_pack.yaml  # the 13-item merge manifest (PRD-08 §8.3)
-  vendors/seed.yaml            # assessors, fee schedules, salvage-yard bidder seed
+  vendors/seed.yaml            # assessors and fee schedules; no bidder/KYC seed
+  integrations/auction.yaml    # provider-neutral lot-export/result-import slots;
+                               # provider remains blocked_on_inputs until RFI approval
   value_maps/icon_codes.yaml   # dropdown maps captured by screenshot at embed
   autonomy/policies.yaml       # per-capability promotion overrides + max_level ceilings
   graders/thresholds.yaml      # per-field confidence overrides
@@ -49,7 +51,7 @@ A platform-owned test harness, parameterised by pack id, all green required for 
 
 ### 13.5 Modularity proof — Fire/Property pack v0.1 (acceptance test for the whole architecture)
 
-Scope of the minimal fire pack, chosen to exercise every extension point while dodging clinical-coding complexity: document schemas `fire_brigade_report`, `adjuster_report` (same generic shape as assessor_report: agreed amount, asset value, recommendation, flags), `contractor_quote/BOQ` (maps to repair_estimate: line items + total), `title_deed_or_lease`, `si_schedule`; rules: per-policy excess (flat or percentage — exercises calc parameterisation), constructive-total-loss gate (reinstatement > X% of SI — same rule shape as R-05), adjuster-appointment threshold; checklist: {claim form, fire brigade report, title/lease, SI schedule, photos, contractor quote}; approval manifest ~10 items; **no salvage auction** (module simply not bound — proving optional-module composition); display strings: external_expert → "Loss Adjuster", service_provider → "Contractor".
+Scope of the minimal fire pack, chosen to exercise every extension point while dodging clinical-coding complexity: document schemas `fire_brigade_report`, `adjuster_report` (same generic shape as assessor_report: agreed amount, asset value, recommendation, flags), `contractor_quote/BOQ` (maps to repair_estimate: line items + total), `title_deed_or_lease`, `si_schedule`; rules: per-policy excess (flat or percentage — exercises calc parameterisation), constructive-total-loss gate (reinstatement > X% of SI — same rule shape as R-05), adjuster-appointment threshold; checklist: {claim form, fire brigade report, title/lease, SI schedule, photos, contractor quote}; approval manifest ~10 items; **no auction-provider integration** (module simply not bound — proving optional-module composition); display strings: external_expert → "Loss Adjuster", service_provider → "Contractor".
 
 **The test, verbatim:** starting from a green motor pack, one engineer + Aryia build fire pack v0.1 with **zero platform code changes except** registering the five new document schemas + any new named validators; conformance suite green; then one pilot fire claim (real or realistic synthetic from a Mayfair fire file) processed end-to-end — intake → coverage triage → adjuster dispatch → report parse → reserve → approval pack signed and routed — **within 6 weeks of pack start**. Exit artifacts: the conformance report, the pilot claim's full event timeline, and a diff showing platform code touched (should be schemas only). That bundle is the modularity slide.
 

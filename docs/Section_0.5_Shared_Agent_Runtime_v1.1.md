@@ -1,6 +1,13 @@
 ## Section 0.5 — Shared Agent Runtime (binding on PRD-05–12)
 
-**AR-1 · Agent run model.** Every agent execution is a durable record, never an ephemeral function call:
+> **Implementation approval 2026-07-24:** the CTO/owner approved Temporal on
+> technical, privacy, operations and procurement grounds. Implement T01→T10 in
+> `architecture/TEMPORAL_IMPLEMENTATION_MASTER_PLAN.md`. Pacha is not live:
+> remove Celery/Redis orchestration before launch; do not build a dual runtime.
+
+**AR-1 · Temporal workflow and Pacha run model.** Every agent execution is a
+durable Temporal Workflow plus a Pacha-owned audit/operational read model,
+never an ephemeral function call:
 
 sql
 
@@ -11,17 +18,81 @@ CREATE TABLE agent_runs (
   capability_id  TEXT NOT NULL,              -- FK capabilities (PRD-03)
   claim_id       TEXT,
   trigger_event  TEXT REFERENCES events(id),
-  status         TEXT NOT NULL,              -- 'running'|'awaiting_review'|'completed'|'failed'|'blocked'
+  workflow_id    TEXT NOT NULL UNIQUE,        -- stable Pacha-derived Temporal Workflow ID
+  workflow_run_id TEXT,                       -- current Temporal Run ID (changes on Continue-As-New)
+  workflow_type  TEXT NOT NULL,               -- registered Workflow type
+  worker_build_id TEXT,                       -- immutable deployed git SHA
+  status         TEXT NOT NULL,              -- 'pending'|'running'|'awaiting_review'|'blocked'|
+                                             -- 'completed'|'failed'|'cancelled'
   steps          JSONB NOT NULL DEFAULT '[]',-- [{step_id, started, ended, outcome, refs}]
   autonomy_level TEXT NOT NULL,              -- snapshot of capability level at run start
   error          JSONB,
-  started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ
+  last_workflow_event_ref TEXT,
+  last_synced_at TIMESTAMPTZ,
+  started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ,
+  CONSTRAINT ck_agent_runs_status CHECK (
+    status IN (
+      'pending','running','awaiting_review','blocked',
+      'completed','failed','cancelled'
+    )
+  )
 );
+CREATE INDEX ix_agent_runs_status ON agent_runs(status);
+CREATE INDEX ix_agent_runs_claim ON agent_runs(claim_id);
 ```
 
-Each agent's legal step sequence is declared as a **COP step definition** in the pack (`{capability_id, steps: [{id, expects_events[], produces[]}]}`) — this is what grader `G-PROC` checks conformance against. Steps are idempotent Celery tasks; a crashed run resumes from its last completed step (state in `steps`, not in memory). A run that emits a review item moves to `awaiting_review` and **ends its turn**; resolution events resume it. No agent ever blocks a worker waiting on a human.
+Each agent's legal step sequence is declared as a **COP step definition** in the
+pack (`{capability_id, steps: [{id, expects_events[], produces[]}]}`) — this is
+what grader `G-PROC` checks conformance against. One stable Workflow ID is
+derived from the Pacha run/idempotency identity; duplicate starts attach to or
+observe that Workflow and never duplicate domain work.
 
-**AR-1a · Run recovery (belt and braces).** Celery configured `acks_late=True`. In addition, a reaper Beat job (every 5 min) re-enqueues the current step of any run with `status='running'` whose step heartbeat (`steps[].updated_at`) is > 15 minutes stale. Steps are idempotent by the AR-1 contract, so re-enqueue is always safe. Max **3 resume attempts per step**, then run `status='failed'` + ops alert.
+Workflow code contains deterministic control flow only. Pacha database reads,
+writes, rules, model calls and governed external actions run in Activities.
+Activities receive opaque ids/hashes and load authorised claim data inside
+Pacha; they never return PII to workflow history. Long-running Activities
+heartbeat non-sensitive progress and may resume from the last safe checkpoint.
+Technical read-only/idempotent failures use bounded Activity retry policies.
+External writes have retry disabled at the Activity boundary unless Pacha first
+proves non-execution through a target-specific probe. An uncertain write
+becomes `EXCEPTION{uncertain_write}`.
+
+Human waits use Temporal Signals. A run that emits a review item projects
+`agent_runs.status='awaiting_review'`, records the opaque review id, and awaits a
+validated Signal without occupying a worker. Signals never carry the resolution
+payload; the Workflow receives only an opaque resolution-event id and an
+Activity loads the authorised Pacha record.
+
+Durable timers implement reminder, SLA and other workflow waits after
+ADR-001 approval. Worker heartbeats are not domain truth. Workflow
+deployment/version compatibility uses Temporal's supported Worker
+Deployment/versioning mechanism plus replay tests for every change; workflow
+code must not use wall-clock, random or unversioned non-deterministic branches.
+
+`agent_runs` remains the Pacha audit and operations read model. Activities
+project its status and step references from Pacha commits/workflow events. It is
+reconstructable without storing claim facts in Temporal and never replaces
+PostgreSQL events or the audit ledger.
+
+**Workflow history rule (hard):** inputs, outputs, Signals, Queries, memo/search
+attributes, heartbeat details and failure messages contain only opaque
+identifiers, hashes, statuses and non-sensitive control data. Claim documents,
+customer details, bank details, extracted claim facts and all other PII are
+forbidden. A client-side Payload Codec/encryption layer is required as defence
+in depth. Codec success does not relax the plaintext data-minimisation rule.
+
+**AR-1a · Recovery, compatibility and migration gate.** Temporal owns workflow
+position, replay, durable timers, technical retries and Activity heartbeat
+recovery. A worker can stop and a different compatible worker can continue the
+Workflow. Temporary Temporal unavailability pauses orchestration but does not
+remove or lock Pacha claim reads; committed PostgreSQL state remains
+authoritative.
+
+Implementation is approved. Follow T01→T08 without a production dual-run:
+introduce the shared Temporal boundary, migrate each code path with equivalent
+acceptance coverage, then remove the runner/reaper, Beat and Celery/Redis
+dependencies before launch. T09/T10 must still prove the approved Cloud region,
+KMS Codec, RDS authority, outage recovery and observability before go-live.
 
 **AR-2 · Autonomy gate (single choke point).** Every side-effectful action goes through one function: `execute_or_stage(capability_id, action, claim_id) →` at L0 log only; L1 create `DRAFT_RELEASE` review item; L2 create typed confirm item; L3 execute + maybe-sample into review; L4 execute. Critical grader failure on the action's payload forces the L1 path regardless of level (PRD-03 §3.3 gating rule). Agents contain **zero** direct sends/writes outside this gate — CI greps for banned direct calls (`graph_client.send`, adapter `.execute`) outside the gate module.
 

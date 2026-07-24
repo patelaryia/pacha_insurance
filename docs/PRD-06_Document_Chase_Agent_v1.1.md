@@ -45,7 +45,16 @@ On `document.classified` for a claim with an open checklist: exact `doc_type` ma
 
 ### 6.4 Reminder engine
 
-Beat tick (15 min) selects items where `next_reminder_at ≤ now`. Cadence (pack config): T+3d, T+7d, T+12d, then every 7d, **cap 6 reminders** → escalation item to officer (`EXCEPTION{type: chase_exhausted}`). Recipient ladder: requester party first (broker if broker-intimated — matches current practice), cc insured from reminder 2, officer alert at breach (SLA `doc_item_age`, PRD-00). Templates: `T-06r` reminder (lists **only outstanding** items, ✓ for received, per-item age) — tone variants `broker|client` selected by recipient role. Sends go through AR-3 at capability `chase.reminder` (L1 two weeks → L3 per fast-track policy: ≥25 clean, ≥96%).
+A T03 `DocumentChaseWorkflow` durable timer selects items where
+`next_reminder_at ≤ now`; T03 removes the clock-driven Beat path. Cadence (pack
+config): T+3d, T+7d, T+12d, then every 7d, **cap 6 reminders** → escalation item to officer
+(`EXCEPTION{type: chase_exhausted}`). Recipient ladder: requester party first
+(broker if broker-intimated — matches current practice), cc insured from
+reminder 2, officer alert at breach (SLA `doc_item_age`, PRD-00). Templates:
+`T-06r` reminder (lists **only outstanding** items, ✓ for received, per-item
+age) — tone variants `broker|client` selected by recipient role. Sends go
+through AR-3 at capability `chase.reminder` (L1 two weeks → L3 per fast-track
+policy: ≥25 clean, ≥96%).
 
 Suppression rules (hard): FSM ∈ {DECLINED, **WITHDRAWN, VOID**, SETTLED, CLOSED} → checklist auto-cancelled (v1.1: terminal set extended per PRD-00 §0.4); officer can pause per-item (`snooze_until`); **deferral is per checklist (v1.1):** any inbound reply on the claim thread within 24h defers **all of that checklist's** reminders 48h — a human just engaged; item-granular deferral risks nagging someone mid-conversation and buys nothing. All reminder sends respect the AR-3a send window.
 

@@ -6,6 +6,12 @@
 
 The DV → EDMS → ICON voucher → payment-routing flow, plus EFT auto-attach. 100% `MECH`/`DET`, money-adjacent, therefore last and gated. Payment _execution_ and approval authority are permanently out of scope — the platform prepares and projects; humans and existing systems move money.
 
+Pacha does not hold funds and does not integrate a new payment service provider
+for the first pilot. If electronic signatures later become necessary, use an
+established provider such as DocuSign or Adobe Sign behind a separately
+approved integration; do not build signing keys, certificate workflow or
+electronic-signature infrastructure.
+
 ### 12.2 Gate protocol GP-1 (hard precondition, enforced in the autonomy controller)
 
 All `settlement.*` and payment-adjacent `project.*` capabilities are frozen at L1/paste-assist until **all** of: (a) ≥ 90 days elapsed with ≥ 3 non-settlement capabilities sustained at L3+; (b) projection divergence rate = 0 over trailing 30 days; (c) two-person sign-off recorded in console (`claims_manager` **and** `md`, distinct PROMOTION_SIGNOFF items). The promotion API returns 403 with `GATE_GP1_CLOSED` otherwise — tested in CI. Post-gate ceilings: max **L3** on everything in this PRD; there is no L4 anywhere money-adjacent, permanently (sampling floor 10%).
@@ -27,12 +33,13 @@ S2 dv_verify    inbound signed DV → PRD-01 discharge_voucher schema: signed=tr
                 (vision), amount == issued amount, payee == issued payee.
                 Any mismatch → EXCEPTION{type: dv_mismatch} — never proceed.
 S3 gate_check   FSM guard → SETTLEMENT re-evaluates R-13/R-14 (belt-and-braces).
-S4 edms_blank   project edms.claim_payment: attach blank DV + note, submit.
-S5 edms_signed  project edms.payment_workflow: attach signed DV — click-path
-                includes the slow-reflection poll (30s interval, 10-min ceiling,
-                then EXCEPTION) per PRD-09 known-failure handlers.
-S6 voucher      project icon.payment_voucher: reserve → Action → General Payment
-                → DV → generate → download → artifact saved as
+S4 edms_blank   project edms.claim_payment: attach blank DV + note, submit via
+                paste-assist or an accepted PRD-09 vendor executor.
+S5 edms_signed  project edms.payment_workflow: attach signed DV. Vendor execution
+                must use the captured slow-reflection check and Pacha readback;
+                uncertainty becomes EXCEPTION and is never retried blindly.
+S6 voucher      project icon.payment_voucher: captured target flow generates and
+                downloads the artifact saved as
                 'Claim Payment Request {Reg}' (naming preserved) + attached to claim.
 S7 edms_submit  project edms.attach_and_tag (voucher) + submit with comment →
                 routes to approver per existing matrix. UNTOUCHED from here.
@@ -49,3 +56,7 @@ S8 confirm      payment confirmation detected via Finance hook (12.4) →
 ### 12.5 Acceptance
 
 (1) GP-1 enforcement: promotion attempt pre-gate → 403; post-gate with one signature → still 403; (2) corpus settled claim replays S1–S8 end-to-end in staging with paste-assist, voucher artifact named to convention; (3) signed DV with amount off by KES 1 → dv_mismatch exception; (4) R-13 fixture (keys unattested) → S3 blocks, `blocked_reasons` rendered on the red status rail; (5) EFT mail fixture → attach + reconcile + SETTLED transition; ambiguous EFT (two claims, same reg) → review item; (6) grep-level assertion: no code path exists that initiates a funds transfer (CI test asserts the adapter op registry contains no payment-execution operation).
+
+Additionally: an executor receipt can never transition a claim to `SETTLED`
+without Finance confirmation and Pacha reconciliation; the operation registry
+contains no payment-service-provider or funds-transfer operation.
