@@ -20,6 +20,21 @@ STALE_AFTER = timedelta(minutes=15)
 MAX_STEP_ATTEMPTS = 3
 _runtime: dict[str, Any] = {}
 
+#: Register #284 / master plan §13. Rows this legacy runner creates before its
+#: T03–T06 replacement still have to satisfy the now-mandatory Workflow identity
+#: columns. The prefix is deliberately *not* one of the §9 Workflow-ID kinds, so
+#: `orchestration.contracts` refuses it: this value is migration metadata and
+#: must never be handed to `TemporalStarter` or the payload converter.
+LEGACY_WORKFLOW_ID_PREFIX = "pacha.legacy.agent."
+LEGACY_WORKFLOW_TYPE = "LegacyAgentRun"
+LEGACY_WORKER_BUILD_ID = "legacy-celery"
+
+
+def legacy_workflow_id(run_id: str) -> str:
+    """The non-Temporal identity marker for a legacy runner row."""
+
+    return f"{LEGACY_WORKFLOW_ID_PREFIX}{run_id}"
+
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
@@ -142,10 +157,16 @@ class AgentRunner:
                     capability_id=capability_id,
                     claim_id=claim_id,
                     trigger_event=trigger_event,
+                    workflow_id=legacy_workflow_id(run_id),
+                    workflow_run_id=None,
+                    workflow_type=LEGACY_WORKFLOW_TYPE,
+                    worker_build_id=LEGACY_WORKER_BUILD_ID,
                     status="running",
                     steps=steps,
                     autonomy_level=self.level(capability_id),
                     error=None,
+                    last_workflow_event_ref=None,
+                    last_synced_at=None,
                     started_at=now,
                     ended_at=None,
                 )
@@ -173,6 +194,10 @@ class AgentRunner:
                     capability_id=capability_id,
                     claim_id=claim_id,
                     trigger_event=None,
+                    workflow_id=legacy_workflow_id(run_id),
+                    workflow_run_id=None,
+                    workflow_type=LEGACY_WORKFLOW_TYPE,
+                    worker_build_id=LEGACY_WORKER_BUILD_ID,
                     status="running",
                     steps=[
                         {
@@ -186,6 +211,8 @@ class AgentRunner:
                     ],
                     autonomy_level=autonomy_level,
                     error=None,
+                    last_workflow_event_ref=None,
+                    last_synced_at=None,
                     started_at=now,
                     ended_at=None,
                 )
@@ -550,4 +577,13 @@ def reap_stale_runs() -> int:
     return runner.reap()
 
 
-__all__ = ["AgentRunner", "StepContext", "configure_reaper", "reap_stale_runs"]
+__all__ = [
+    "LEGACY_WORKER_BUILD_ID",
+    "LEGACY_WORKFLOW_ID_PREFIX",
+    "LEGACY_WORKFLOW_TYPE",
+    "AgentRunner",
+    "StepContext",
+    "configure_reaper",
+    "legacy_workflow_id",
+    "reap_stale_runs",
+]

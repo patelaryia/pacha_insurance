@@ -1,0 +1,188 @@
+{
+  "events": [
+    {
+      "eventId": "1",
+      "eventTime": "2026-07-27T06:36:35.783Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "attempt": 1,
+        "firstExecutionRunId": "d6cf64a4-cd8f-411f-b05c-d5cec4b9d95f",
+        "firstWorkflowTaskBackoff": "0s",
+        "identity": "33663@Aryias-MacBook-Air-3.local",
+        "input": {},
+        "originalExecutionRunId": "d6cf64a4-cd8f-411f-b05c-d5cec4b9d95f",
+        "priority": {},
+        "taskQueue": {
+          "name": "pacha-test-control-v1"
+        },
+        "workflowExecutionTimeout": "315360000s",
+        "workflowRunTimeout": "315360000s",
+        "workflowTaskTimeout": "10s",
+        "workflowType": {
+          "name": "OutboxDrainWorkflow"
+        }
+      }
+    },
+    {
+      "eventId": "2",
+      "eventTime": "2026-07-27T06:36:35.783Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "attempt": 1,
+        "startToCloseTimeout": "10s",
+        "taskQueue": {
+          "name": "pacha-test-control-v1"
+        }
+      }
+    },
+    {
+      "eventId": "3",
+      "eventTime": "2026-07-27T06:36:35.783Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "historySizeBytes": "262",
+        "identity": "33663@Aryias-MacBook-Air-3.local",
+        "scheduledEventId": "2"
+      }
+    },
+    {
+      "eventId": "4",
+      "eventTime": "2026-07-27T06:36:35.788Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "binaryChecksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "identity": "33663@Aryias-MacBook-Air-3.local",
+        "meteringMetadata": {},
+        "scheduledEventId": "2",
+        "sdkMetadata": {
+          "coreUsedFlags": [
+            3,
+            2,
+            1
+          ],
+          "sdkName": "temporal-python",
+          "sdkVersion": "1.30.0"
+        }
+      }
+    },
+    {
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "dispatch_nonledger_events"
+        },
+        "header": {},
+        "heartbeatTimeout": "0s",
+        "input": {},
+        "priority": {},
+        "retryPolicy": {
+          "backoffCoefficient": 2.0,
+          "initialInterval": "1s",
+          "maximumAttempts": 5,
+          "maximumInterval": "30s"
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "60s",
+        "taskQueue": {
+          "kind": "TASK_QUEUE_KIND_NORMAL",
+          "name": "pacha-test-control-v1"
+        },
+        "workflowTaskCompletedEventId": "3"
+      },
+      "eventId": "5",
+      "eventTime": "2026-07-27T06:36:35.788Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED"
+    },
+    {
+      "activityTaskStartedEventAttributes": {
+        "attempt": 1,
+        "identity": "33663@Aryias-MacBook-Air-3.local",
+        "scheduledEventId": "5"
+      },
+      "eventId": "6",
+      "eventTime": "2026-07-27T06:36:35.788Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED"
+    },
+    {
+      "activityTaskCompletedEventAttributes": {
+        "identity": "33663@Aryias-MacBook-Air-3.local",
+        "result": {
+          "payloads": [
+            {
+              "data": "U6ZdIiu6cv2BHmwtUpk638fRXdZbE8boAIQevv8y/v7rx5N/bPF6OWZoeCk6uHhvYBW/Z76iZYDgos0JNH0mGiKDNC2E7Qdwso31bmRPReKg/JEBxWXaAEQPPMgTuv9gm71imOMSSOZQTm7oxjHbpW1fxeA4AMnXE6Dba6p07F0g8jJH3wjuhVXiL21xjfqTQ4gI7xcbL+nGpGZm5/Inf5K43Zd70nRiNAWfGht4/YeInQyZc55gM0p2a52nrQ1vvSCPqy17SEeElP88T6Uc2edPKffur5Oo6/HbhKT7BuCsAWs7D9yJzpstQ6R/d5qeI68Voq+1MMjAxjzj0T1RDgmGD38jGg1RTF42tTm8TR826sYfZlTcrIa/QuEfwx7JeOKZ",
+              "metadata": {
+                "encoding": "YmluYXJ5L3BhY2hhLWFlc2djbS12MQ==",
+                "pacha-codec-version": "MQ==",
+                "pacha-kms-key-arn": "c3RhdGljL3BhY2hhLXRlc3QtY29kZWMta2V5",
+                "pacha-nonce": "V1yIIEnKTUMyKebK",
+                "pacha-wrapped-key": "c3RhdGlj"
+              }
+            }
+          ]
+        },
+        "scheduledEventId": "5",
+        "startedEventId": "6"
+      },
+      "eventId": "7",
+      "eventTime": "2026-07-27T06:36:35.791Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED"
+    },
+    {
+      "eventId": "8",
+      "eventTime": "2026-07-27T06:36:35.791Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "attempt": 1,
+        "startToCloseTimeout": "10s",
+        "taskQueue": {
+          "name": "pacha-test-control-v1"
+        }
+      }
+    },
+    {
+      "eventId": "9",
+      "eventTime": "2026-07-27T06:36:35.791Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "historySizeBytes": "1223",
+        "identity": "33663@Aryias-MacBook-Air-3.local",
+        "scheduledEventId": "8"
+      }
+    },
+    {
+      "eventId": "10",
+      "eventTime": "2026-07-27T06:36:35.793Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "binaryChecksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "identity": "33663@Aryias-MacBook-Air-3.local",
+        "meteringMetadata": {},
+        "scheduledEventId": "8",
+        "sdkMetadata": {}
+      }
+    },
+    {
+      "eventId": "11",
+      "eventTime": "2026-07-27T06:36:35.793Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "workflowExecutionCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "data": "MbOQGQpNfUWki7NC4+c6RRv1LU+4Yd/ia0fjLLJoJyTefXteaxIj3A6F9fVW4EQDbSxycY01icCQRn7h6RXtIW8Vsx6nZ+PRLRi/vQMLtIbIscH8nAB7XSQPivXZzCmeEwCMElFND/wL5udPV0lZlgz7DOv2CiA0B0ZQCmael+LXLVY6gq/4EFN7ezKHn7qYss3UQFoQJjGyVRL4fBqrGVPm80gQkU2XRLn3WIEbp9uj1BP6/FjKZ2IfhyBLfUz+9p6kSEd38YF75dBh3joP7Y7XsJEva7kRUEscTy7tiGxKPXLWONaXhCT5YHzDtLNAtjEzhQ7x+WubRoOl77TlYFbE9NEyDTvkAx+hR2qbubjrU+qdmhS6Is4SFbzGCYAmKKuI",
+              "metadata": {
+                "encoding": "YmluYXJ5L3BhY2hhLWFlc2djbS12MQ==",
+                "pacha-codec-version": "MQ==",
+                "pacha-kms-key-arn": "c3RhdGljL3BhY2hhLXRlc3QtY29kZWMta2V5",
+                "pacha-nonce": "RnIKIYXo+UjRJlV7",
+                "pacha-wrapped-key": "c3RhdGlj"
+              }
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": "9"
+      }
+    }
+  ]
+}

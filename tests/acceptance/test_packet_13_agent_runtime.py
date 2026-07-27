@@ -34,9 +34,15 @@ INTAKE_STEP_IDS = [
     "late_check", "acknowledge", "checklist", "triage",
 ]
 
+# Expanded by TEMPORAL-T02 (register #284): `agent_runs` is now the binding
+# Section-0.5/master-plan-§13 Temporal operational projection. The six added
+# columns carry Workflow identity and sync metadata; every legacy AR-1 column
+# and every scenario below is unchanged.
 AR1_COLUMNS = {
-    "id", "agent", "capability_id", "claim_id", "trigger_event", "status",
-    "steps", "autonomy_level", "error", "started_at", "ended_at",
+    "id", "agent", "capability_id", "claim_id", "trigger_event",
+    "workflow_id", "workflow_run_id", "workflow_type", "worker_build_id",
+    "status", "steps", "autonomy_level", "error",
+    "last_workflow_event_ref", "last_synced_at", "started_at", "ended_at",
 }
 
 

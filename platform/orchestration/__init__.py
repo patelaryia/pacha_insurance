@@ -19,8 +19,11 @@ configuration — credentials, KMS calls, `os.urandom` — straight back into th
 sandbox behind the narrow list. Deferring the imports keeps importing
 `orchestration` free of side effects.
 
-T02 adds `TemporalStarter` and T07 adds `bootstrap_schedules`. Neither is
-exported before its packet.
+T02 adds `TemporalStarter`; T07 adds `bootstrap_schedules`, which is not
+exported before its packet. `TemporalIntentConsumer`, `SystemActivities`,
+`AgentRunActivities` and the system Workflows are deliberately *not* exported
+here: they are wired explicitly at the Worker call site, and a package-root
+export would invite a domain package to reach for them.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 __all__ = [
     "ControlResult",
     "TemporalConfig",
+    "TemporalStarter",
     "WorkflowRef",
     "build_data_converter",
     "build_temporal_client",
@@ -39,6 +43,7 @@ __all__ = [
 _EXPORTS: dict[str, str] = {
     "ControlResult": "orchestration.contracts",
     "TemporalConfig": "orchestration.config",
+    "TemporalStarter": "orchestration.starter",
     "WorkflowRef": "orchestration.ids",
     "build_data_converter": "orchestration.codec",
     "build_temporal_client": "orchestration.client",
@@ -51,11 +56,12 @@ if TYPE_CHECKING:  # pragma: no cover - import-time typing only
     from orchestration.config import TemporalConfig
     from orchestration.contracts import ControlResult
     from orchestration.ids import WorkflowRef
+    from orchestration.starter import TemporalStarter
     from orchestration.worker import build_worker
 
 
 def __getattr__(name: str) -> Any:
-    """Resolve one of the six public names on first use."""
+    """Resolve one of the seven public names on first use."""
 
     module_name = _EXPORTS.get(name)
     if module_name is None:

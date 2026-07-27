@@ -73,6 +73,14 @@ ACTION_MAP = {
 
 EventRecorder = Callable[..., Event]
 
+#: The owner-approved single-writer advisory-lock key (master plan §14/§22.6).
+#: Namespaced with the `pacha:` prefix so the `hashtext` bucket cannot collide
+#: with an unrelated advisory lock taken elsewhere in the same database.
+LEDGER_ADVISORY_LOCK_KEY = "pacha:audit-ledger-writer"
+LEDGER_ADVISORY_LOCK_SQL = (
+    f"SELECT pg_advisory_xact_lock(hashtext('{LEDGER_ADVISORY_LOCK_KEY}'))"
+)
+
 
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -136,10 +144,15 @@ class LedgerWriter:
 
     @staticmethod
     def _database_lock(session: Session) -> None:
+        """Serialise ledger appends across processes, per PRD-00 single-writer.
+
+        The process-local `Lock` below is the SQLite analogue; on PostgreSQL the
+        transaction-scoped advisory lock is what actually makes the writer
+        single, because several Worker processes may hold the ledger queue.
+        """
+
         if session.bind is not None and session.bind.dialect.name == "postgresql":
-            session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext('audit_ledger_writer'))")
-            )
+            session.execute(text(LEDGER_ADVISORY_LOCK_SQL))
 
     @staticmethod
     def _event_already_written(session: Session, event_id: str) -> bool:
