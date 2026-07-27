@@ -8,6 +8,8 @@ from pathlib import Path
 
 from sqlalchemy import text
 
+from orchestration.contracts import ControlCommand
+
 
 def _acceptance_module():
     path = Path(__file__).resolve().parents[1] / "acceptance/test_packet_15_chase_agent.py"
@@ -26,19 +28,60 @@ def _aware(value):
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
+def _drive_checklist(env, claim_id):
+    checklist_id = P15._checklists(env.app, claim_id)[0]["id"]
+    with env.app.state.engine.connect() as connection:
+        run_id = connection.execute(
+            text("SELECT id FROM agent_runs WHERE workflow_id = :workflow_id"),
+            {"workflow_id": f"pacha.chase.{checklist_id}"},
+        ).scalar_one()
+    activities = env.app.state.chase_agent.temporal_activities(
+        worker_build_id="a" * 40
+    )
+    command = ControlCommand(
+        run_ref=run_id,
+        claim_ref=claim_id,
+        checklist_ref=checklist_id,
+    )
+    state = activities._load(command)  # noqa: SLF001 - focused Activity unit seam
+    before = len(P15._drafts(env.app, claim_id, "chase.reminder"))
+    if state.step_id == "chase_initial_request":
+        activities._governed_send(  # noqa: SLF001 - focused Activity unit seam
+            ControlCommand(
+                run_ref=run_id,
+                claim_ref=claim_id,
+                checklist_ref=checklist_id,
+                write_id=f"chase:{checklist_id.lower()}:0",
+            )
+        )
+    elif state.step_id == "chase_reminder":
+        activities._governed_send(  # noqa: SLF001 - focused Activity unit seam
+            ControlCommand(
+                run_ref=run_id,
+                claim_ref=claim_id,
+                checklist_ref=checklist_id,
+                write_id=f"chase:{checklist_id.lower()}:{state.attempt_no}",
+            )
+        )
+    P15._drain(env.app)
+    after = len(P15._drafts(env.app, claim_id, "chase.reminder"))
+    return {"sent": after - before, "state": state}
+
+
 def test_initial_request_retries_at_next_send_window(tmp_path):
     env = P15._build(tmp_path, "initial-window-retry", model=P15._intimation_model())
     env.clock.advance_to(P15.T0 - timedelta(days=1))  # Sunday, 12:00 EAT
     claim_id = P15._to_checklist(env)
+    _drive_checklist(env, claim_id)
 
     assert P15._drafts(env.app, claim_id, "intake.doc_request") == []
     assert all(
-        item["state"] == "pending" and item["next_reminder_at"] is None
+        item["state"] == "pending" and item["next_reminder_at"] is not None
         for item in P15._chase_items(env.app, claim_id).values()
     )
 
     env.clock.advance_to(P15.T0)  # Monday, 12:00 EAT
-    P15._tick(env)
+    _drive_checklist(env, claim_id)
     assert len(P15._drafts(env.app, claim_id, "intake.doc_request")) == 1
     assert all(
         item["state"] == "requested" and item["next_reminder_at"] is not None
@@ -78,6 +121,7 @@ def test_ambiguous_held_photos_stay_received_and_are_not_requested(tmp_path):
     photo = P15._chase_items(env.app, claim_id)["photos"]
     assert photo["state"] == "received"
     assert photo["document_id"] is None
+    _drive_checklist(env, claim_id)
     request = P15._drafts(env.app, claim_id, "intake.doc_request")[0]
     payload = request["payload"]["action"]["payload"]
     assert "photos" in payload["received"]
@@ -87,6 +131,7 @@ def test_ambiguous_held_photos_stay_received_and_are_not_requested(tmp_path):
 def test_inbound_reply_defers_every_outstanding_item(tmp_path):
     env = P15._build(tmp_path, "whole-checklist-deferral", model=P15._intimation_model())
     claim_id = P15._to_checklist(env)
+    _drive_checklist(env, claim_id)
     with env.app.state.engine.begin() as connection:
         connection.execute(
             text(
@@ -100,7 +145,7 @@ def test_inbound_reply_defers_every_outstanding_item(tmp_path):
     P15._reply(env, body="We are gathering every outstanding document")
     defer_until = env.clock.now + timedelta(hours=48)
     P15._at(env, days=7, hours=1)
-    result = P15._tick(env)
+    result = _drive_checklist(env, claim_id)
 
     assert result["sent"] == 0
     items = P15._chase_items(env.app, claim_id)

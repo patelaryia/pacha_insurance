@@ -11,10 +11,10 @@ narrowed to exactly two consumers — `ledger` and `temporal_intent` — so that
 rather than 49 multiplied by however many domain projections happen to be
 registered.
 
-`TEMPORAL_INTENT_MAPPINGS` is empty in T02, so the routing tests use the
-test-only `review.resolved` mapping and `ReviewWaitWorkflow` from
-`support.temporal`. Neither is exported or registered by production code, and
-`test_the_production_intent_mapping_registry_is_empty` pins that.
+The T02 routing tests deliberately construct only the test-owned
+`review.resolved` mapping and `ReviewWaitWorkflow` from `support.temporal`.
+T03's production chase mappings are covered by `test_temporal_t03.py` and are
+not registered in this older harness.
 
 Every Workflow ID is minted from a fresh ULID. Reusing one would collide with
 `REJECT_DUPLICATE` on a closed execution, and the suite must not depend on the
@@ -729,10 +729,26 @@ def test_fetched_histories_carry_no_seeded_sentinel_and_only_control_fields(
     assert present <= set(CONTROL_FIELDS)
 
 
-def test_the_production_intent_mapping_registry_is_empty():
-    """T02 ships no production business Workflow, so it maps nothing to one."""
+def test_the_production_intent_mapping_registry_is_the_t03_chase_surface():
+    """T03 adds only its start and opaque wake events to T02's bridge."""
 
-    assert TEMPORAL_INTENT_MAPPINGS == ()
+    assert {
+        (mapping.event_type, mapping.action, mapping.signal_name)
+        for mapping in TEMPORAL_INTENT_MAPPINGS
+    } == {
+        ("chase.workflow_requested", "start", None),
+        ("chase.item_requested", "signal", "pacha_event"),
+        ("chase.item_received", "signal", "document_received"),
+        ("chase.item_verified", "signal", "document_received"),
+        ("chase.item_rejected", "signal", "pacha_event"),
+        ("chase.item_waived", "signal", "pacha_event"),
+        ("chase.item_snoozed", "signal", "snooze_changed"),
+        ("chase.reminder_sent", "signal", "pacha_event"),
+        ("chase.complete", "signal", "pacha_event"),
+        ("chase.cancelled", "signal", "claim_terminal"),
+        ("chase.inbound_received", "signal", "inbound_received"),
+        ("chase.review_resolved", "signal", "review_resolved"),
+    }
 
 
 TEMPORAL_SUITES = (
@@ -740,6 +756,7 @@ TEMPORAL_SUITES = (
     REPO / "tests" / "unit" / "test_temporal_t02.py",
     REPO / "tests" / "integration" / "test_temporal_orchestration.py",
     REPO / "tests" / "integration" / "test_temporal_t02.py",
+    REPO / "tests" / "integration" / "test_temporal_t03.py",
 )
 
 

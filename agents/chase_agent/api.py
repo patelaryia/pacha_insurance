@@ -9,21 +9,10 @@ from fastapi import APIRouter, Header
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 
-from chase_agent.checklist import ChecklistService, aware
+from chase_agent.checklist import CHASE_ROLES, ChecklistService, aware
 from chase_agent.models import ChaseChecklist, ChaseItem
 from claim_core import ClaimCoreError, FieldWrite
 
-CHASE_ROLES = frozenset(
-    {
-        "claims_officer",
-        "asst_claims_manager",
-        "claims_manager",
-        "head_of_claims",
-        "gm",
-        "md",
-        "chairman",
-    }
-)
 ATTESTED_FIELDS = {
     "logbook_original": "salvage.logbook_held",
     "keys_physical": "salvage.keys_held",

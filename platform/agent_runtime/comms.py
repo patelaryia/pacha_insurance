@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -111,6 +111,32 @@ class CommunicationsService:
         if local.weekday() == 6 or local.strftime("%m-%d") in self.holidays:
             return False
         return time(8, 0) <= local.time().replace(tzinfo=None) < time(18, 0)
+
+    def next_send_window(self, now: datetime) -> datetime:
+        """Return the first AR-3a window instant at or after ``now``.
+
+        Durable Workflows persist this value on due chase rows when a governed
+        send reaches the communications service outside the window. Keeping the
+        calculation here gives ordinary sends and Temporal wake scheduling one
+        authoritative interpretation of the Mon–Sat/holiday rule.
+        """
+
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        if self._in_window(now):
+            return now
+        local = now.astimezone(EAT)
+        for offset in range(8):
+            candidate_date = local.date() + timedelta(days=offset)
+            if (
+                candidate_date.weekday() == 6
+                or candidate_date.strftime("%m-%d") in self.holidays
+            ):
+                continue
+            candidate = datetime.combine(candidate_date, time(8, 0), tzinfo=EAT)
+            if candidate > local:
+                return candidate.astimezone(UTC)
+        raise RuntimeError("AR-3a send window could not be resolved")
 
     def send(
         self,

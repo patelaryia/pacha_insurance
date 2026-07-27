@@ -41,7 +41,7 @@ from orchestration.contracts import (
     validate_control_field,
 )
 from orchestration.errors import ControlContractError
-from orchestration.ids import WorkflowRef
+from orchestration.ids import WorkflowRef, chase_workflow_ref
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime claim_core import
     from claim_core.models import Event
@@ -187,14 +187,61 @@ class TemporalIntentMapping:
             raise ControlContractError("action", "must be exactly 'start' or 'signal'")
 
 
-#: T02 registers no production mapping, and that is a decision rather than an
-#: omission. T02 ships no production business Workflow, so there is nothing for
-#: a start or Signal to reach: routing `review.resolved` to `LegacyAgentRun`,
-#: inventing a wildcard Workflow type or Signalling an execution that does not
-#: exist would each be a guess. T03 adds the first entry beside
-#: `DocumentChaseWorkflow`; T04–T06 extend this tuple beside their own types.
-#: The routing itself is proven now by a test-only mapping in `tests/support`.
-TEMPORAL_INTENT_MAPPINGS: tuple[TemporalIntentMapping, ...] = ()
+def _chase_workflow_id(event: Event) -> WorkflowRef:
+    """Resolve a chase event's checklist ULID without carrying its payload on."""
+
+    payload = event.payload
+    checklist_ref = payload.get("checklist_id") if isinstance(payload, dict) else None
+    if not isinstance(checklist_ref, str):
+        raise ControlContractError(
+            "checklist_ref", "a chase orchestration event requires checklist_id"
+        )
+    return chase_workflow_ref(checklist_ref)
+
+
+def _chase_mapping(
+    event_type: str,
+    *,
+    action: Literal["start", "signal"],
+    signal_name: str | None = None,
+) -> TemporalIntentMapping:
+    return TemporalIntentMapping(
+        event_type=event_type,
+        workflow_type="DocumentChaseWorkflow",
+        workflow_id_builder=_chase_workflow_id,
+        action=action,
+        signal_name=signal_name,
+        control_contract_type=ControlCommand if action == "start" else ControlSignal,
+    )
+
+
+#: T03's complete production routing surface. Every event carries checklist
+#: detail only in PostgreSQL; the bridge forwards either the generic
+#: `ControlCommand` or one opaque event ULID.
+TEMPORAL_INTENT_MAPPINGS: tuple[TemporalIntentMapping, ...] = (
+    _chase_mapping("chase.workflow_requested", action="start"),
+    _chase_mapping("chase.item_requested", action="signal", signal_name="pacha_event"),
+    _chase_mapping(
+        "chase.item_received", action="signal", signal_name="document_received"
+    ),
+    _chase_mapping(
+        "chase.item_verified", action="signal", signal_name="document_received"
+    ),
+    _chase_mapping("chase.item_rejected", action="signal", signal_name="pacha_event"),
+    _chase_mapping("chase.item_waived", action="signal", signal_name="pacha_event"),
+    _chase_mapping(
+        "chase.item_snoozed", action="signal", signal_name="snooze_changed"
+    ),
+    _chase_mapping("chase.reminder_sent", action="signal", signal_name="pacha_event"),
+    _chase_mapping("chase.complete", action="signal", signal_name="pacha_event"),
+    _chase_mapping("chase.cancelled", action="signal", signal_name="claim_terminal"),
+    _chase_mapping(
+        "chase.inbound_received", action="signal", signal_name="inbound_received"
+    ),
+    _chase_mapping(
+        "chase.review_resolved", action="signal", signal_name="review_resolved"
+    ),
+)
 
 
 class TemporalIntentConsumer:
