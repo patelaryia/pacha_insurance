@@ -9,10 +9,6 @@ seam, the PRD-01 pipeline runs on injected fakes, and time is a FixedClock
 (all instants fall inside the AR-3a send window). Template bodies stay
 `pending_capture` (item 6/#61): every request/reminder/re-request terminates
 in a visible staged draft — `chase.reminder_sent` never fires here (#157).
-
-Owner-reissued for T03 on 2026-07-27: orchestration is driven through the six
-production Temporal Activity seams; the removed polling `tick()` path is not
-part of this contract.
 """
 from __future__ import annotations
 
@@ -25,8 +21,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import yaml
 from sqlalchemy import text
-
-from orchestration.contracts import ControlCommand
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MOTOR_PACK = REPO / "packs" / "motor"
@@ -403,122 +397,10 @@ def _reply(env: Env, *, body: str, attachments=()) -> None:
     _advance(env)
 
 
-def _drive_chase(env: Env, claim_id: str) -> dict:
-    """Drive one deterministic Workflow decision through production Activities."""
-
-    checklist = _checklists(env.app, claim_id)[0]
-    checklist_id = checklist["id"]
-    with env.app.state.engine.begin() as connection:
-        run_id = connection.execute(
-            text("SELECT id FROM agent_runs WHERE workflow_id = :workflow_id"),
-            {"workflow_id": f"pacha.chase.{checklist_id}"},
-        ).scalar_one()
-        connection.execute(
-            text(
-                "UPDATE agent_runs SET status = 'running' "
-                "WHERE id = :run_id AND status = 'pending'"
-            ),
-            {"run_id": run_id},
-        )
-
-    activities = env.app.state.chase_agent.temporal_activities(
-        worker_build_id="a" * 40
-    )
-    command = ControlCommand(
-        run_ref=run_id,
-        claim_ref=claim_id,
-        checklist_ref=checklist_id,
-    )
-    before_drafts = len(_drafts(env.app, claim_id, "chase.reminder"))
-    before_escalations = len(
-        _items(
-            env.app,
-            claim_id=claim_id,
-            type="EXCEPTION",
-            subtype="chase_exhausted",
-        )
-    )
-    before_wakes = {
-        row["id"]: row["next_reminder_at"]
-        for row in _rows(
-            env.app,
-            "SELECT ci.id, ci.next_reminder_at FROM chase_items ci "
-            "WHERE ci.checklist_id = :checklist_id",
-            checklist_id=checklist_id,
-        )
-    }
-
-    state = activities._load(command)  # noqa: SLF001 - owner acceptance seam
-    if state.step_id == "chase_initial_request":
-        activities._governed_send(  # noqa: SLF001 - owner acceptance seam
-            ControlCommand(
-                run_ref=run_id,
-                claim_ref=claim_id,
-                checklist_ref=checklist_id,
-                write_id=f"chase:{checklist_id.lower()}:0",
-                step_id=state.step_id,
-            )
-        )
-    elif state.step_id == "chase_reminder":
-        activities._governed_send(  # noqa: SLF001 - owner acceptance seam
-            ControlCommand(
-                run_ref=run_id,
-                claim_ref=claim_id,
-                checklist_ref=checklist_id,
-                write_id=(
-                    f"chase:{checklist_id.lower()}:{state.attempt_no}"
-                ),
-                step_id=state.step_id,
-            )
-        )
-    elif state.step_id == "chase_exhausted":
-        activities._create_exception(  # noqa: SLF001 - owner acceptance seam
-            command
-        )
-    elif state.step_id == "chase_terminal":
-        activities._record_terminal(  # noqa: SLF001 - owner acceptance seam
-            ControlCommand(
-                run_ref=run_id,
-                claim_ref=claim_id,
-                checklist_ref=checklist_id,
-                event_ref=state.event_ref,
-            )
-        )
+def _tick(env: Env) -> dict:
+    result = env.app.state.chase_agent.tick()
     _drain(env.app)
-    after_wakes = {
-        row["id"]: row["next_reminder_at"]
-        for row in _rows(
-            env.app,
-            "SELECT ci.id, ci.next_reminder_at FROM chase_items ci "
-            "WHERE ci.checklist_id = :checklist_id",
-            checklist_id=checklist_id,
-        )
-    }
-
-    deferred = 0
-    for item_id, before in before_wakes.items():
-        after = after_wakes.get(item_id)
-        if before is None or after is None:
-            continue
-        before_at = (
-            before if isinstance(before, datetime) else datetime.fromisoformat(before)
-        )
-        after_at = after if isinstance(after, datetime) else datetime.fromisoformat(after)
-        if after_at > before_at:
-            deferred += 1
-    return {
-        "sent": len(_drafts(env.app, claim_id, "chase.reminder")) - before_drafts,
-        "deferred": deferred,
-        "escalated": len(
-            _items(
-                env.app,
-                claim_id=claim_id,
-                type="EXCEPTION",
-                subtype="chase_exhausted",
-            )
-        )
-        - before_escalations,
-    }
+    return result
 
 
 def _at(env: Env, days: int, hours: int = 0) -> None:
@@ -562,7 +444,6 @@ def _walk(env: Env, claim_id: str, states: list[str]) -> None:
 def test_chase_init_instantiates_checklist_and_stages_t06_request(tmp_path):
     env = _build(tmp_path, "instantiate", model=_intimation_model())
     claim_id = _to_checklist(env)
-    _drive_chase(env, claim_id)
 
     checklist = _checklists(env.app, claim_id)[0]
     assert checklist["status"] == "open"
@@ -617,7 +498,6 @@ def test_scenario_1_three_docs_verified_reminder_lists_outstanding_four(tmp_path
     })
     env = _build(tmp_path, "scenario-1", model=model)
     claim_id = _to_checklist(env)
-    _drive_chase(env, claim_id)
 
     _reply(env, body="Claim form attached",
            attachments=(("form.pdf", "application/pdf",
@@ -649,7 +529,7 @@ def test_scenario_1_three_docs_verified_reminder_lists_outstanding_four(tmp_path
     assert len(open_clocks) == 4
 
     _at(env, days=3, hours=1)
-    result = _drive_chase(env, claim_id)
+    result = _tick(env)
     assert result["sent"] == 1
 
     reminders = _drafts(env.app, claim_id, "chase.reminder")
@@ -666,8 +546,8 @@ def test_scenario_1_three_docs_verified_reminder_lists_outstanding_four(tmp_path
     assert items["claim_form"]["reminder_count"] == 0
     assert _events(env.app, "email.sent") == []
 
-    # Same instant, drive again: nothing newly due — no duplicate reminder.
-    assert _drive_chase(env, claim_id)["sent"] == 0
+    # Same instant, tick again: nothing newly due — no duplicate reminder.
+    assert _tick(env)["sent"] == 0
     assert len(_drafts(env.app, claim_id, "chase.reminder")) == 1
 
 
@@ -707,7 +587,6 @@ def test_scenario_2_illegible_logbook_rejected_with_defect_rerequest(tmp_path):
 def test_scenario_3_declined_mid_chase_sends_zero_further_reminders(tmp_path):
     env = _build(tmp_path, "scenario-3", model=_intimation_model())
     claim_id = _to_checklist(env)
-    _drive_chase(env, claim_id)
 
     # Complete triage (no estimate: R-02 stays visibly blocked — #149) and
     # decline from TRIAGED (PRD-00 §0.4 standard path).
@@ -746,11 +625,11 @@ def test_scenario_3_declined_mid_chase_sends_zero_further_reminders(tmp_path):
     assert _events(env.app, "chase.cancelled", claim_id)
 
     _at(env, days=3, hours=1)
-    result = _drive_chase(env, claim_id)
+    result = _tick(env)
     assert result["sent"] == 0
     assert _drafts(env.app, claim_id, "chase.reminder") == []
     _at(env, days=10)
-    assert _drive_chase(env, claim_id)["sent"] == 0
+    assert _tick(env)["sent"] == 0
     assert _drafts(env.app, claim_id, "chase.reminder") == []
 
 
@@ -853,7 +732,6 @@ def test_scenario_4_surrender_gate_blocks_settlement_until_attested(tmp_path):
 def test_scenario_5_cadence_ladder_deferral_and_cap_escalation(tmp_path):
     env = _build(tmp_path, "scenario-5", model=_intimation_model())
     claim_id = _to_checklist(env)
-    _drive_chase(env, claim_id)
     insured_party = _rows(
         env.app,
         "SELECT id FROM parties WHERE claim_id = :c AND role = 'insured'",
@@ -862,7 +740,7 @@ def test_scenario_5_cadence_ladder_deferral_and_cap_escalation(tmp_path):
 
     # Reminder 1 at T+3d: requester only.
     _at(env, days=3, hours=1)
-    assert _drive_chase(env, claim_id)["sent"] == 1
+    assert _tick(env)["sent"] == 1
     first = _drafts(env.app, claim_id, "chase.reminder")[0]
     assert insured_party not in first["payload"]["action"]["payload"]["to_party_ids"]
 
@@ -871,7 +749,7 @@ def test_scenario_5_cadence_ladder_deferral_and_cap_escalation(tmp_path):
     _at(env, days=7, hours=-1)
     _reply(env, body="Thanks, we are gathering the remaining documents")
     _at(env, days=7, hours=1)
-    deferred = _drive_chase(env, claim_id)
+    deferred = _tick(env)
     assert deferred["sent"] == 0
     assert deferred["deferred"] >= 1
     assert len(_drafts(env.app, claim_id, "chase.reminder")) == 1
@@ -879,21 +757,21 @@ def test_scenario_5_cadence_ladder_deferral_and_cap_escalation(tmp_path):
     # Past the deferral window the reminder goes out; insured joins from
     # reminder 2 (#168 recipient ladder).
     _at(env, days=9, hours=2)
-    assert _drive_chase(env, claim_id)["sent"] == 1
+    assert _tick(env)["sent"] == 1
     second = _drafts(env.app, claim_id, "chase.reminder")[1]
     assert insured_party in second["payload"]["action"]["payload"]["to_party_ids"]
 
     # Walk the remaining cadence to the cap of six.
     for days in (12, 19, 26, 33):
         _at(env, days=days, hours=1)
-        assert _drive_chase(env, claim_id)["sent"] == 1
+        assert _tick(env)["sent"] == 1
     assert len(_drafts(env.app, claim_id, "chase.reminder")) == 6
     items = _chase_items(env.app, claim_id)
     assert all(items[item_id]["reminder_count"] == 6 for item_id in BASE_ITEM_IDS)
 
     # Beyond the cap: no seventh reminder — one idempotent escalation item.
     _at(env, days=40, hours=1)
-    result = _drive_chase(env, claim_id)
+    result = _tick(env)
     assert result["sent"] == 0
     assert result["escalated"] >= 1
     assert len(_drafts(env.app, claim_id, "chase.reminder")) == 6
@@ -903,7 +781,7 @@ def test_scenario_5_cadence_ladder_deferral_and_cap_escalation(tmp_path):
     assert len(exhausted) == 1
     assert set(exhausted[0]["payload"]["items"]) == set(BASE_ITEM_IDS)
     _at(env, days=47, hours=1)
-    _drive_chase(env, claim_id)
+    _tick(env)
     assert len(_items(
         env.app, claim_id=claim_id, type="EXCEPTION", subtype="chase_exhausted"
     )) == 1
@@ -921,7 +799,6 @@ def test_scenario_6_analytics_series_return_non_null_medians(tmp_path):
     })
     env = _build(tmp_path, "scenario-6", model=model)
     claim_id = _to_checklist(env)
-    _drive_chase(env, claim_id)
     _at(env, days=1, hours=2)
     _reply(env, body="Claim form attached",
            attachments=(("form.pdf", "application/pdf",
