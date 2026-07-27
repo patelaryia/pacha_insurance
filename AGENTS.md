@@ -22,7 +22,14 @@ any conflict, the earlier document wins**:
   substrate; nothing compiles without it. PRD-03's grader/autonomy machinery must
   exist before any agent PRD (AR-2 routes every side-effect through capability levels).
 - **Phase 2:** PRD-05 → PRD-06 → PRD-07 → PRD-08 → PRD-09.
-- **Phase 3:** PRD-10 → PRD-11 → PRD-12 (gated by GP-1) → PRD-13 continuous.
+- **Temporal implementation approval (2026-07-24):** the CTO/owner approved
+  Temporal on technical, privacy, operations and procurement grounds. Implement
+  T01→T08 in `docs/architecture/TEMPORAL_IMPLEMENTATION_MASTER_PLAN.md` before
+  further Phase-3 workflow work. Pacha is not live: do not build a dual runtime;
+  remove Celery/Redis orchestration before launch. T09/T10 Cloud deployment and
+  evidence remain the separate go-live gate. PACKET-21/22 still require reissue.
+- **Phase 3 after T08:** PRD-10 → PRD-11 auction-provider integration → PRD-12
+  (also gated by GP-1) → PRD-13 continuous.
 - Pack scaffolding (PRD-13) is built alongside Phase 1.
 
 One PR per coherent unit of work. Keep PRs reviewable.
@@ -56,17 +63,24 @@ repo are marked **[gated]**; the rest you must uphold and the reviewer checks.
    `EXCEPTION` subtypes; each ships its four-part contract + versioned resolution schema.
 10. **Ledger is single-writer (PRD-00).** All audit appends via the concurrency=1 queue.
 11. **Autonomy ceilings are hard-coded constitution** (see invariant 11 in the guide).
-12. **Portal isolation (PRD-11).** Only the `lot_public` whitelist crosses the
-    portal boundary; the insured-name-grep test must pass on every portal response.
+12. **Auction-provider isolation (PRD-11).** Only the `lot_export` whitelist
+    crosses the provider boundary; every outbound artifact must pass the
+    insured/policy-identifier scan. Pacha exposes no bidder portal.
+13. **Workflow-history minimisation (AR-1).** Temporal receives opaque ids,
+    hashes, statuses and non-sensitive control data only — never claim
+    documents, extracted claim facts, customer/bank details or other PII.
 
 ## 4. Conventions (ED-1/ED-2, guide §4)
 
 - **Layout:** monorepo `platform/`, `agents/`, `packs/`, `console/`, `infra/`.
   Each PRD = one Python package with a public interface; cross-package imports go
   through those interfaces only.
-- **Stack:** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 + Alembic; Celery 5
-  on Redis 7. Frontend: React 18 + TS + Vite. **ULIDs** everywhere. UTC storage,
-  EAT rendering. British English in generated prose.
+- **Stack:** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 + Alembic.
+  Temporal Cloud is the selected durable workflow engine only after ADR-001's
+  reliability, security/DPIA, procurement and owner-approval gate. Existing
+  Celery 5/Redis 7 remains intact and frozen in the interim. Frontend: React 18
+  + TS + Vite. **ULIDs** everywhere. UTC storage, EAT rendering. British
+  English in generated prose.
 - **Config over code:** model IDs, budgets, sampling rates, SLAs, thresholds,
   click-paths, templates, rules are **data** in the pack, never hard-coded.
 - **Schemas are DDL-level spec:** column names, types, comments are binding. Add a

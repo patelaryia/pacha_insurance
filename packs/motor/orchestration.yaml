@@ -1,0 +1,47 @@
+# Durable-orchestration retry data for the motor pack.
+#
+# The ceilings these values sit under are hard-coded in
+# `platform/orchestration/policies.py` from the master plan's section 12 error
+# and retry constitution. Pack data may tighten any bound; the loader rejects
+# the file outright if a value widens one, adds a key, or omits a policy.
+#
+# `governed_external_write` and `provider_managed_retry` are fixed at a single
+# Temporal attempt. An uncertain external write becomes EXCEPTION{uncertain_write}
+# and is never retried automatically (PRD-09); the ED-4a provider wrapper owns
+# its own bounded retries and Temporal must not multiply them.
+version: 1
+retry_policies:
+  # Postgres reads/writes and control Activities: idempotent, safe to retry.
+  db_control:
+    initial_interval: 1s
+    backoff_coefficient: 2.0
+    maximum_interval: 30s
+    maximum_attempts: 5
+    start_to_close_timeout: 60s
+
+  # OCR, vision and document stages on the docintel queue.
+  long_compute:
+    initial_interval: 2s
+    backoff_coefficient: 2.0
+    maximum_interval: 30s
+    maximum_attempts: 3
+    start_to_close_timeout: 2h
+    heartbeat_timeout: 30s
+
+  # Activities that call the ED-4a provider wrapper, which retries internally.
+  provider_managed_retry:
+    maximum_attempts: 1
+    start_to_close_timeout: 10m
+
+  # `execute_or_stage` governed effects. One attempt, always.
+  governed_external_write:
+    maximum_attempts: 1
+    start_to_close_timeout: 2m
+
+  # Single-writer audit ledger appends behind the advisory lock.
+  ledger_append:
+    initial_interval: 1s
+    backoff_coefficient: 2.0
+    maximum_interval: 10s
+    maximum_attempts: 5
+    start_to_close_timeout: 60s

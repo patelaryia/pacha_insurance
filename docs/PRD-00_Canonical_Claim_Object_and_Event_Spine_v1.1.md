@@ -113,7 +113,15 @@ CREATE TABLE event_deliveries (              -- at-least-once + idempotent consu
 );
 ```
 
-Mechanics: **transactional outbox**. Event rows are written in the same transaction as the state change; a Celery dispatcher (poll every 2s, `FOR UPDATE SKIP LOCKED`) fans out to registered consumers; consumers are idempotent (dedupe on `(event_id, consumer)`); retry with exponential backoff, max 8 attempts, then dead-letter + ops alert. No Kafka, no Temporal — Postgres is the bus at this volume, and durability comes free.
+Mechanics: **transactional outbox**. Event rows are written in the same
+transaction as the state change; PostgreSQL remains the authoritative event
+record and integration bus. Registered consumers are idempotent (dedupe on
+`(event_id, consumer)`); retry with exponential backoff, max 8 attempts, then
+dead-letter + ops alert. T02 implements the binding Temporal bridge: the outbox
+starts or Signals Workflows with stable IDs, Temporal history never replaces
+events, and a delivery succeeds only after the start/Signal is accepted. T07
+drives the dispatcher with the 30-second Temporal Schedule fixed in the master
+plan; T08 removes the Celery driver.
 
 **Replay cursor:** the external replay API (`GET /events`) orders by `seq` and serves only rows older than a **5-second watermark** (closes the late-commit visibility gap under concurrent writers without fencing machinery). ULIDs remain the identity; `seq` is transport order only. Internal dispatch is unaffected (single outbox reader). The `after_ulid` parameter in §0.7 is replaced by `after_seq`.
 
@@ -132,7 +140,10 @@ Mechanics: **transactional outbox**. Event rows are written in the same transact
 |Autonomy/eval|`grader.passed`, `grader.failed`, `autonomy.promoted`, `autonomy.demoted`|
 |Comms|`email.received`, `email.sent`|
 
-Long-running waits (document chase, repair, bid windows) are **not** blocked threads: they are SLA clock rows + Beat ticks that emit events. Nothing in the system sleeps.
+Long-running waits (document chase, repair and provider-result deadlines) are
+**not** blocked threads. T03 onward implements them as Temporal durable timers
+that emit Pacha events through Activities. Pacha clock rows and events remain
+authoritative and no Worker sleeps.
 
 ### 0.4 Claim lifecycle FSM
 
@@ -183,13 +194,24 @@ Parallel trackers (independent of FSM, shown on the status rail): document check
 | repair_duration | calendar | warn 14d |
 | bid_window | calendar (close is a published fixed timestamp) | fixed 4d |
 
-The Kenya public-holiday calendar ships in the pack (`sla/holidays.yaml`), annually maintained. Beat tick every 5 minutes evaluates open clocks → emits `sla.warned` / `sla.breached` → PRD-04 renders + escalates. Every clock row keeps started/stopped timestamps — **this table is the outcome-pricing baseline dataset**; it is never purged.
+The Kenya public-holiday calendar ships in the pack (`sla/holidays.yaml`),
+annually maintained. T02 implements `SlaEvaluationWorkflow`; T07 installs its
+five-minute Temporal Schedule. It evaluates open clocks → emits `sla.warned` /
+`sla.breached` → PRD-04 renders + escalates. Every clock row keeps
+started/stopped timestamps — **this table is the outcome-pricing baseline
+dataset**; it is never purged.
 
 ### 0.6 Audit ledger
 
 Separate append-only table `audit_ledger(id, seq BIGSERIAL, occurred_at, actor, action, claim_id, object_ref, before_hash, after_hash, detail JSONB, row_hash)` where `row_hash = SHA256(prev.row_hash ‖ canonical_json(row))` — a hash chain making tampering evident. Written for: every field version, every FSM transition, every LLM call (model, prompt template id, token counts, redacted payload ref), every outbound email, every projection write, every autonomy change, every human review action. Nightly job re-verifies chain integrity and anchors the day's head hash into S3 Object-Lock (WORM). This is the DPA/IRA/ISO-27001 substrate and the anti-tamper answer that matches Mayfair's existing PDF-only posture.
 
-**Serialization (binding):** all ledger appends flow through the event spine to **one dedicated Celery queue with `concurrency=1`**; that single consumer assigns `seq` from its own counter and computes the hash chain. No other code path writes `audit_ledger`. Gaps and commit-order races are structurally impossible.
+**Serialization (binding):** all ledger appends flow through the event spine to
+**one Pacha-owned single-writer consumer**; it assigns `seq` from its own counter
+and computes the hash chain. Today that is the dedicated Celery queue with
+`concurrency=1`; any approved Temporal migration must preserve one-at-a-time
+serialization in Pacha and may not place ledger contents in Workflow history.
+No other code path writes `audit_ledger`. Gaps and commit-order races are
+structurally impossible.
 
 **On nightly verification failure — audit-degraded mode:** (a) autonomy promotions frozen platform-wide; (b) every L3+ action is additionally dual-written directly to the S3 WORM anchor until the chain is repaired and re-verified; (c) ops paged; (d) incident review is mandatory before promotions unfreeze. **No automatic demotions** — the failure is in the ledger, not the agents.
 

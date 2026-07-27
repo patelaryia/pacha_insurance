@@ -1,108 +1,232 @@
-## PRD-11 — Salvage Auction Platform (build spec)
+## PRD-11 — Salvage Auction Provider Integration (build spec)
 
-> **v1.1** — incorporates the CTO decision round of 2026-07. Where this document conflicts with Section 0 (Shared Engineering Decisions) or Section 0.5 (Shared Agent Runtime), those files win. Anything underdetermined: follow ED-11 (never decide locally — route to the open-items register).
+> **v1.1, architecture freeze 2026-07-24** — supersedes the custom
+> bidder-facing portal with ADR-004's established auction-provider strategy.
+> Where this document conflicts with Section 0 or Section 0.5, those files win.
+> Anything underdetermined: follow ED-11.
 
-### 11.1 Purpose
+### 11.1 Purpose and boundary
 
-Digitise the salvage disposal loop: ICON salvage registration → published lot → sealed bids from onboarded yards → committee award with counter-offers → client election and surrender gates → recovery captured to the savings ledger. Deletes the physical file (W-08) and the ≥4-day paper bid cycle, and creates the recovery dataset. This is the platform's only externally-facing surface — treat it as hostile territory.
+Pacha governs write-off eligibility, retain/surrender election, lot readiness,
+the approved minimal lot export, committee award, verified result import,
+settlement gates and recovery measurement.
 
-### 11.2 Architecture & security posture
+An established auction provider owns bidder authentication, bidder KYC, bid
+submission and sealing, bidder-facing security, auction hosting, counter-offer
+transport, bidder support and external penetration testing of its service.
+Pacha exposes no bidder portal, magic links, bidder sessions, bid-submission API
+or bidder-support surface.
 
-Same monolith, separate FastAPI router + separate React bundle served at `bids.<domain>` behind its own CloudFront distribution. **No SSO, no Mayfair identities**: bidders authenticate by magic link (single-use token, 15-min validity, bound to bidder email; session cookie 24h, httpOnly). **Auth surfaces (v1.1):** per-lot invitation links **plus** a bidder-initiated login page (email → magic link) showing only that bidder's invited open lots and own bid history — **nothing else exists between lots**. **Edge stack (v1.1):** AWS WAF (managed core rule set + known-bad-inputs) + rate rule 100 req/5min/IP in front of the portal CloudFront distribution, in addition to the per-bidder application rate limit below. **Pen test (v1.1):** external firm, before the first live lot; scope = OWASP ASVS Level 1 plus the §11.6(5) checks; pass bar = **zero open high/critical findings**. Hard isolation rules, enforced at the router layer and covered by tests: portal endpoints can only read a `lot_public` projection (whitelist: photos via 1h signed URLs, make/model/year, reg, damage summary, yard location, window times) — **no insured name, no claim id, no policy data ever crosses this boundary**; lots addressed by `public_ref` (ULID, unguessable), no enumeration endpoint; per-bidder rate limits (10 req/min), `X-Robots-Tag: noindex`, every bidder action ledgered. Reg plate stays visible — it's in the current bid letters and yards need it; strip everything else.
+The first pilot may use controlled CSV/PDF export and CSV/PDF or manually
+attested results. An API is optional. No provider is selected without an RFI,
+commercial/security due diligence, data-processing review and DPIA approval.
+
+### 11.2 Provider-boundary security
+
+Only an approved `lot_export` projection crosses the provider boundary:
+
+`photos, vehicle.make, vehicle.model, vehicle.year, vehicle.reg,
+damage_summary, yard_location, window_instructions`.
+
+Claim id, insured identity, policy data, bank data, contact data, internal
+reserves, authority commentary and all other claim facts are prohibited.
+Outbound artifacts are generated from the whitelist, hash-pinned, encrypted in
+transit, access-logged and scanned for insured/policy identifiers before
+release. A failed scan refuses export. Provider result files are immutable
+artifacts, quarantined until GuardDuty Malware Protection for S3 reports them
+safe, schema-validated and retained with their attestation and hash.
+
+An API integration, if later selected, uses least-privilege service identity,
+stable request idempotency, signed responses where available and the same
+export/import validation. It cannot broaden the whitelist.
 
 ### 11.3 Data model
 
-sql
-
 ```sql
-CREATE TABLE bidders (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, emails JSONB NOT NULL, phone TEXT,
-  kyc_status TEXT NOT NULL DEFAULT 'pending',   -- 'pending'|'verified'|'suspended'
-                                                -- v1.1: verification is review item type KYC_VERIFY
-                                                -- (officer reviews docs; resolution sets status)
-  kyc_docs JSONB,                               -- cert of inc, KRA PIN, ID — reuse PRD-01 schemas
-  bond JSONB,                                   -- {required: bool, amount, held: bool} ❓ODQ-8
+CREATE TABLE salvage_lots (
+  id TEXT PRIMARY KEY, claim_id TEXT NOT NULL,
+  status TEXT NOT NULL,        -- 'draft'|'ready'|'exported'|'results_received'|
+                               -- 'under_review'|'awarded'|'cancelled'|'exception'
+  provider_ref TEXT,           -- opaque provider reference after verified import
+  description TEXT, yard_location TEXT, photo_doc_ids JSONB,
+  reserve_estimate BIGINT,     -- nullable assessor salvage_value; Pacha-only
+  window_opens_at TIMESTAMPTZ, window_closes_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL
 );
-CREATE TABLE salvage_lots (
-  id TEXT PRIMARY KEY, public_ref TEXT UNIQUE NOT NULL, claim_id TEXT NOT NULL,
-  status TEXT NOT NULL,   -- 'draft'|'published'|'closed'|'under_review'|'awarded'|'cancelled'
-  icon_salvage_no TEXT,   -- readback from icon.salvage_register (PRD-09 op)
-  description TEXT, yard_location TEXT, photo_doc_ids JSONB,
-  reserve_estimate BIGINT,          -- assessor salvage_value; committee-only, never portal.
-                                    -- NULLABLE (v1.1): assessor may give no salvage value — see S9
-  window_opens_at TIMESTAMPTZ, window_closes_at TIMESTAMPTZ,
-  awarded_bid_id TEXT, created_at TIMESTAMPTZ NOT NULL
+
+CREATE TABLE auction_exports (
+  id TEXT PRIMARY KEY, lot_id TEXT NOT NULL REFERENCES salvage_lots(id),
+  format TEXT NOT NULL,        -- 'csv'|'pdf'|'api'
+  artifact_ref TEXT NOT NULL, payload_hash TEXT NOT NULL,
+  whitelist_version TEXT NOT NULL,
+  status TEXT NOT NULL,        -- 'prepared'|'approved'|'released'|'rejected'
+  approved_by TEXT, released_at TIMESTAMPTZ,
+  UNIQUE (lot_id, payload_hash)
 );
-CREATE TABLE bids (       -- v1.1: append-only, claim_fields pattern (unique constraint replaced)
-  id TEXT PRIMARY KEY, lot_id TEXT NOT NULL, bidder_id TEXT NOT NULL,
-  amount BIGINT NOT NULL, submitted_at TIMESTAMPTZ NOT NULL,
-  status TEXT NOT NULL,   -- 'sealed'|'revealed'|'awarded'|'declined'|'countered'|'withdrawn'
-  superseded_by TEXT REFERENCES bids(id),   -- amendment = new row superseding prior
-  in_counter BOOLEAN NOT NULL DEFAULT false -- true only for rows created by the counter flow (S7)
+
+CREATE TABLE auction_result_imports (
+  id TEXT PRIMARY KEY, lot_id TEXT NOT NULL REFERENCES salvage_lots(id),
+  source_kind TEXT NOT NULL,   -- 'csv'|'pdf'|'manual_attestation'|'api'
+  artifact_ref TEXT, source_hash TEXT NOT NULL,
+  provider_ref TEXT,
+  status TEXT NOT NULL,        -- 'quarantined'|'pending_verification'|'verified'|
+                               -- 'exception'
+  attested_by TEXT, attested_at TIMESTAMPTZ,
+  imported_at TIMESTAMPTZ NOT NULL,
+  UNIQUE (lot_id, source_hash)
 );
-CREATE UNIQUE INDEX ux_bids_live ON bids (lot_id, bidder_id) WHERE superseded_by IS NULL;
--- Amendment rules (v1.1, binding): amendments allowed ONLY while lot.status='published'.
--- After close, the only path is the counter flow: a countered bidder's accept/rebid creates
--- a new row flagged in_counter=true; non-countered bidders cannot move.
-CREATE TABLE lot_messages (          -- committee ↔ bidder negotiation thread, post-close only
-  id TEXT PRIMARY KEY, lot_id TEXT, bidder_id TEXT, direction TEXT,
-  body TEXT, sent_by TEXT, occurred_at TIMESTAMPTZ
+
+CREATE TABLE auction_result_rows (
+  id TEXT PRIMARY KEY,
+  import_id TEXT NOT NULL REFERENCES auction_result_imports(id),
+  provider_bid_ref TEXT,       -- opaque; required when supplied by provider
+  bidder_alias TEXT,           -- provider-visible alias only; no Pacha KYC profile
+  amount BIGINT NOT NULL,      -- KES cents
+  rank INT,
+  status TEXT NOT NULL,        -- 'offered'|'withdrawn'|'countered'|'final'
+  source_row_ref TEXT NOT NULL
 );
+
+CREATE TABLE auction_awards (
+  id TEXT PRIMARY KEY, lot_id TEXT NOT NULL REFERENCES salvage_lots(id),
+  result_row_id TEXT NOT NULL REFERENCES auction_result_rows(id),
+  status TEXT NOT NULL,        -- 'proposed'|'approved'|'rejected'
+  decision_evidence JSONB NOT NULL,
+  decided_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX ux_auction_award_approved
+  ON auction_awards (lot_id) WHERE status='approved';
 ```
 
-### 11.4 Flow (capability set `salvage.*`)
+Result rows are append-only. Import correction is a new immutable import; Pacha
+never edits provider evidence in place. An ambiguous duplicate provider
+reference, amount, lot match or result version creates
+`EXCEPTION{auction_result_ambiguous}` and blocks award.
 
-```
-S1 register     on FSM→WRITE_OFF: project icon.salvage_register (SI, PAV, agreed
-                salvage value, location — click-path per PRD-09 §9.4) → salvage
-                number readback. Paste-assist until RPA lands.
-S2 notify       client write-off letter T-12 ❓capture: 50% rule, yard storage,
-                retain/surrender election + deadline. DRAFT_RELEASE at launch.
-S3 election     client response → officer records election (console action).
-                DEADLINE (v1.1): 14 days (pack config); on silence → escalation
-                review item at T+14 — NEVER auto-surrender (legal posture).
-                  retained  → C-07 retained variant; lot cancelled/never published;
-                              skip to PRD-12 with DV = PAV/SI-capped − excess − salvage_value
-                  surrendered → surrender checklist instantiated (PRD-06 §6.5:
-                              logbook original, keys, Cert of Inc, KRA PIN,
-                              + bank_discharge_letter when R-14 trips) AND auction proceeds
-S4 publish      lot composed from claim (photos, damage summary auto-drafted from
-                assessor report — MODEL_LIGHT, officer confirms); bid invitation
-                T-02 rendered → emailed to all verified bidders with portal link.
-                Window: opens on publish, closes +4 days (pack config, ≥ current
-                practice floor). Beat job auto-closes at window_closes_at.
-S5 sealed bids  bidders submit/amend until close. Sealing is enforced server-side:
-                committee/officer endpoints return 403 on bid reads while
-                status='published' — no UI-only hiding. Bidder sees only own bid.
-S6 review       on close: reveal, rank desc, present committee console (S-3 variant):
-                bid table, reserve_estimate, spread vs estimate. Committee =
-                head_of_claims + md + gm; award requires 2-of-3 approvals
-                (quorum ❓ODQ-8 confirm; default 2-of-3), each ledgered.
-S7 counter      optional: committee counters top bidder(s) via lot_messages →
-                portal + email notification; bidder accept/decline/rebid within
-                48h; accept = new bid row at counter amount (in_counter=true).
-                EXPIRY (v1.1): a Beat job closes counters at 48h → status
-                'counter_expired', committee notified.
-S8 award        winner notified (T-02b award letter ❓); payment collection is
-                OFFLINE v1 — officer marks 'payment received' (attested, ledgered);
-                collection/release-to-yard note gated on that mark.
-S9 recovery     savings_ledger row: kind='salvage_recovery',
-                baseline=reserve_estimate, achieved=awarded amount, evidence=
-                {lot_id, bid_id, committee approvals}. Recovery-rate tile on S-4.
-                NO-BASELINE CASE (v1.1): reserve_estimate NULL → write the row with
-                baseline := awarded, saving = 0, evidence flag no_baseline: true —
-                dataset completeness without fabricated savings.
-S10 gate        settlement path continues only when surrender checklist complete
-                (R-13/R-14 — FSM guard, already built in PRD-06/00).
+### 11.4 Flow
+
+```text
+S1 register     on FSM→WRITE_OFF: project icon.salvage_register through PRD-09;
+                keep paste-assist until an executor operation is accepted.
+S2 notify       client write-off letter T-12 (pending capture); human release.
+S3 election     officer records retain/surrender. Deadline remains 14 days in
+                pack config; silence creates review and NEVER auto-surrenders.
+                retained → C-07 retained variant; no auction export.
+                surrendered → blocking PRD-06 surrender checklist + lot draft.
+S4 readiness    require verified election, approved lot fields/photos, yard,
+                window instructions and provider selection. Missing provider or
+                format → blocked_on_inputs. Internal reserve never enters export.
+S5 export       generate CSV/PDF from lot_export only; run identifier scan;
+                officer approves; release with hash and attestation. API may
+                replace transport later without changing payload authority.
+S6 provider     provider runs KYC, sealed bids, counter offers and bidder support.
+                Pacha records only deadline/operational status; it never receives
+                live sealed bids or exposes a bidder surface.
+S7 import       receive provider results, quarantine/scan, hash, schema-validate,
+                match exact lot/provider ref, normalise money to KES cents and
+                require a provider report or human attestation.
+S8 verify       compare result totals/ranks and provider evidence. Missing,
+                malformed, duplicate or ambiguous data → EXCEPTION; never select.
+S9 award        committee reviews verified final results and decides. Award is
+                not a capability and never automatic. Quorum remains
+                blocked_on_inputs until Mayfair confirms it; no default quorum.
+                Provider owns winner/counter-offer transport; Pacha exports or
+                records the approved instruction and imports final confirmation.
+S10 recovery    write savings_ledger salvage_recovery from the verified final
+                result and committee award. If reserve_estimate is NULL, use
+                baseline=awarded, saving=0, evidence.no_baseline=true.
+S11 gate        settlement proceeds only when the surrender checklist and
+                R-13/R-14 are complete.
 ```
 
-No-bid outcome: window closes with zero bids → `EXCEPTION{type: no_bids}` → committee chooses republish (new window) or direct-negotiation (offline, officer records outcome). Do not auto-extend windows.
+No-result/no-bid outcome creates `EXCEPTION{no_bids}`. The committee may approve
+a new provider window or an offline direct-negotiation record; Pacha never
+auto-extends a provider auction.
 
-### 11.5 Capabilities
+### 11.5 EXCEPTION subtype contracts
 
-`salvage.register` (max L4, launch L1) · `salvage.publish` (max L3 — external publication, sampled forever) · `salvage.close_and_rank` (max L4 — deterministic clock + sort, fast-track L3) · `salvage.award` — **not a capability**; committee-only human action by construction, same class as approval authority · `salvage.recovery_ledger` (L4).
+Both cases use PRD-04's existing `EXCEPTION` review-item type; they do not add a
+review-item enum member.
 
-### 11.6 Acceptance
+**`auction_result_ambiguous` v1:** (1) produced by
+`auction.result_import_ambiguous` with `lot_id`, `import_id`, issue codes and
+opaque source-row refs; (2) workspace shows the immutable provider artifact,
+normalised candidate rows, validation differences and lot export side by side;
+(3) actions are Reject import, Supersede with a new import, or Confirm exact
+row-to-lot mapping. No action edits provider evidence or selects an award; (4)
+resolution payload schema:
 
-(1) Full simulation: 3 seeded verified bidders, publish → 3 bids (one amended), sealed-read attempt as CM before close → 403, auto-close on schedule, rank correct, 2-of-3 award, recovery row written; (2) counter-offer round trip through portal; (3) retained election → lot never published, C-07 retained figure matches hand calc; (4) settlement attempted with keys unattested → blocked with R-13 surfaced; (5) portal pen-check suite: lot enumeration attempt, expired magic link, cross-bidder bid read, insured-name grep across every portal response on a seeded lot (must be zero hits); (6) bidder onboarding: unverified bidder receives no invitations and cannot authenticate into an open lot.
+```json
+{
+  "$id": "pacha://review/exception/auction_result_ambiguous/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "reason", "replacement_import_id"],
+  "properties": {
+    "action": {"enum": ["reject", "supersede", "confirm_mapping"]},
+    "reason": {"type": "string", "minLength": 1},
+    "replacement_import_id": {"type": ["string", "null"]},
+    "confirmed_result_row_id": {"type": ["string", "null"]}
+  }
+}
+```
+
+`confirm_mapping` requires `confirmed_result_row_id`; `supersede` requires
+`replacement_import_id`; other combinations fail validation.
+
+**`no_bids` v1:** (1) produced by `auction.results_no_bids` only from a verified
+provider result/attestation; (2) workspace shows the lot export, provider
+attestation, window and verification evidence; (3) actions are Close without
+award, Approve new provider window, or Record committee-approved offline
+negotiation. None may fabricate a bid or automatically extend the window; (4)
+resolution payload schema:
+
+```json
+{
+  "$id": "pacha://review/exception/no_bids/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "reason"],
+  "properties": {
+    "action": {"enum": ["close", "new_window", "offline_negotiation"]},
+    "reason": {"type": "string", "minLength": 1},
+    "approved_instruction_ref": {"type": ["string", "null"]}
+  }
+}
+```
+
+`new_window` and `offline_negotiation` require an opaque
+`approved_instruction_ref`; no bidder or claim PII is carried in the resolution
+payload.
+
+### 11.6 Capabilities
+
+`salvage.register` (max L3, launch L1) · `salvage.lot_prepare` (max L3,
+launch L1) · `salvage.export` (max L2, human release permanently) ·
+`salvage.result_import` (max L3, launch L1) · `salvage.result_verify` (max L3,
+launch L1) · `salvage.recovery_ledger` (max L3).
+
+`salvage.award` is **not a capability**. It is a committee-only human authority
+decision. Provider selection and provider communication do not weaken Pacha's
+financial/autonomy ceilings.
+
+### 11.7 Acceptance
+
+1. A ready surrendered lot produces a CSV and PDF containing exactly the
+   `lot_export` whitelist; insured name, claim id, policy and bank-data scans
+   return zero hits.
+2. Missing provider, approval, whitelist field, safe malware result or
+   attestation refuses export/import visibly.
+3. The same export/import hash is idempotent; a changed file creates a new
+   immutable version.
+4. A malformed amount, duplicate lot/provider match, inconsistent rank or
+   conflicting result becomes `auction_result_ambiguous`; no award is proposed.
+5. Verified results support a committee award with complete evidence; award
+   cannot be executed through `execute_or_stage` or any autonomy level.
+6. Retained election creates no provider export and the C-07 retained figure
+   matches the hand calculation.
+7. Settlement with unattested keys/logbook is blocked by R-13/R-14.
+8. Recovery rows reconcile to the verified final result, including the
+   `no_baseline` case.
+9. No Pacha route, bundle or schema implements bidder login, bidder KYC, bid
+   submission/sealing, counter-offer transport or bidder sessions.

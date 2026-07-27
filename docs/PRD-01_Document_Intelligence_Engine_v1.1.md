@@ -6,7 +6,8 @@
 
 Single shared pipeline: any inbound artifact → classified, parsed, extracted into `claim_fields` with citations and calibrated confidence. Agents never call LLMs on documents directly; they call this engine.
 
-### 1.2 Pipeline (stages, each a Celery task, resumable per document)
+### 1.2 Pipeline (T04 implements every stage as a Temporal Activity and removes
+the Celery stage scheduler; database stage rows remain resumability truth)
 
 ```
 document.received
