@@ -38,6 +38,7 @@ with workflow.unsafe.imports_passed_through():
     from orchestration.policies import load_retry_policies
 
 __all__ = [
+    "APPLIED_REVIEW_EVENTS",
     "CHECKLIST_REF",
     "CLAIM_REF",
     "DOCUMENT_REF",
@@ -55,6 +56,8 @@ __all__ = [
     "FakeSecretsManagerClient",
     "FakeSecretProvider",
     "FailingKmsClient",
+    "ReviewWaitWorkflow",
+    "apply_review_activity",
     "cloud_config",
     "cloud_environ",
     "control_activity",
@@ -63,6 +66,7 @@ __all__ = [
     "local_config",
     "local_environ",
     "plain_client_for",
+    "review_wait_mapping",
     "static_data_converter",
     "CLOUD_KMS_KEY_ARN",
 ]
@@ -390,3 +394,107 @@ class HeartbeatProbeWorkflow:
             heartbeat_timeout=policy.heartbeat_timeout,
             retry_policy=policy.retry_policy,
         )
+
+
+# --- T02: the test-only Signal target -----------------------------------------
+#
+# T02 registers no production business Workflow, so `TEMPORAL_INTENT_MAPPINGS` is
+# empty and there is nothing in `platform/` for a `review.resolved` Signal to
+# reach. Routing is still proved end to end, using this test-only Workflow and
+# the test-only mapping below. Neither is exported or registered by production
+# code; T03 adds the first production mapping beside `DocumentChaseWorkflow`.
+
+#: Stands in for the idempotent Pacha application a real review Activity drives.
+#: Keyed by event reference, valued by the number of times it was *applied* —
+#: which must stay 1 however many times the event is delivered or Signalled.
+APPLIED_REVIEW_EVENTS: dict[str, int] = {}
+
+
+@activity.defn(name="pacha_test_apply_review")
+async def apply_review_activity(command: ControlCommand) -> ControlResult:
+    """Apply one resolution reference idempotently, the second layer of de-dup.
+
+    The Workflow already drops a repeated `event_ref` from its own state; this
+    is the independent database-side guard, because a Workflow's memory is lost
+    on Continue-As-New while Pacha's row is not.
+    """
+
+    event_ref = command.event_ref or ""
+    if event_ref not in APPLIED_REVIEW_EVENTS:
+        APPLIED_REVIEW_EVENTS[event_ref] = 1
+    return ControlResult(status="running", run_ref=command.run_ref, event_ref=event_ref)
+
+
+@workflow.defn(name="PachaTestReviewWaitWorkflow", versioning_behavior=VersioningBehavior.PINNED)
+class ReviewWaitWorkflow:
+    """Wait for opaque `review_resolved` references and apply each exactly once."""
+
+    def __init__(self) -> None:
+        self._pending: list[str] = []
+        self._seen: set[str] = set()
+        self._applied = 0
+        self._closed = False
+
+    @workflow.run
+    async def run(self, command: ControlCommand) -> ControlResult:
+        policy = load_retry_policies()["db_control"]
+        while True:
+            await workflow.wait_condition(lambda: bool(self._pending) or self._closed)
+            while self._pending:
+                event_ref = self._pending.pop(0)
+                await workflow.execute_activity(
+                    apply_review_activity,
+                    ControlCommand(run_ref=command.run_ref, event_ref=event_ref),
+                    start_to_close_timeout=policy.start_to_close_timeout,
+                    retry_policy=policy.retry_policy,
+                )
+                self._applied += 1
+            if self._closed:
+                return ControlResult(
+                    status="completed",
+                    run_ref=command.run_ref,
+                    event_seq=self._applied,
+                )
+
+    @workflow.signal(name="review_resolved")
+    def review_resolved(self, signal: ControlSignal) -> None:
+        """Enqueue an unseen reference. No database call, no decision."""
+
+        if signal.event_ref in self._seen:
+            return
+        self._seen.add(signal.event_ref)
+        self._pending.append(signal.event_ref)
+
+    @workflow.signal(name="claim_terminal")
+    def claim_terminal(self, _signal: ControlSignal) -> None:
+        self._closed = True
+
+
+def review_wait_mapping(mapping_type: Any) -> Any:
+    """The test-only `review.resolved` -> `ReviewWaitWorkflow` Signal mapping.
+
+    Takes `TemporalIntentMapping` as an argument so this module keeps its T01
+    import surface and does not depend on `orchestration.starter`.
+
+    The builder resolves the target from the event's own `agent_run_id`, and
+    returns `None` when the payload carries none — the "valid event with no
+    Temporal target" case, which must be acknowledged rather than retried.
+    """
+
+    from orchestration.contracts import ControlSignal as _ControlSignal
+    from orchestration.ids import agent_workflow_ref
+
+    def build(event: Any):
+        run_ref = (event.payload or {}).get("agent_run_id")
+        if not isinstance(run_ref, str) or not run_ref:
+            return None
+        return agent_workflow_ref(run_ref)
+
+    return mapping_type(
+        event_type="review.resolved",
+        workflow_type=ReviewWaitWorkflow,
+        workflow_id_builder=build,
+        action="signal",
+        signal_name="review_resolved",
+        control_contract_type=_ControlSignal,
+    )

@@ -8,6 +8,11 @@ from typing import Any
 from agent_runtime.comms import CommunicationsService
 from agent_runtime.gate import Action, AutonomyGate, load_gate_config
 from agent_runtime.models import AgentRun
+from agent_runtime.projection import (
+    AgentRunConflict,
+    AgentRunNotFound,
+    AgentRunProjection,
+)
 from agent_runtime.runner import AgentRunner, configure_reaper
 from claim_core import Base
 
@@ -95,4 +100,11 @@ def build_agent_runtime(app: Any, *, grade: Any = None) -> AgentRuntime:
     return runtime
 
 
-__all__ = ["Action", "AgentRuntime", "build_agent_runtime"]
+__all__ = [
+    "Action",
+    "AgentRunConflict",
+    "AgentRunNotFound",
+    "AgentRunProjection",
+    "AgentRuntime",
+    "build_agent_runtime",
+]
