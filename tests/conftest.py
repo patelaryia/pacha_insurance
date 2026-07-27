@@ -21,6 +21,15 @@ Instead:
 
 Every database this module creates, resets, or drops has its name checked by
 `support.database` first. See that module for the naming rule.
+
+Application engines are disposed after every test. `create_app` builds one
+engine per application and nothing in the suite uses `TestClient` as a context
+manager, so no application shutdown ever runs and each app's `QueuePool` keeps
+its PostgreSQL connections checked in until the garbage collector happens to
+reach it. Several hundred applications per worker then exhaust the server's
+`max_connections` and the run dies in `FATAL: sorry, too many clients already`.
+Disposing per test bounds the pool count at one application, and does so in the
+harness that leaks rather than by shrinking the pool the real service wants.
 """
 from __future__ import annotations
 
@@ -41,6 +50,35 @@ from support.database import (
 from support.tiers import requires_postgres
 
 _UNPATCHED_CREATE_ALL = MetaData.create_all
+
+
+@pytest.fixture(autouse=True)
+def dispose_application_engines(monkeypatch):
+    """Dispose every engine `build_engine` hands an application in this test.
+
+    The patch target is `claim_core.database.create_engine`, not `build_engine`
+    itself: `build_engine` resolves it from its own module globals at call time,
+    so this catches every caller regardless of how it imported `build_engine`.
+    The session fixture below builds its worker engine through this module's own
+    `create_engine` import and is therefore untouched.
+    """
+
+    import claim_core.database as claim_database
+
+    engines = []
+    unpatched = claim_database.create_engine
+
+    def recording_create_engine(*args, **kwargs):  # noqa: ANN002, ANN003
+        engine = unpatched(*args, **kwargs)
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(claim_database, "create_engine", recording_create_engine)
+    try:
+        yield
+    finally:
+        for engine in engines:
+            engine.dispose()
 
 
 def pytest_collection_modifyitems(items) -> None:  # noqa: ANN001 - pytest hook
