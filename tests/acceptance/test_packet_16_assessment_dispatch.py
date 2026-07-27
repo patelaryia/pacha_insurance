@@ -13,6 +13,10 @@ in a visible staged draft — `email.sent` never fires here (#157). R-06 stays
 `blocked_on_inputs` (Q-02): the mode verdict is always `undetermined` and the
 officer's choice is labelled training data (§7.3 Path A). Path B is shadow:
 its output must be unreachable from every surface (PRD-07 acceptance 4).
+
+Owner-reissued for T03 on 2026-07-27: the assessor reminder is driven through
+the production Temporal Activity seams; the removed polling `tick()` path is
+not part of this contract.
 """
 from __future__ import annotations
 
@@ -25,6 +29,8 @@ from datetime import UTC, datetime, timedelta
 
 import yaml
 from sqlalchemy import text
+
+from orchestration.contracts import ControlCommand
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MOTOR_PACK = REPO / "packs" / "motor"
@@ -362,6 +368,55 @@ def _advance(env: Env, cycles: int = 8) -> None:
 
 def _at(env: Env, days: int, hours: int = 0) -> None:
     env.clock.advance_to(T0 + timedelta(days=days, hours=hours))
+
+
+def _drive_assessor_chase(env: Env, claim_id: str) -> dict:
+    checklist = _rows(
+        env.app,
+        "SELECT id FROM chase_checklists "
+        "WHERE claim_id = :claim_id AND purpose = 'assessor_report'",
+        claim_id=claim_id,
+    )[0]
+    checklist_id = checklist["id"]
+    with env.app.state.engine.begin() as connection:
+        run_id = connection.execute(
+            text("SELECT id FROM agent_runs WHERE workflow_id = :workflow_id"),
+            {"workflow_id": f"pacha.chase.{checklist_id}"},
+        ).scalar_one()
+        connection.execute(
+            text(
+                "UPDATE agent_runs SET status = 'running' "
+                "WHERE id = :run_id AND status = 'pending'"
+            ),
+            {"run_id": run_id},
+        )
+    activities = env.app.state.chase_agent.temporal_activities(
+        worker_build_id="a" * 40
+    )
+    state = activities._load(  # noqa: SLF001 - owner acceptance seam
+        ControlCommand(
+            run_ref=run_id,
+            claim_ref=claim_id,
+            checklist_ref=checklist_id,
+        )
+    )
+    before = len(_drafts(env.app, claim_id, "chase.reminder"))
+    if state.step_id == "chase_reminder":
+        activities._governed_send(  # noqa: SLF001 - owner acceptance seam
+            ControlCommand(
+                run_ref=run_id,
+                claim_ref=claim_id,
+                checklist_ref=checklist_id,
+                write_id=(
+                    f"chase:{checklist_id.lower()}:{state.attempt_no}"
+                ),
+                step_id=state.step_id,
+            )
+        )
+    _drain(env.app)
+    return {
+        "sent": len(_drafts(env.app, claim_id, "chase.reminder")) - before,
+    }
 
 
 def _resolve(env: Env, item_id: str, actor: str, *, action: str,
@@ -819,7 +874,7 @@ def test_assessor_reminder_stages_t06r_assessor_at_warn(tmp_path):
     assessor_id = _parties(env, claim_id, "assessor")[0]["id"]
 
     _at(env, days=3, hours=1)
-    result = env.app.state.chase_agent.tick()
+    result = _drive_assessor_chase(env, claim_id)
     assert result["sent"] >= 1
     _drain(env.app)
 
