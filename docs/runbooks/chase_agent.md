@@ -21,10 +21,13 @@ pending capture. Do not treat a staged draft as `email.sent`.
 
 An initial T-06 attempt outside the AR-3a window remains durable as unrequested
 pending items. Reminder Activities persist the next AR-3a window open on due
-rows and the Workflow sleeps to that instant. A refused outcome pauses the run
-on a visible `EXCEPTION` wait without closing the Workflow or checklist. An
-approved/edited resolution explicitly authorises a fresh attempt; rejection
-closes the chase.
+rows and the Workflow sleeps to that instant. A recoverable requester-missing,
+send-refused, or uncertain-write outcome pauses the run on a visible `EXCEPTION`
+wait without closing the Workflow or checklist. An approved/edited resolution
+explicitly authorises a fresh attempt; rejection refuses an automatic retry and
+leaves the checklist open in a Signal-driven wait. Inbound documents can still
+complete the checklist; do not restart automatic attempts without a new
+governed exception/resolution path.
 
 `EXCEPTION{chase_exhausted}` means at least one outstanding item reached six
 reminders. Confirm the requester and document need, then resolve the work item;

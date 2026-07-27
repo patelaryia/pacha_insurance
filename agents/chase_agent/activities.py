@@ -30,7 +30,6 @@ from chase_agent.checklist import (
     aware,
 )
 from chase_agent.models import ChaseChecklist, ChaseItem
-from claim_core import new_ulid
 from orchestration.contracts import ControlCommand, ControlResult
 from orchestration.errors import sanitised_application_error
 from orchestration.ids import parse_workflow_ref
@@ -246,8 +245,10 @@ class ChaseActivities:
         self,
         claim_ref: str,
         checklist_ref: str,
+        *,
+        subtype: str | None = None,
     ) -> _ReviewState | None:
-        """Return the latest checklist exception and its resolution."""
+        """Return the latest matching checklist exception and its resolution."""
 
         created: tuple[str, dict[str, Any]] | None = None
         with self.app.state.engine.connect() as connection:
@@ -261,9 +262,11 @@ class ChaseActivities:
             ).all()
             for event_ref, raw in created_rows:
                 payload = _payload(raw)
+                current_subtype = payload.get("subtype")
                 if (
                     payload.get("type") == "EXCEPTION"
-                    and payload.get("subtype") in _CHASE_EXCEPTION_SUBTYPES
+                    and current_subtype in _CHASE_EXCEPTION_SUBTYPES
+                    and (subtype is None or current_subtype == subtype)
                     and payload.get("checklist_id") == checklist_ref
                     and isinstance(payload.get("review_id"), str)
                 ):
@@ -398,7 +401,16 @@ class ChaseActivities:
 
         review = self._review_state(claim_ref, checklist_ref)
         if review is not None and review.resolution == "rejected":
-            return ControlResult(status="cancelled", step_id=_STEP_TERMINAL, **common)
+            if review.subtype == "chase_exhausted":
+                return ControlResult(
+                    status="cancelled",
+                    step_id=_STEP_TERMINAL,
+                    **common,
+                )
+            # Register #290: rejecting a recoverable dependency/write
+            # exception refuses an automatic retry; it does not destroy the
+            # underlying document collection. Remain durably Signal-driven.
+            return ControlResult(status="running", step_id=_STEP_WAIT, **common)
         if review is not None and review.resolution is None:
             return ControlResult(
                 status="awaiting_review",
@@ -444,8 +456,10 @@ class ChaseActivities:
             and item.reminder_count >= cap
             and (item.snooze_until is None or aware(item.snooze_until) <= now)
         ]
-        exhausted_review = (
-            review if review is not None and review.subtype == "chase_exhausted" else None
+        exhausted_review = self._review_state(
+            claim_ref,
+            checklist_ref,
+            subtype="chase_exhausted",
         )
         if capped_due and exhausted_review is None:
             return ControlResult(status="running", step_id=_STEP_EXHAUSTED, **common)
@@ -658,7 +672,11 @@ class ChaseActivities:
         recommendation: str,
     ) -> ControlResult:
         run_ref, checklist_ref = self._refs(command)
-        review = self._review_state(claim_ref, checklist_ref)
+        review = self._review_state(
+            claim_ref,
+            checklist_ref,
+            subtype=subtype,
+        )
         identity: dict[str, Any] = {
             "checklist_id": checklist_ref,
             "write_id": command.write_id,
@@ -1038,7 +1056,11 @@ class ChaseActivities:
                 ),
             )
 
-        review = self._review_state(claim_ref, checklist_ref)
+        review = self._review_state(
+            claim_ref,
+            checklist_ref,
+            subtype="chase_exhausted",
+        )
         if review is not None and review.resolution in _CONTINUE_RESOLUTIONS:
             return ControlResult(
                 status="running",
@@ -1055,13 +1077,9 @@ class ChaseActivities:
                 review_event_ref=review.event_ref,
                 step_id=_STEP_TERMINAL,
             )
-        existing_event_ref = (
-            review.event_ref
-            if review is not None and review.subtype == "chase_exhausted"
-            else None
-        )
+        existing_event_ref = review.event_ref if review is not None else None
         if existing_event_ref is None:
-            with self.sessions.begin() as session:
+            with self.sessions() as session:
                 checklist = session.get(ChaseChecklist, checklist_ref)
                 if checklist is None:
                     raise LookupError("chase checklist was not found")
@@ -1082,26 +1100,22 @@ class ChaseActivities:
                         run_ref=run_ref,
                         step_id=_STEP_LOAD,
                     )
-                existing_event_ref = self.checklist.emit_event(
-                    session,
-                    claim_id=checklist.claim_id,
-                    event_type="review.created",
-                    payload={
-                        "review_id": new_ulid(),
-                        "type": "EXCEPTION",
-                        "subtype": "chase_exhausted",
-                        "checklist_id": checklist_ref,
-                        "items": [item.item_id for item in items],
-                        "facts": {"items": [item.item_id for item in items]},
-                        "risk": "required documents remain outstanding at the reminder cap",
-                        "recommendation": (
-                            "confirm whether collection should continue or the chase should close"
-                        ),
-                        "resolution_schema": "EXCEPTION@1",
-                        "role": self.config["exception_routing_role"],
-                    },
-                    correlation_id=run_ref,
-                )
+                item_ids = [item.item_id for item in items]
+            existing_event_ref = self.checklist.exception_once(
+                claim_id=claim_ref,
+                subtype="chase_exhausted",
+                identity={"checklist_id": checklist_ref},
+                payload={
+                    "items": item_ids,
+                    "facts": {"items": item_ids},
+                    "risk": "required documents remain outstanding at the reminder cap",
+                    "recommendation": (
+                        "confirm whether collection should continue or the chase should close"
+                    ),
+                    "resolution_schema": "EXCEPTION@1",
+                    "role": self.config["exception_routing_role"],
+                },
+            )
         result = ControlResult(
             status="awaiting_review",
             run_ref=run_ref,
@@ -1136,10 +1150,18 @@ class ChaseActivities:
                 text("SELECT status FROM claims WHERE id = :claim_ref"),
                 {"claim_ref": checklist.claim_id},
             ).scalar()
-            review = self._review_state(checklist.claim_id, checklist_ref)
+            review = self._review_state(
+                checklist.claim_id,
+                checklist_ref,
+                subtype="chase_exhausted",
+            )
             if checklist.status == "open" and (
                 claim_status in SUPPRESSED_STATES
-                or (review is not None and review.resolution == "rejected")
+                or (
+                    review is not None
+                    and review.subtype == "chase_exhausted"
+                    and review.resolution == "rejected"
+                )
             ):
                 checklist.status = "cancelled"
                 terminal_event_ref = self.checklist.emit_event(

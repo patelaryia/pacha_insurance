@@ -500,6 +500,177 @@ def test_uncertain_write_creates_four_part_exception(tmp_path):
     assert set(("facts", "risk", "recommendation", "resolution_schema")) <= set(event)
 
 
+@pytest.mark.parametrize(
+    "subtype",
+    [
+        "chase_requester_missing",
+        "chase_send_refused",
+        "uncertain_write",
+    ],
+)
+def test_rejected_recoverable_exception_keeps_collection_open(
+    tmp_path,
+    subtype,
+):
+    env = P15._build(
+        tmp_path,
+        f"t03-rejected-{subtype}",
+        model=P15._intimation_model(),
+    )
+    claim_id = P15._to_checklist(env)
+    checklist_id, run, activities, command = _initialise(env, claim_id)
+    identity = {"checklist_id": checklist_id}
+    if subtype == "uncertain_write":
+        identity["write_id"] = f"chase:{checklist_id.lower()}:1"
+    env.app.state.chase_agent.checklist.exception_once(
+        claim_id=claim_id,
+        subtype=subtype,
+        identity=identity,
+        payload={
+            "facts": {"reason": "synthetic rejection boundary"},
+            "risk": "automatic retry is unsafe",
+            "recommendation": "reject to refuse automatic retry",
+            "resolution_schema": "EXCEPTION@1",
+            "role": "claims_officer",
+        },
+    )
+    P15._drain(env.app)
+    review = P15._items(
+        env.app,
+        claim_id=claim_id,
+        type="EXCEPTION",
+        subtype=subtype,
+    )[0]
+    response = P15._resolve(
+        env,
+        review["id"],
+        P15.OFFICER_A,
+        action="reject",
+        schema_version="EXCEPTION@1",
+        payload={
+            "capability_id": "chase.checklist",
+            "diff": P15._diff(),
+            "reason": "do not retry automatically",
+        },
+    )
+    assert response.status_code == 200
+    P15._drain(env.app)
+
+    state = activities._load(command)  # noqa: SLF001 - resolution boundary
+    assert state.status == "running"
+    assert state.step_id == "chase_wait"
+    assert state.wake_at_epoch_ms is None
+    terminal = activities._record_terminal(  # noqa: SLF001 - terminal guard
+        ControlCommand(
+            run_ref=run["id"],
+            claim_ref=claim_id,
+            checklist_ref=checklist_id,
+        )
+    )
+    assert terminal.status == "blocked"
+    assert P15._checklists(env.app, claim_id)[0]["status"] == "open"
+    assert P15._events(env.app, "chase.cancelled", claim_id) == []
+
+
+def test_chase_exhausted_is_deduplicated_across_later_exception_history(tmp_path):
+    env = P15._build(
+        tmp_path,
+        "t03-exhausted-dedup",
+        model=P15._intimation_model(),
+    )
+    claim_id = P15._to_checklist(env)
+    checklist_id, run, activities, command = _initialise(env, claim_id)
+    env.clock.advance_to(P15.T0 + timedelta(days=40))
+    with env.app.state.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE chase_items SET next_reminder_at = :now, "
+                "reminder_count = 6 WHERE checklist_id = :checklist_id"
+            ),
+            {"now": env.clock.now, "checklist_id": checklist_id},
+        )
+
+    first = activities._create_exception(command)  # noqa: SLF001 - Activity seam
+    assert first.status == "awaiting_review"
+    P15._drain(env.app)
+    exhausted = P15._items(
+        env.app,
+        claim_id=claim_id,
+        type="EXCEPTION",
+        subtype="chase_exhausted",
+    )
+    assert len(exhausted) == 1
+    approved = P15._resolve(
+        env,
+        exhausted[0]["id"],
+        P15.OFFICER_A,
+        action="approve",
+        schema_version="EXCEPTION@1",
+        payload={
+            "capability_id": "chase.checklist",
+            "diff": P15._diff(),
+        },
+    )
+    assert approved.status_code == 200
+    P15._drain(env.app)
+
+    env.app.state.chase_agent.checklist.exception_once(
+        claim_id=claim_id,
+        subtype="chase_send_refused",
+        identity={
+            "checklist_id": checklist_id,
+            "write_id": f"chase:{checklist_id.lower()}:6",
+        },
+        payload={
+            "facts": {"outcome": "refused"},
+            "risk": "the document request remains outstanding",
+            "recommendation": "confirm whether another attempt is authorised",
+            "resolution_schema": "EXCEPTION@1",
+            "role": "claims_officer",
+        },
+    )
+    P15._drain(env.app)
+    refused = P15._items(
+        env.app,
+        claim_id=claim_id,
+        type="EXCEPTION",
+        subtype="chase_send_refused",
+    )[0]
+    resumed = P15._resolve(
+        env,
+        refused["id"],
+        P15.OFFICER_A,
+        action="approve",
+        schema_version="EXCEPTION@1",
+        payload={
+            "capability_id": "chase.checklist",
+            "diff": P15._diff(),
+        },
+    )
+    assert resumed.status_code == 200
+    P15._drain(env.app)
+
+    state = activities._load(command)  # noqa: SLF001 - history lookup seam
+    assert state.status == "running"
+    assert state.step_id == "chase_wait"
+    defensive = activities._create_exception(  # noqa: SLF001 - dedupe seam
+        ControlCommand(
+            run_ref=run["id"],
+            claim_ref=claim_id,
+            checklist_ref=checklist_id,
+        )
+    )
+    assert defensive.status == "running"
+    assert defensive.review_event_ref == first.review_event_ref
+    exhausted_events = [
+        event
+        for event in P15._events(env.app, "review.created", claim_id)
+        if event["payload"].get("subtype") == "chase_exhausted"
+        and event["payload"].get("checklist_id") == checklist_id
+    ]
+    assert len(exhausted_events) == 1
+
+
 def test_t03_worker_registries_are_explicit_and_pinned(tmp_path):
     env = P15._build(tmp_path, "t03-registration", model=P15._intimation_model())
     activities = env.app.state.chase_agent.temporal_activities(
