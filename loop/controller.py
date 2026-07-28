@@ -105,6 +105,51 @@ class Controller:
     def review_worktree_for(self, packet_id: str) -> pathlib.Path:
         return REPO / ".claude" / "worktrees" / f"review-{packet_id.lower()}"
 
+    def activation_paths(self, packet: P.Packet) -> list[str]:
+        return sorted(
+            {
+                str(packet.path.relative_to(REPO)),
+                *packet.meta["acceptance_tests"],
+                "loop/oracle.lock",
+            }
+        )
+
+    def activation_snapshot(self, packet: P.Packet) -> tuple[str, str]:
+        """Pin the owner contract that may precede builder-owned commits.
+
+        A packet and a deliberately failing acceptance test cannot be merged
+        to ``main`` separately when green CI is mandatory. The operator may
+        therefore activate them in one committed checkout ahead of main. Only
+        the exact packet, its named tests and the oracle may differ; those
+        blobs are later seeded into the packet branch as a controller-owned
+        commit before Codex runs.
+        """
+        base_sha = forge.resolve_base(
+            REPO,
+            token_env=self._token("builder"),
+        )
+        activation_sha = forge.git(["rev-parse", "HEAD"], REPO)
+        if activation_sha == base_sha:
+            return base_sha, activation_sha
+        merge_base = forge.git(
+            ["merge-base", base_sha, activation_sha],
+            REPO,
+        )
+        if merge_base != base_sha:
+            raise P.SpecError(
+                "the activation checkout is not based on current origin/main; "
+                "refresh it before starting the lifecycle"
+            )
+        changed = set(forge.changed_paths(REPO, base_sha))
+        allowed = set(self.activation_paths(packet))
+        unexpected = sorted(changed - allowed)
+        if unexpected:
+            raise P.SpecError(
+                "the activation checkout contains changes outside the owner "
+                f"packet contract: {unexpected}"
+            )
+        return base_sha, activation_sha
+
     def transition(
         self,
         packet_id: str,
@@ -186,21 +231,30 @@ class Controller:
             row = store.get(self.conn, packet_id)
             if row is None:
                 raise P.SpecError(f"{packet_id} is not on the packet board")
+            existing = store.active_lifecycle(self.conn, packet_id)
+            if existing is not None:
+                return existing
             if row["status"] in store.TERMINAL or row["status"] == "merge_ready":
                 raise RuntimeError(
                     f"{packet_id} is {row['status']}; resolve that outcome before "
                     "starting another lifecycle"
                 )
+            packet = self.packet_spec(packet_id)
+            base_sha, activation_sha = self.activation_snapshot(packet)
             with store.write(self.conn):
-                existing = store.active_lifecycle(self.conn, packet_id)
                 active = store.active_lifecycles(self.conn)
-                if existing is None and len(active) >= self.config["max_concurrent_packets"]:
+                if len(active) >= self.config["max_concurrent_packets"]:
                     names = ", ".join(item["packet_id"] for item in active)
                     raise RuntimeError(
                         "active lifecycle concurrency limit reached"
                         + (f": {names}" if names else "")
                     )
-                lifecycle, created = store.start_lifecycle(self.conn, packet_id)
+                lifecycle, created = store.start_lifecycle(
+                    self.conn,
+                    packet_id,
+                    base_sha=base_sha,
+                    activation_sha=activation_sha,
+                )
         self.packet_scope = packet_id
         if created:
             self.notify_material(
@@ -976,8 +1030,11 @@ class Controller:
                             reason=f"{row['attempts']} attempts, cap is {cap}")
             return
 
+        lifecycle = store.active_lifecycle(self.conn, packet_id)
         if row["base_sha"]:
             base_sha = row["base_sha"]
+        elif lifecycle is not None and lifecycle["base_sha"]:
+            base_sha = lifecycle["base_sha"]
         elif self.dry:
             # A dry run may read the existing remote-tracking ref but must not
             # fetch and update it.
@@ -1020,14 +1077,40 @@ class Controller:
                              attempt=attempt, base_sha=base_sha)
 
         try:
-            self.build(packet, row, attempt, attempt_id, base_sha, worktree, run_dir,
-                       oracle, prompt)
+            self.build(
+                packet,
+                row,
+                attempt,
+                attempt_id,
+                base_sha,
+                worktree,
+                run_dir,
+                oracle,
+                prompt,
+                activation_sha=(
+                    lifecycle["activation_sha"]
+                    if lifecycle is not None and lifecycle["activation_sha"]
+                    else base_sha
+                ),
+            )
         finally:
             with store.write(self.conn):
                 store.release(self.conn, packet_id, self.owner)
 
-    def build(self, packet, row, attempt, attempt_id, base_sha, worktree, run_dir,
-              oracle, prompt) -> None:
+    def build(
+        self,
+        packet,
+        row,
+        attempt,
+        attempt_id,
+        base_sha,
+        worktree,
+        run_dir,
+        oracle,
+        prompt,
+        *,
+        activation_sha,
+    ) -> None:
         packet_id = packet.id
         try:
             action = forge.ensure_worktree(REPO, worktree, packet.meta["branch"], base_sha)
@@ -1037,8 +1120,9 @@ class Controller:
         except forge.ForgeError as exc:
             self.finish(packet_id, attempt_id, "infra_error", str(exc))
             return
-        if attempt == 1 and action == "reused":
-            existing_head = forge.git(["rev-parse", "HEAD"], worktree)
+        existing_head = forge.git(["rev-parse", "HEAD"], worktree)
+        activation_head = row["activation_head_sha"]
+        if attempt == 1 and activation_head is None:
             if existing_head != base_sha:
                 self.finish(
                     packet_id,
@@ -1046,6 +1130,48 @@ class Controller:
                     "infra_error",
                     "first attempt found a pre-existing branch with commits not owned by "
                     f"this ledger: HEAD {existing_head[:12]}, base {base_sha[:12]}",
+                    hard=True,
+                )
+                return
+            if activation_sha == base_sha:
+                activation_head = base_sha
+            else:
+                try:
+                    activation_head = forge.seed_activation(
+                        worktree,
+                        activation_sha,
+                        self.activation_paths(packet),
+                        packet_id,
+                    )
+                except forge.ForgeError as exc:
+                    self.finish(
+                        packet_id,
+                        attempt_id,
+                        "infra_error",
+                        f"could not seed the owner activation contract: {exc}",
+                        hard=True,
+                    )
+                    return
+            with store.write(self.conn):
+                store.set_fields(
+                    self.conn,
+                    packet_id,
+                    activation_head_sha=activation_head,
+                )
+        elif activation_head is None:
+            activation_head = base_sha
+        else:
+            merge_base = forge.git(
+                ["merge-base", activation_head, existing_head],
+                worktree,
+            )
+            if merge_base != activation_head:
+                self.finish(
+                    packet_id,
+                    attempt_id,
+                    "infra_error",
+                    "packet branch no longer contains its pinned owner activation "
+                    f"commit {activation_head[:12]}",
                     hard=True,
                 )
                 return
@@ -1185,11 +1311,12 @@ class Controller:
                         tokens=result["tokens"])
             return
 
-        ahead = forge.commits_ahead(worktree, base_sha)
+        ahead = forge.commits_ahead(worktree, activation_head)
         if ahead == 0:
             detail = (builder_result or {}).get("summary", "no result file written")
             self.finish(packet_id, attempt_id, "no_commits",
-                        f"nothing committed against {base_sha[:12]}. Builder said: {detail[:400]}",
+                        "nothing committed after the owner activation "
+                        f"{activation_head[:12]}. Builder said: {detail[:400]}",
                         tokens=result["tokens"])
             return
 
@@ -1238,9 +1365,9 @@ class Controller:
             )
             return
 
-        changed = forge.changed_paths(worktree, base_sha)
+        builder_changed = forge.changed_paths(worktree, activation_head)
         governance = P.matches(
-            changed, self.config["controller_protected_paths"]
+            builder_changed, self.config["controller_protected_paths"]
         )
         if governance:
             self.finish(
@@ -1252,6 +1379,7 @@ class Controller:
                 hard=True,
             )
             return
+        changed = forge.changed_paths(worktree, base_sha)
         hits = P.in_blast_radius(changed)
         effective_blast_radius = bool(
             row["effective_blast_radius"] or packet.meta["blast_radius"] or hits

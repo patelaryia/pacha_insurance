@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS packets (
     status         TEXT NOT NULL,
     branch         TEXT NOT NULL,
     base_sha       TEXT,             -- pinned at dispatch; every attempt is against this
+    activation_head_sha TEXT,        -- owner contract commit seeded before builder work
     head_sha       TEXT,             -- exact commit validated, reviewed and eligible to merge
     pr_number      INTEGER,
     effective_blast_radius INTEGER NOT NULL DEFAULT 0,
@@ -94,6 +95,8 @@ CREATE TABLE IF NOT EXISTS lifecycles (
     packet_id            TEXT NOT NULL,
     state                TEXT NOT NULL,
     reason               TEXT,
+    base_sha             TEXT,
+    activation_sha       TEXT,
     started_at           REAL NOT NULL,
     updated_at           REAL NOT NULL,
     ended_at             REAL,
@@ -203,6 +206,9 @@ def init(conn: sqlite3.Connection) -> None:
     # controller update never requires deleting the authoritative state.
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(packets)")}
     migrations = {
+        "activation_head_sha": (
+            "ALTER TABLE packets ADD COLUMN activation_head_sha TEXT"
+        ),
         "head_sha": "ALTER TABLE packets ADD COLUMN head_sha TEXT",
         "effective_blast_radius": (
             "ALTER TABLE packets ADD COLUMN effective_blast_radius "
@@ -212,6 +218,16 @@ def init(conn: sqlite3.Connection) -> None:
     }
     for name, statement in migrations.items():
         if name not in columns:
+            conn.execute(statement)
+    lifecycle_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(lifecycles)")
+    }
+    lifecycle_migrations = {
+        "base_sha": "ALTER TABLE lifecycles ADD COLUMN base_sha TEXT",
+        "activation_sha": "ALTER TABLE lifecycles ADD COLUMN activation_sha TEXT",
+    }
+    for name, statement in lifecycle_migrations.items():
+        if name not in lifecycle_columns:
             conn.execute(statement)
 
 
@@ -348,9 +364,10 @@ def set_status(
 
 def set_fields(conn, packet_id: str, **fields) -> None:
     allowed = {
-        "branch",
-        "base_sha",
-        "head_sha",
+            "branch",
+            "base_sha",
+            "activation_head_sha",
+            "head_sha",
         "pr_number",
         "attempts",
         "rework_cycles",
@@ -531,7 +548,13 @@ def active_lifecycles(conn) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def start_lifecycle(conn, packet_id: str) -> tuple[sqlite3.Row, bool]:
+def start_lifecycle(
+    conn,
+    packet_id: str,
+    *,
+    base_sha: str | None = None,
+    activation_sha: str | None = None,
+) -> tuple[sqlite3.Row, bool]:
     """Create one active lifecycle, or return the existing one.
 
     The partial unique index is the final concurrency guard.  Callers should
@@ -544,11 +567,18 @@ def start_lifecycle(conn, packet_id: str) -> tuple[sqlite3.Row, bool]:
     lifecycle_id = uuid.uuid4().hex
     conn.execute(
         "INSERT INTO lifecycles"
-        " (id, packet_id, state, started_at, updated_at)"
-        " VALUES (?,?,'active',?,?)",
-        (lifecycle_id, packet_id, now, now),
+        " (id, packet_id, state, base_sha, activation_sha, started_at, updated_at)"
+        " VALUES (?,?,'active',?,?,?,?)",
+        (lifecycle_id, packet_id, base_sha, activation_sha, now, now),
     )
-    record(conn, packet_id, "lifecycle_started", lifecycle_id=lifecycle_id)
+    record(
+        conn,
+        packet_id,
+        "lifecycle_started",
+        lifecycle_id=lifecycle_id,
+        base_sha=base_sha,
+        activation_sha=activation_sha,
+    )
     return active_lifecycle(conn, packet_id), True
 
 

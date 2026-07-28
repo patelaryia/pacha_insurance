@@ -35,10 +35,20 @@ and how completion will be judged.
 
 ### 2. Let the loop run
 
+From a clean checkout based on current `origin/main`, commit only the reviewed
+packet, its named acceptance tests and the refreshed `loop/oracle.lock`. This
+owner-activation commit is allowed to contain a deliberately red test and is
+not merged separately. `start` pins it and the worker seeds only those
+owner-owned files into the packet branch before Codex runs; any product change
+in the activation commit is refused.
+
 Activate the reviewed packet once, then leave its long-running worker in
 charge:
 
 ```bash
+git fetch origin main
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py preflight
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py oracle
 LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py start TEMPORAL-T04
 LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py worker TEMPORAL-T04
 ```

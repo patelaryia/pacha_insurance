@@ -136,9 +136,20 @@ The former 15-minute Codex cron was the source of the repeated
 “Pacha autonomous build loop” tasks: every cron occurrence is a new standalone
 Codex task, and its prompt explicitly ran exactly one `tick`. It is retired.
 
-Activate exactly one reviewed packet, then run its worker:
+In a clean checkout based on current `origin/main`, commit exactly one reviewed
+packet, its named acceptance tests and the updated oracle. This activation
+commit may contain a deliberately red test; it is not merged separately. The
+controller pins it, refuses product changes in it, and seeds only those
+owner-owned blobs into the packet branch before the first builder commit. The
+packet contract and implementation therefore reach CI together without
+bypassing the green-main gate.
+
+Activate that packet once, then run its worker:
 
 ```bash
+git fetch origin main
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py preflight
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py oracle
 LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py start TEMPORAL-T04
 LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py worker TEMPORAL-T04
 ```
