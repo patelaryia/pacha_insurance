@@ -4,12 +4,12 @@
 Two different jobs, deliberately not merged:
 
 **Preflight** proves the machine can run a build at all — interpreter,
-linters, dependencies, git, gh, both identities. It runs once per tick,
-before any packet is selected, and a failure pauses the whole loop with a
-named cause. The previous design had no preflight: a machine that could not
-run `ruff` produced `infra_error` on every packet, which by design did not
-trip the bad-slice breaker, so the loop failed quietly for as long as you
-let it.
+linters, dependencies, git, gh, both identities. It runs once per internal
+worker cycle before any packet is selected. A failure records one deduplicated
+health blocker, backs off and automatically resumes the same lifecycle when
+healthy. The previous design had no preflight: a machine that could not run
+`ruff` produced `infra_error` on every packet, which by design did not trip
+the bad-slice breaker, so the loop failed quietly for as long as you let it.
 
 **The fast gate** is a cheap local filter so an obviously-broken attempt
 never reaches GitHub. It is NOT the definition of green. GitHub's six

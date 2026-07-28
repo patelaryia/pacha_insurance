@@ -11,7 +11,7 @@ design lacked:
 
 - **Leases.** A packet in a running state is owned by exactly one process
   until its lease expires. A crashed controller does not strand a packet in
-  `building` forever; the next tick reclaims the lease and records why.
+  `building` forever; the worker reclaims the lease and records why.
 - **Serialisation.** `BEGIN IMMEDIATE` on every write, so two controllers
   cannot both claim the same packet. SQLite's writer lock does the work
   that an advisory flock could not do across machines.
@@ -84,6 +84,47 @@ CREATE TABLE IF NOT EXISTS controller_lock (
 );
 INSERT OR IGNORE INTO controller_lock (singleton, owner, expires)
 VALUES (1, NULL, NULL);
+
+-- A lifecycle is the durable unit the worker resumes.  Polls are internal
+-- details of one lifecycle; they are not separate jobs or separate agent
+-- conversations.  Historical rows are retained so a stopped packet can be
+-- explicitly started again without erasing why the previous run ended.
+CREATE TABLE IF NOT EXISTS lifecycles (
+    id                   TEXT PRIMARY KEY,
+    packet_id            TEXT NOT NULL,
+    state                TEXT NOT NULL,
+    reason               TEXT,
+    started_at           REAL NOT NULL,
+    updated_at           REAL NOT NULL,
+    ended_at             REAL,
+    health_fingerprint   TEXT,
+    health_reason        TEXT,
+    wait_kind            TEXT,
+    poll_delay_seconds   REAL NOT NULL DEFAULT 0,
+    next_poll_at         REAL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_lifecycle_per_packet
+ON lifecycles(packet_id) WHERE state = 'active';
+CREATE INDEX IF NOT EXISTS lifecycles_packet
+ON lifecycles(packet_id, started_at);
+
+-- Material owner-facing updates.  The unique fingerprint is the outbox
+-- deduplication key: repeating an unchanged preflight failure or observing
+-- the same state from another worker cannot create another notification.
+CREATE TABLE IF NOT EXISTS notifications (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    lifecycle_id TEXT NOT NULL,
+    packet_id    TEXT NOT NULL,
+    at           REAL NOT NULL,
+    kind         TEXT NOT NULL,
+    fingerprint  TEXT NOT NULL,
+    message      TEXT NOT NULL,
+    UNIQUE(lifecycle_id, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS notifications_packet
+ON notifications(packet_id, seq);
 """
 
 # The controller is the only thing that writes these. An agent returning a
@@ -106,6 +147,15 @@ DISPATCHABLE = frozenset({"queued", "rework"})
 LEASED = frozenset({"building"})
 TERMINAL = frozenset({"merged", "blocked", "escalated"})
 OPEN_ON_GITHUB = frozenset({"awaiting_ci", "review", "rework", "merge_ready"})
+
+LIFECYCLE_ACTIVE = "active"
+LIFECYCLE_TERMINAL = frozenset(
+    {"completed", "blocked_owner", "escalated", "failed_safety_limit"}
+)
+LIFECYCLE_STATES = frozenset({LIFECYCLE_ACTIVE, *LIFECYCLE_TERMINAL})
+NOTIFICATION_KINDS = frozenset(
+    {"started", "rework_needed", "blocked", "escalated", "completed"}
+)
 
 
 def owner_token() -> str:
@@ -456,18 +506,175 @@ def recent_outcomes(conn, window: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+# --- long-lived packet lifecycles -------------------------------------------
+
+
+def active_lifecycle(conn, packet_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM lifecycles WHERE packet_id=? AND state='active'"
+        " ORDER BY started_at DESC LIMIT 1",
+        (packet_id,),
+    ).fetchone()
+
+
+def latest_lifecycle(conn, packet_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM lifecycles WHERE packet_id=?"
+        " ORDER BY started_at DESC LIMIT 1",
+        (packet_id,),
+    ).fetchone()
+
+
+def active_lifecycles(conn) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM lifecycles WHERE state='active' ORDER BY started_at"
+    ).fetchall()
+
+
+def start_lifecycle(conn, packet_id: str) -> tuple[sqlite3.Row, bool]:
+    """Create one active lifecycle, or return the existing one.
+
+    The partial unique index is the final concurrency guard.  Callers should
+    still serialise through ``write`` so the returned row is deterministic.
+    """
+    existing = active_lifecycle(conn, packet_id)
+    if existing:
+        return existing, False
+    now = time.time()
+    lifecycle_id = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO lifecycles"
+        " (id, packet_id, state, started_at, updated_at)"
+        " VALUES (?,?,'active',?,?)",
+        (lifecycle_id, packet_id, now, now),
+    )
+    record(conn, packet_id, "lifecycle_started", lifecycle_id=lifecycle_id)
+    return active_lifecycle(conn, packet_id), True
+
+
+def finish_lifecycle(
+    conn,
+    lifecycle_id: str,
+    outcome: str,
+    *,
+    reason: str,
+) -> bool:
+    if outcome not in LIFECYCLE_TERMINAL:
+        raise ValueError(f"{outcome!r} is not a terminal lifecycle outcome")
+    now = time.time()
+    row = conn.execute(
+        "SELECT * FROM lifecycles WHERE id=?",
+        (lifecycle_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"no lifecycle {lifecycle_id}")
+    cursor = conn.execute(
+        "UPDATE lifecycles SET state=?, reason=?, ended_at=?, updated_at=?,"
+        " wait_kind=NULL, poll_delay_seconds=0, next_poll_at=NULL"
+        " WHERE id=? AND state='active'",
+        (outcome, reason, now, now, lifecycle_id),
+    )
+    if cursor.rowcount:
+        record(
+            conn,
+            row["packet_id"],
+            "lifecycle_finished",
+            lifecycle_id=lifecycle_id,
+            outcome=outcome,
+            reason=reason,
+        )
+    return bool(cursor.rowcount)
+
+
+def set_lifecycle_health(
+    conn,
+    lifecycle_id: str,
+    *,
+    fingerprint: str | None,
+    reason: str | None,
+) -> None:
+    conn.execute(
+        "UPDATE lifecycles SET health_fingerprint=?, health_reason=?, updated_at=?"
+        " WHERE id=? AND state='active'",
+        (fingerprint, reason, time.time(), lifecycle_id),
+    )
+
+
+def schedule_lifecycle_poll(
+    conn,
+    lifecycle_id: str,
+    *,
+    wait_kind: str,
+    delay_seconds: float,
+) -> None:
+    now = time.time()
+    conn.execute(
+        "UPDATE lifecycles SET wait_kind=?, poll_delay_seconds=?,"
+        " next_poll_at=?, updated_at=? WHERE id=? AND state='active'",
+        (wait_kind, delay_seconds, now + delay_seconds, now, lifecycle_id),
+    )
+
+
+def record_notification(
+    conn,
+    lifecycle_id: str,
+    packet_id: str,
+    kind: str,
+    fingerprint: str,
+    message: str,
+) -> bool:
+    if kind not in NOTIFICATION_KINDS:
+        raise ValueError(f"{kind!r} is not a material notification kind")
+    cursor = conn.execute(
+        "INSERT OR IGNORE INTO notifications"
+        " (lifecycle_id, packet_id, at, kind, fingerprint, message)"
+        " VALUES (?,?,?,?,?,?)",
+        (lifecycle_id, packet_id, time.time(), kind, fingerprint, message),
+    )
+    return bool(cursor.rowcount)
+
+
+def notifications(
+    conn,
+    packet_id: str | None = None,
+    *,
+    lifecycle_id: str | None = None,
+) -> list[sqlite3.Row]:
+    clauses = []
+    values = []
+    if packet_id is not None:
+        clauses.append("packet_id=?")
+        values.append(packet_id)
+    if lifecycle_id is not None:
+        clauses.append("lifecycle_id=?")
+        values.append(lifecycle_id)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    return conn.execute(
+        f"SELECT * FROM notifications{where} ORDER BY seq",
+        values,
+    ).fetchall()
+
+
 # --- durable audit snapshot -------------------------------------------------
 
 
 def export_state(conn: sqlite3.Connection) -> dict:
     """A complete, JSON-serialisable ledger snapshot for the audit branch."""
     return {
-        "schema": 1,
+        "schema": 2,
         "packets": [dict(row) for row in conn.execute("SELECT * FROM packets ORDER BY id")],
         "attempts": [
             dict(row) for row in conn.execute("SELECT * FROM attempts ORDER BY id")
         ],
         "events": [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY seq")],
+        "lifecycles": [
+            dict(row)
+            for row in conn.execute("SELECT * FROM lifecycles ORDER BY started_at")
+        ],
+        "notifications": [
+            dict(row)
+            for row in conn.execute("SELECT * FROM notifications ORDER BY seq")
+        ],
     }
 
 
@@ -477,18 +684,34 @@ def restore_state(conn: sqlite3.Connection, snapshot: dict) -> None:
     Refuse to merge two histories. Recovery is deliberately all-or-nothing so
     a stale backup cannot silently overwrite live controller state.
     """
-    if snapshot.get("schema") != 1:
+    if snapshot.get("schema") not in (1, 2):
         raise ValueError("unsupported loop audit snapshot schema")
     if conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]:
         raise ValueError("refusing to restore over a non-empty loop ledger")
     packet_columns = [row["name"] for row in conn.execute("PRAGMA table_info(packets)")]
     attempt_columns = [row["name"] for row in conn.execute("PRAGMA table_info(attempts)")]
     event_columns = [row["name"] for row in conn.execute("PRAGMA table_info(events)")]
+    lifecycle_columns = [
+        row["name"] for row in conn.execute("PRAGMA table_info(lifecycles)")
+    ]
+    notification_columns = [
+        row["name"] for row in conn.execute("PRAGMA table_info(notifications)")
+    ]
     with write(conn):
         for table, rows, columns in (
             ("packets", snapshot.get("packets") or [], packet_columns),
             ("attempts", snapshot.get("attempts") or [], attempt_columns),
             ("events", snapshot.get("events") or [], event_columns),
+            (
+                "lifecycles",
+                snapshot.get("lifecycles") or [],
+                lifecycle_columns,
+            ),
+            (
+                "notifications",
+                snapshot.get("notifications") or [],
+                notification_columns,
+            ),
         ):
             for row in rows:
                 names = [name for name in columns if name in row]

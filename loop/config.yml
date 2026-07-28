@@ -15,18 +15,30 @@ board_dir: docs/packets
 # `depends_on` is what makes concurrency safe, not this number.
 max_concurrent_packets: 1
 
+# --- Long-lived worker ---------------------------------------------------
+# The worker owns one durable lifecycle per active packet.  These values
+# control internal polls; no external scheduler or Codex task is created for
+# a poll.  Backoff state is persisted in SQLite, so restarting the worker
+# resumes the same lifecycle without resetting it into a hot loop.
+worker:
+  poll_initial_seconds: 15
+  retry_initial_seconds: 30
+  preflight_initial_seconds: 60
+  poll_max_seconds: 300
+  backoff_multiplier: 2
+
 # --- Circuit breakers ----------------------------------------------------
 breakers:
   max_attempts: 3
   max_rework_cycles: 3
 
-  # One renewable lease owns the whole reconcile/advance/dispatch/audit tick.
-  # Packet leases still record which build is active; this lease prevents
-  # duplicate reviewers and duplicate merges when cron invocations overlap.
+  # One renewable lease owns a complete worker cycle. Packet leases still
+  # record which build is active; this lease prevents duplicate reviewers
+  # and duplicate merges if two worker processes overlap during restart.
   controller_lease_seconds: 300
 
   # A lease is how the loop survives a crash. If a controller dies mid-build
-  # the packet is stuck until this expires, then the next tick reclaims it
+  # the packet is stuck until this expires, then the worker reclaims it
   # and records the lost attempt. Must exceed per_attempt_wall_seconds, or a
   # healthy build would have its own lease stolen mid-flight.
   lease_seconds: 7200                   # 2 hours

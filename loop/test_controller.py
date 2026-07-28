@@ -81,6 +81,14 @@ def world(tmp_path, monkeypatch):
     config["breakers"]["max_attempts"] = 2
     config["breakers"]["max_rework_cycles"] = 2
     config["audit"]["enabled"] = False
+    config["worker"].update(
+        {
+            "poll_initial_seconds": 0,
+            "retry_initial_seconds": 0,
+            "preflight_initial_seconds": 0,
+            "poll_max_seconds": 0,
+        }
+    )
 
     # Preflight and the fast gate are the machine, not the state machine.
     # They have their own tests; here they are made to pass so the
@@ -284,6 +292,207 @@ def test_ci_green_moves_to_review_then_approval_reaches_merge_ready(world, monke
     assert world.row("PACKET-01")["status"] == "merge_ready"
     verdicts = world.events("PACKET-01", "review_verdict")
     assert json.loads(verdicts[-1]["payload"])["judgement_calls"] == ["boundary at 50.0%"]
+
+
+# --- durable lifecycle worker -----------------------------------------------
+
+
+def test_worker_continues_builder_ci_review_rework_builder_to_completion(
+    world,
+    monkeypatch,
+):
+    world.add_packet("PACKET-01")
+    world.pin_oracle()
+    world.config["github"]["auto_merge"] = True
+    world.config["github"]["builder_token_env"] = "FAKE_BUILDER"
+    world.config["github"]["reviewer_token_env"] = "FAKE_REVIEWER"
+    world.ci[100] = {
+        "verdict": "green",
+        "failing": [],
+        "unreported": [],
+        "runs": {},
+    }
+
+    prompts = []
+
+    def builder(config, worktree, run_dir, prompt, timeout):
+        prompts.append(prompt)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        commits(worktree, message=f"build {len(prompts)}")
+        return {
+            "outcome": "exited",
+            "code": 0,
+            "wall": 1,
+            "detail": "",
+            "tokens": None,
+        }
+
+    verdicts = iter(
+        [
+            {
+                "verdict": "rework",
+                "blocking": ["service.py:14 - preserve the PRD boundary"],
+            },
+            {"verdict": "approve", "blocking": []},
+        ]
+    )
+
+    def reviewer(config, repo, run_dir, prompt, timeout):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "verdict.json").write_text(json.dumps(next(verdicts)))
+        return {"outcome": "exited", "code": 0, "wall": 1, "detail": ""}
+
+    monkeypatch.setattr(agents, "run_builder", builder)
+    monkeypatch.setattr(agents, "run_reviewer", reviewer)
+
+    ctl = world.controller(quiet=True)
+    lifecycle = ctl.start_lifecycle("PACKET-01")
+    outcome = ctl.run_worker(
+        "PACKET-01",
+        sleeper=lambda _seconds: None,
+        max_cycles=6,
+    )
+
+    assert outcome == "completed"
+    assert store.latest_lifecycle(world.conn, "PACKET-01")["id"] == lifecycle["id"]
+    assert world.row("PACKET-01")["status"] == "merged"
+    assert len(prompts) == 2
+    assert "preserve the PRD boundary" in prompts[1]
+    assert world.pushed == ["loop/packet-01", "loop/packet-01"]
+    assert [row["kind"] for row in store.notifications(world.conn, "PACKET-01")] == [
+        "started",
+        "rework_needed",
+        "completed",
+    ]
+
+
+def test_active_lifecycle_and_unchanged_preflight_notification_are_deduplicated(
+    world,
+    monkeypatch,
+):
+    world.add_packet("PACKET-01")
+    world.pin_oracle()
+    monkeypatch.setattr(
+        gates,
+        "preflight",
+        lambda *args, **kwargs: ["GitHub authentication is unavailable"],
+    )
+
+    ctl = world.controller(quiet=True)
+    first = ctl.start_lifecycle("PACKET-01")
+    second = ctl.start_lifecycle("PACKET-01")
+    ctl.worker_cycle("PACKET-01")
+    ctl.worker_cycle("PACKET-01")
+
+    assert first["id"] == second["id"]
+    assert world.conn.execute("SELECT COUNT(*) FROM lifecycles").fetchone()[0] == 1
+    updates = store.notifications(world.conn, "PACKET-01")
+    assert [row["kind"] for row in updates] == ["started", "blocked"]
+    assert "GitHub authentication" in updates[-1]["message"]
+
+
+def test_worker_recovers_same_lifecycle_after_transient_preflight_failure(
+    world,
+    monkeypatch,
+):
+    world.add_packet("PACKET-01")
+    world.pin_oracle()
+    checks = iter(
+        [
+            ["network cannot reach GitHub"],
+            ["network cannot reach GitHub"],
+            [],
+        ]
+    )
+    monkeypatch.setattr(gates, "preflight", lambda *args, **kwargs: next(checks))
+    builds = []
+
+    def builder(config, worktree, run_dir, prompt, timeout):
+        builds.append(prompt)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        commits(worktree)
+        return {
+            "outcome": "exited",
+            "code": 0,
+            "wall": 1,
+            "detail": "",
+            "tokens": None,
+        }
+
+    monkeypatch.setattr(agents, "run_builder", builder)
+    ctl = world.controller(quiet=True)
+    lifecycle = ctl.start_lifecycle("PACKET-01")
+
+    outcome = ctl.run_worker(
+        "PACKET-01",
+        sleeper=lambda _seconds: None,
+        max_cycles=3,
+    )
+
+    assert outcome == "active"
+    assert store.active_lifecycle(world.conn, "PACKET-01")["id"] == lifecycle["id"]
+    assert world.row("PACKET-01")["status"] == "awaiting_ci"
+    assert len(builds) == 1
+    updates = store.notifications(world.conn, "PACKET-01")
+    assert [row["kind"] for row in updates] == ["started", "blocked", "started"]
+    assert "preflight recovered" in updates[-1]["message"]
+
+
+def test_worker_completes_only_after_the_required_owner_merge_gate(
+    world,
+    monkeypatch,
+):
+    world.add_packet("PACKET-01")
+    world.pin_oracle()
+    world.ci[100] = {
+        "verdict": "green",
+        "failing": [],
+        "unreported": [],
+        "runs": {},
+    }
+    monkeypatch.setattr(
+        agents,
+        "run_builder",
+        fake_builder(lambda worktree: commits(worktree)),
+    )
+    monkeypatch.setattr(
+        agents,
+        "run_reviewer",
+        lambda config, repo, run_dir, prompt, timeout: (
+            run_dir.mkdir(parents=True, exist_ok=True),
+            (run_dir / "verdict.json").write_text(
+                json.dumps({"verdict": "approve", "blocking": []})
+            ),
+            {"outcome": "exited", "code": 0, "wall": 1, "detail": ""},
+        )[-1],
+    )
+    ctl = world.controller(quiet=True)
+    lifecycle = ctl.start_lifecycle("PACKET-01")
+
+    assert ctl.run_worker(
+        "PACKET-01",
+        sleeper=lambda _seconds: None,
+        max_cycles=2,
+    ) == "active"
+    assert world.row("PACKET-01")["status"] == "merge_ready"
+    assert store.active_lifecycle(world.conn, "PACKET-01")["id"] == lifecycle["id"]
+    assert [row["kind"] for row in store.notifications(world.conn, "PACKET-01")] == [
+        "started",
+        "blocked",
+    ]
+
+    world.pr_states[100] = "MERGED"
+    assert ctl.run_worker(
+        "PACKET-01",
+        sleeper=lambda _seconds: None,
+        max_cycles=1,
+    ) == "completed"
+    assert store.latest_lifecycle(world.conn, "PACKET-01")["id"] == lifecycle["id"]
+    assert [row["kind"] for row in store.notifications(world.conn, "PACKET-01")] == [
+        "started",
+        "blocked",
+        "completed",
+    ]
 
 
 # --- 1. build failure --------------------------------------------------------
@@ -845,6 +1054,33 @@ def test_a_pr_merged_by_hand_is_reconciled(world, monkeypatch):
 
     assert world.row("PACKET-01")["status"] == "merged"
     assert [p.id for p, _ in ctl.selectable()] == ["PACKET-02"]
+
+
+def test_github_merge_overrides_a_stale_local_escalation(world):
+    """A blast-radius/manual escalation is not terminal after its PR merges.
+
+    The owner may merge the PR while the controller still carries the reason
+    that stopped automation.  Reconciliation must trust that exact PR's merged
+    state so dependants are not left blocked on stale local bookkeeping.
+    """
+    world.add_packet("PACKET-01", status="escalated")
+    world.add_packet("PACKET-02", depends_on=["PACKET-01"])
+    world.pin_oracle()
+    ctl = world.controller(synced=True)
+    with store.write(world.conn):
+        store.set_fields(
+            world.conn,
+            "PACKET-01",
+            pr_number=100,
+            reason="approved and green; owner merge required for blast radius",
+        )
+    world.pr_states[100] = "MERGED"
+
+    ctl.reconcile()
+
+    assert world.row("PACKET-01")["status"] == "merged"
+    assert world.row("PACKET-01")["reason"] is None
+    assert [packet.id for packet, _ in ctl.selectable()] == ["PACKET-02"]
 
 
 def test_a_pr_closed_without_merging_escalates(world, monkeypatch):
