@@ -52,6 +52,26 @@ from support.tiers import requires_postgres
 _UNPATCHED_CREATE_ALL = MetaData.create_all
 
 
+@pytest.fixture
+def temporal_chase():
+    """Attach the real time-skipping chase Worker to a protected test app."""
+
+    from support.chase_temporal import ChaseTemporalDriver
+
+    drivers: list[ChaseTemporalDriver] = []
+
+    def start(domain):
+        driver = ChaseTemporalDriver(domain).start()
+        drivers.append(driver)
+        return driver
+
+    try:
+        yield start
+    finally:
+        for driver in reversed(drivers):
+            driver.close()
+
+
 @pytest.fixture(autouse=True)
 def dispose_application_engines(monkeypatch):
     """Dispose every engine `build_engine` hands an application in this test.

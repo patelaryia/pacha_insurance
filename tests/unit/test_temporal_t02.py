@@ -1144,10 +1144,26 @@ def test_the_starter_exposes_no_query_update_terminate_or_cancel_method():
     assert surface == {"start", "signal"}
 
 
-def test_the_production_intent_mapping_registry_is_empty():
-    """T02 ships no production business Workflow, so it maps nothing to one."""
+def test_the_production_intent_mapping_registry_is_the_t03_chase_surface():
+    """T03 adds only its start and opaque wake events to T02's bridge."""
 
-    assert TEMPORAL_INTENT_MAPPINGS == ()
+    assert {
+        (mapping.event_type, mapping.action, mapping.signal_name)
+        for mapping in TEMPORAL_INTENT_MAPPINGS
+    } == {
+        ("chase.workflow_requested", "start", None),
+        ("chase.item_requested", "signal", "pacha_event"),
+        ("chase.item_received", "signal", "document_received"),
+        ("chase.item_verified", "signal", "document_received"),
+        ("chase.item_rejected", "signal", "pacha_event"),
+        ("chase.item_waived", "signal", "pacha_event"),
+        ("chase.item_snoozed", "signal", "snooze_changed"),
+        ("chase.reminder_sent", "signal", "pacha_event"),
+        ("chase.complete", "signal", "pacha_event"),
+        ("chase.cancelled", "signal", "claim_terminal"),
+        ("chase.inbound_received", "signal", "inbound_received"),
+        ("chase.review_resolved", "signal", "review_resolved"),
+    }
 
 
 # =============================================================================

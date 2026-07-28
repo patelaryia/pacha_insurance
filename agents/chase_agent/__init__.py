@@ -7,11 +7,11 @@ from typing import Any
 
 import yaml
 
+from chase_agent.activities import ChaseActivities, chase_activity_registrations
 from chase_agent.api import build_router
 from chase_agent.checklist import ChecklistService
 from chase_agent.matcher import ChaseMatcher
 from chase_agent.models import ChaseChecklist, ChaseItem
-from chase_agent.reminders import ReminderEngine
 from claim_core import Base
 
 
@@ -70,6 +70,7 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
         or configured.get("reminder_cap") != 6
         or inbound != {"window_hours": 24, "defer_hours": 48}
         or configured.get("cc_insured_from_reminder") != 2
+        or configured.get("exception_routing_role") != "claims_officer"
         or not isinstance(reasons, dict)
         or not set(reasons) <= {
             "illegible",
@@ -89,20 +90,29 @@ def checklist_tables() -> tuple[Any, ...]:
 
 
 class ChaseAgent:
-    """Application-owned facade exposing the deterministic Beat tick."""
+    """Application-owned PRD-06 domain facade.
+
+    Durable timing belongs exclusively to ``DocumentChaseWorkflow``.  Worker
+    bootstrap asks this facade for the bound Activity object; there is no
+    clock-driven production ``tick`` path.
+    """
 
     def __init__(
         self,
+        app: Any,
         checklist: ChecklistService,
         matcher: ChaseMatcher,
-        reminders: ReminderEngine,
     ) -> None:
+        self.app = app
         self.checklist = checklist
         self.matcher = matcher
-        self.reminders = reminders
 
-    def tick(self, now: Any = None) -> dict[str, int]:
-        return self.reminders.tick(now)
+    def temporal_activities(self, *, worker_build_id: str) -> ChaseActivities:
+        return ChaseActivities(
+            self.app,
+            self.checklist,
+            worker_build_id=worker_build_id,
+        )
 
 
 def build_chase_agent(app: Any, *, config: dict[str, Any] | None = None) -> ChaseAgent:
@@ -119,8 +129,7 @@ def build_chase_agent(app: Any, *, config: dict[str, Any] | None = None) -> Chas
     )
     checklist = ChecklistService(app, registry, configured)
     matcher = ChaseMatcher(app, checklist)
-    reminders = ReminderEngine(app, checklist, configured)
-    agent = ChaseAgent(checklist, matcher, reminders)
+    agent = ChaseAgent(app, checklist, matcher)
     app.state.chase_agent = agent
     app.state.dispatcher.register_consumer("chase_checklist", checklist.consume)
     app.state.dispatcher.register_consumer("chase_matcher", matcher.consume)
@@ -128,4 +137,10 @@ def build_chase_agent(app: Any, *, config: dict[str, Any] | None = None) -> Chas
     return agent
 
 
-__all__ = ["ChaseAgent", "build_chase_agent", "checklist_tables"]
+__all__ = [
+    "ChaseActivities",
+    "ChaseAgent",
+    "build_chase_agent",
+    "chase_activity_registrations",
+    "checklist_tables",
+]

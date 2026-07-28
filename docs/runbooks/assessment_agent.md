@@ -36,9 +36,10 @@ no cc channel. Garage details and unavailable claim-form/logbook attachments are
 ## SLA and reminders
 
 `assessment.dispatched` starts a separate `assessor_turnaround` business-day clock keyed by
-`assessor_party_id`. At T+3 business days the existing chase tick stages T-06r-assessor to
-that assessor only. PACKET-17 will emit `assessment.report_received` to stop the matching
-clock. Breach routing remains visible but `escalate_to_role` is still `pending_capture`.
+`assessor_party_id`. At T+3 business days the checklist's
+`pacha.chase.{checklist_ulid}` Temporal Workflow wakes and stages T-06r-assessor to that
+assessor only. PACKET-17 will emit `assessment.report_received` to stop the matching clock.
+Breach routing remains visible but `escalate_to_role` is still `pending_capture`.
 
 Useful checks:
 

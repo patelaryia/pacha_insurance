@@ -32,6 +32,7 @@ class AgentRuntime:
         pack_root = repo / "packs" / "motor"
         Base.metadata.create_all(app.state.engine, tables=[AgentRun.__table__])
         self.app = app
+        self.projection = AgentRunProjection(app)
         app.state.eval_harness.graders.activate_gcomm()
         self.runner = AgentRunner(app, pack_root / "cop_steps.yaml")
         self.gate = AutonomyGate(

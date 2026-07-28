@@ -4,7 +4,7 @@ repeat_days: 7
 reminder_cap: 6
 inbound_defer: {window_hours: 24, defer_hours: 48}
 cc_insured_from_reminder: 2
-tick_interval_minutes: 15
+exception_routing_role: claims_officer
 reject_reasons:
   illegible: document content could not be validated
   wrong_vehicle: vehicle details conflict with the claim

@@ -13,6 +13,16 @@ step_definitions:
   - capability_id: assessment.mode_shadow
     steps:
       - {id: call_model, expects_events: [assessment.mode_item_created], produces: [model.called]}
+  - capability_id: chase.checklist
+    steps:
+      - {id: chase_record_start, expects_events: [chase.workflow_requested], produces: [agent.run_started]}
+      - {id: chase_load_state, expects_events: [agent.run_started], produces: [chase.state_loaded]}
+      - {id: chase_initial_request, expects_events: [chase.state_loaded], produces: [chase.item_requested]}
+      - {id: chase_wait, expects_events: [chase.state_loaded], produces: [chase.wake_applied]}
+      - {id: chase_apply_event, expects_events: [chase.wake_applied], produces: [chase.state_loaded]}
+      - {id: chase_reminder, expects_events: [chase.state_loaded], produces: [chase.reminder_sent]}
+      - {id: chase_exhausted, expects_events: [chase.state_loaded], produces: [review.created]}
+      - {id: chase_terminal, expects_events: [chase.state_loaded], produces: [chase.complete, chase.cancelled]}
   - capability_id: pack.merge
     steps:
       - {id: resolve_manifest, expects_events: [pack.merge_requested], produces: [pack.merged]}

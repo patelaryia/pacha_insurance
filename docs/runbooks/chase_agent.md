@@ -2,8 +2,15 @@
 
 The PRD-06 chase agent is installed after the intake agent with
 `build_chase_agent(app)`. It consumes `chase.init`, claim-state changes, and
-document classification/extraction events. The 15-minute scheduler calls
-`app.state.chase_agent.tick()`.
+document classification/extraction events. Each checklist transaction prepares
+one `agent_runs` row and `chase.workflow_requested` outbox intent; the
+`DocumentChaseWorkflow` identity is `pacha.chase.{checklist_ulid}`. There is no
+Beat/tick chase path.
+
+The control Worker registers `CHASE_WORKFLOWS` plus the six callables returned
+by `chase_activity_registrations(app.state.chase_agent.temporal_activities(
+worker_build_id=config.build_id))`. Domain events wake the Workflow with opaque
+event ULIDs; recipient, item and claim data remain in PostgreSQL.
 
 ## Reminder operations
 
@@ -13,19 +20,28 @@ Cadence, deferral, cap, and recipient-ladder values are owned by
 pending capture. Do not treat a staged draft as `email.sent`.
 
 An initial T-06 attempt outside the AR-3a window remains durable as unrequested
-pending items. Each 15-minute tick retries those checklists, so the first
-in-window tick stages the request and starts item clocks. A refused outcome
-remains retryable and must also leave its gate/review evidence visible.
+pending items. Reminder Activities persist the next AR-3a window open on due
+rows and the Workflow sleeps to that instant. A recoverable requester-missing,
+send-refused, or uncertain-write outcome pauses the run on a visible `EXCEPTION`
+wait without closing the Workflow or checklist. An approved/edited resolution
+explicitly authorises a fresh attempt; rejection refuses an automatic retry and
+leaves the checklist open in a Signal-driven wait. Inbound documents can still
+complete the checklist; do not restart automatic attempts without a new
+governed exception/resolution path.
 
 `EXCEPTION{chase_exhausted}` means at least one outstanding item reached six
 reminders. Confirm the requester and document need, then resolve the work item;
-the engine will not create a seventh reminder. Terminal claims cancel their
-open checklists and must produce no further attempts.
+the engine will not create a seventh reminder. Approve/Edit→Approve continues
+Signal-driven collection at the cap; Reject closes it. Terminal claims cancel
+their open checklists and must produce no further attempts.
 
-At L3+, the pending Graph transport can refuse the same due reminder on every
-tick, producing repeated blocked action-run rows. Until item 1 installs the
-transport/release queue, treat these as one dependency outage; do not close the
-underlying checklist or advance its cadence.
+At L3+, the pending Graph transport can refuse a due reminder. The single-
+Until item 1 installs the transport/release queue, treat this as one dependency
+outage; do not close the underlying checklist or advance its cadence.
+
+`EXCEPTION{uncertain_write}` means the Worker lost the outcome after the
+governed Activity was scheduled. Inspect the target independently. Approve a
+retry only after confirming non-execution; the same stable write ID is reused.
 
 ## Physical receipt and waivers
 
@@ -47,9 +63,13 @@ sole remaining item. Manual document reuse/replay remains pending capture.
 ## Diagnostics
 
 - `GET /chase/claims/{claim_id}` shows every never-purged checklist item.
+- Query `state` on the Workflow only for opaque operational status; PostgreSQL
+  remains authoritative for checklist detail.
 - `GET /portfolio` exposes document-cycle, broker-response, and claim chase-time
   series; chase-cycle rows are keyed by checklist id and carry claim id, and each
   series also has a CSV endpoint.
 - If reminders are unexpectedly absent, check claim suppression state,
   `snooze_until`, a reply within the deferral window, template status, and the
-  AR-3 send window in that order.
+  AR-3 send window in that order. Then inspect `agent_runs.status`,
+  `last_workflow_event_ref`, the Temporal outbox delivery, and control-queue
+  schedule-to-start latency.

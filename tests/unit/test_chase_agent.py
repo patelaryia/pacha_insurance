@@ -45,11 +45,30 @@ repeat_days: 7
 reminder_cap: 6
 inbound_defer: {window_hours: 24, defer_hours: 48}
 cc_insured_from_reminder: 2
+exception_routing_role: claims_officer
 reject_reasons: {illegible: unreadable}
 """,
     )
     with pytest.raises(ValueError, match="launch contract"):
         _load_config(path, {"reminder_cap": 7})
+
+
+def test_chase_exception_routing_role_is_pack_owned(tmp_path):
+    path = _write(
+        tmp_path / "chase.yaml",
+        """version: 1
+cadence_days: [3, 7, 12]
+repeat_days: 7
+reminder_cap: 6
+inbound_defer: {window_hours: 24, defer_hours: 48}
+cc_insured_from_reminder: 2
+exception_routing_role: claims_officer
+reject_reasons: {illegible: unreadable}
+""",
+    )
+    assert _load_config(path, {})["exception_routing_role"] == "claims_officer"
+    with pytest.raises(ValueError, match="launch contract"):
+        _load_config(path, {"exception_routing_role": "claims_manager"})
 
 
 def test_waiver_reason_cannot_be_whitespace():
