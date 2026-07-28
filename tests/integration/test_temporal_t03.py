@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -52,6 +53,41 @@ P15 = _acceptance_module()
 def _aware(value: datetime | str) -> datetime:
     parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def test_acceptance_driver_drains_events_emitted_by_a_slow_chase_activity(
+    tmp_path,
+    temporal_chase,
+    monkeypatch,
+):
+    domain = P15._build(
+        tmp_path,
+        "temporal-t03-slow-activity",
+        model=P15._intimation_model(),
+    )
+    checklist = domain.app.state.chase_agent.checklist
+    ensure_initial_request = checklist.ensure_initial_request
+
+    def delayed_initial_request(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        time.sleep(0.75)
+        return ensure_initial_request(*args, **kwargs)
+
+    monkeypatch.setattr(
+        checklist,
+        "ensure_initial_request",
+        delayed_initial_request,
+    )
+    temporal_chase(domain)
+
+    claim_id = P15._to_checklist(domain)
+
+    clocks = P15._rows(
+        domain.app,
+        "SELECT id FROM sla_clocks WHERE claim_id = :claim_id "
+        "AND definition_id = 'doc_item_age' AND stopped_at IS NULL",
+        claim_id=claim_id,
+    )
+    assert len(clocks) == 7
 
 
 class _Harness:
