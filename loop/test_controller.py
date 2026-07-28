@@ -391,6 +391,93 @@ def test_active_lifecycle_and_unchanged_preflight_notification_are_deduplicated(
     assert "GitHub authentication" in updates[-1]["message"]
 
 
+def test_owner_activation_is_seeded_before_builder_work(world, monkeypatch):
+    """The red owner contract travels in the final implementation PR."""
+    contract = world.repo / "tests" / "acceptance" / "test_new_contract.py"
+    contract.write_text("def test_owner_contract():\n    assert True\n")
+    packet = world.add_packet(
+        "PACKET-01",
+        tests=("tests/acceptance/test_new_contract.py",),
+    )
+    world.pin_oracle()
+    git(
+        [
+            "add",
+            str(packet.relative_to(world.repo)),
+            str(contract.relative_to(world.repo)),
+            "loop/oracle.lock",
+        ],
+        world.repo,
+    )
+    git(["commit", "-qm", "owner activates packet"], world.repo)
+    activation_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(world.repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    observed = {}
+
+    def builder(worktree):
+        observed["packet"] = (
+            worktree / "docs" / "packets" / "PACKET-01.md"
+        ).read_text()
+        observed["contract"] = (
+            worktree / "tests" / "acceptance" / "test_new_contract.py"
+        ).read_text()
+        commits(worktree, message="implement owner contract")
+
+    monkeypatch.setattr(agents, "run_builder", fake_builder(builder))
+
+    ctl = world.controller(quiet=True)
+    lifecycle = ctl.start_lifecycle("PACKET-01")
+    result = ctl.worker_cycle("PACKET-01")
+
+    row = world.row("PACKET-01")
+    assert result == "ci"
+    assert row["status"] == "awaiting_ci"
+    assert lifecycle["base_sha"] == world.base_sha
+    assert lifecycle["activation_sha"] == activation_sha
+    assert row["activation_head_sha"]
+    assert "# PACKET-01" in observed["packet"]
+    assert "test_owner_contract" in observed["contract"]
+    worktree = ctl.worktree_for("PACKET-01")
+    assert forge.changed_paths(worktree, row["activation_head_sha"]) == [
+        "platform/thing.py"
+    ]
+    assert set(forge.changed_paths(worktree, world.base_sha)) == {
+        "docs/packets/PACKET-01.md",
+        "loop/oracle.lock",
+        "platform/thing.py",
+        "tests/acceptance/test_new_contract.py",
+    }
+
+
+def test_activation_refuses_product_changes_before_lifecycle_start(world):
+    packet = world.add_packet("PACKET-01")
+    world.pin_oracle()
+    product = world.repo / "platform" / "smuggled.py"
+    product.parent.mkdir()
+    product.write_text("# not an owner activation input\n")
+    git(
+        [
+            "add",
+            str(packet.relative_to(world.repo)),
+            "loop/oracle.lock",
+            str(product.relative_to(world.repo)),
+        ],
+        world.repo,
+    )
+    git(["commit", "-qm", "mixed activation"], world.repo)
+
+    with pytest.raises(P.SpecError, match="outside the owner packet contract"):
+        world.controller().start_lifecycle("PACKET-01")
+
+    assert store.active_lifecycle(world.conn, "PACKET-01") is None
+
+
 def test_worker_recovers_same_lifecycle_after_transient_preflight_failure(
     world,
     monkeypatch,

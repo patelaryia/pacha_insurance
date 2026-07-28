@@ -172,6 +172,33 @@ def ensure_worktree(repo: pathlib.Path, worktree: pathlib.Path, branch: str,
     return "created"
 
 
+def seed_activation(
+    worktree: pathlib.Path,
+    activation_sha: str,
+    paths: list[str],
+    packet_id: str,
+) -> str:
+    """Commit the owner's immutable packet contract before builder work.
+
+    The source commit is validated by the controller before this function is
+    called. Checking out only its allow-listed packet, oracle and named
+    acceptance paths prevents unrelated commits in the operator checkout from
+    entering the build branch.
+    """
+    if not paths:
+        return _run(["git", "rev-parse", "HEAD"], worktree)
+    _run(["git", "checkout", activation_sha, "--", *paths], worktree)
+    _run(["git", "add", "--", *paths], worktree)
+    changed = _run(["git", "diff", "--cached", "--name-only"], worktree)
+    if not changed:
+        return _run(["git", "rev-parse", "HEAD"], worktree)
+    _run(
+        ["git", "commit", "-m", f"Activate {packet_id} owner contract"],
+        worktree,
+    )
+    return _run(["git", "rev-parse", "HEAD"], worktree)
+
+
 def ensure_review_worktree(
     repo: pathlib.Path,
     worktree: pathlib.Path,
