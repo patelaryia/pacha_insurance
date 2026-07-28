@@ -19,6 +19,7 @@ time, on a laptop whose timings are not comparable anyway.
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
@@ -155,6 +156,7 @@ def preflight(config: dict, *, check_identities: bool = True) -> list[str]:
         )
 
     if check_identities:
+        problems += agent_auth_problems(config)
         problems += identity_problems(config)
         problems += live_identity_problems(config)
 
@@ -163,6 +165,42 @@ def preflight(config: dict, *, check_identities: bool = True) -> list[str]:
     except (forge.ForgeError, KeyError) as exc:
         problems.append(f"repository identity check failed: {exc}")
 
+    return problems
+
+
+def agent_auth_problems(config: dict) -> list[str]:
+    """Verify the configured builder and reviewer sessions before dispatch.
+
+    These CLIs have different status commands. Unknown custom agent commands
+    remain supported and are checked only for presence because the controller
+    cannot safely invent their authentication protocol.
+    """
+    checks = {
+        "codex": ["login", "status"],
+        "claude": ["auth", "status"],
+    }
+    problems = []
+    for role in ("builder", "reviewer"):
+        command = str(config[role]["command"])
+        name = pathlib.Path(command).name
+        args = checks.get(name)
+        if args is None or not shutil.which(command):
+            continue
+        code, out = _run([command, *args], REPO, timeout=60)
+        authenticated = code == 0
+        if name == "claude":
+            try:
+                status = json.loads(out)
+            except (json.JSONDecodeError, TypeError):
+                status = None
+            if isinstance(status, dict) and status.get("loggedIn") is False:
+                authenticated = False
+        if not authenticated:
+            detail = " ".join(out.strip().split())[:200]
+            problems.append(
+                f"{role} agent {name!r} is not authenticated"
+                + (f": {detail}" if detail else "")
+            )
     return problems
 
 

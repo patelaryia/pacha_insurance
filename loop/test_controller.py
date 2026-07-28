@@ -1321,6 +1321,39 @@ def test_configured_but_missing_builder_credential_pauses_even_without_auto_merg
     assert any("MISSING_BUILDER_TOKEN" in problem for problem in problems)
 
 
+def test_unavailable_reviewer_session_is_a_preflight_auth_problem(monkeypatch):
+    config = yaml.safe_load((pathlib.Path(__file__).parent / "config.yml").read_text())
+    monkeypatch.setattr(gates.shutil, "which", lambda command: f"/bin/{command}")
+
+    def auth_status(command, cwd, timeout=900, **kwargs):
+        if command[:3] == ["claude", "auth", "status"]:
+            return 0, '{"loggedIn": false, "authMethod": "none"}'
+        return 0, "Logged in using ChatGPT"
+
+    monkeypatch.setattr(gates, "_run", auth_status)
+
+    problems = gates.agent_auth_problems(config)
+
+    assert problems == [
+        'reviewer agent \'claude\' is not authenticated: '
+        '{"loggedIn": false, "authMethod": "none"}'
+    ]
+
+
+def test_authenticated_builder_and_reviewer_sessions_are_clear(monkeypatch):
+    config = yaml.safe_load((pathlib.Path(__file__).parent / "config.yml").read_text())
+    monkeypatch.setattr(gates.shutil, "which", lambda command: f"/bin/{command}")
+
+    def auth_status(command, cwd, timeout=900, **kwargs):
+        if command[:3] == ["claude", "auth", "status"]:
+            return 0, '{"loggedIn": true, "authMethod": "oauth"}'
+        return 0, "Logged in using ChatGPT"
+
+    monkeypatch.setattr(gates, "_run", auth_status)
+
+    assert gates.agent_auth_problems(config) == []
+
+
 # --- adversarial regressions -------------------------------------------------
 
 
