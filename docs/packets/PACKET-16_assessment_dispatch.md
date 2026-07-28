@@ -1,3 +1,28 @@
+---
+id: PACKET-16
+prd_ref: "docs/PRD-07_Assessment_Orchestration_Agent_v1.1.md \xA77.1\u2013\xA77.4 (\xA77.5\u2013\
+  \xA77.7 cascade/ledger are PACKET-17); Section 0.5 AR-1/AR-2/AR-3/AR-3a; PRD-00 \xA70.4\
+  \ (FSM edges INTIMATED\u2192\u2026\u2192IN_ASSESSMENT), \xA70.5 ( assessor_turnaround );\
+  \ PRD-02 R-05/R-06/R-07; PRD-04 \xA74.3 (closed enum, MODE_CONFIRM); PRD-05 \xA75.2 (thread-match);\
+  \ PRD-06 \xA76.4 (reminder engine reuse); Section 0 ED-8/ED-9/ED-11; guide \xA73.5/\xA7\
+  3.11/\xA76 (mode_confirm capped L2); registers #48/#49/#55/#56/#61/#111/#130/#152/#155/#157/#160/#163/#164/\
+  \ #168/#170/#174/#175/#176/#180. Precedence: Section 0 \u2192 Section 0.5 \u2192 PRD-00/PRD-02/PRD-04/PRD-05/PRD-06/PRD-07\
+  \ \u2192 PACKET-06..15 contracts \u2192 this packet."
+title: "Assessment orchestration, slice 1: vendors, mode decision, dispatch, assessor SLA\
+  \ (PRD-07 \xA77.2\u2013\xA77.4)"
+depends_on:
+- PACKET-15
+status: merged
+branch: codex/packet-16-assessment-dispatch
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_16_assessment_dispatch.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-16 — Assessment orchestration, slice 1: vendors, mode decision, dispatch, assessor SLA (PRD-07 §7.2–§7.4)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

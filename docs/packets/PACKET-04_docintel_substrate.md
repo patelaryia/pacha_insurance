@@ -1,3 +1,23 @@
+---
+id: PACKET-04
+prd_ref: "docs/PRD-01_Document_Intelligence_Engine_v1.1.md \xA71.2\u2013\xA71.5 (+\xA71.7\
+  \ failure paths); Section 0 ED-4/ED-4a (LLM wrapper contract), ED-8, ED-9. Precedence: Section\
+  \ 0 \u2192 PRD-01 \u2192 this packet."
+title: 'Document Intelligence substrate: pipeline, normalize, schemas, validators, citations,
+  commit (PRD-01 slice 1 of 2)'
+depends_on:
+- PACKET-03
+status: merged
+branch: codex/packet-04-docintel-substrate
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_04_docintel_substrate.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-04 — Document Intelligence substrate: pipeline, normalize, schemas, validators, citations, commit (PRD-01 slice 1 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

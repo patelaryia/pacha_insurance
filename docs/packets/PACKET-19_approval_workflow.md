@@ -1,3 +1,26 @@
+---
+id: PACKET-19
+prd_ref: "docs/PRD-08_Approval_Pack_Generator_v1.1.md \xA78.2, \xA78.5\u2013\xA78.7; PRD-00\
+  \ \xA70.4; PRD-02 \xA72.4\u2013\xA72.5; PRD-03 \xA73.3/\xA73.5; PRD-04 \xA74.2\u2013\xA7\
+  4.5; PRD-09 \xA79.3 seam only; Section 0.5 AR-1/AR-2/AR-4/AR-5; Section 0 ED-1/ED-6a/ED-7/ED-8/ED-11;\
+  \ guide \xA73/\xA74/\xA76; registers #5/#6/#30/#61/#62/#67/#91/#104/#108/#116/#130/#157/#219\u2013\
+  #245."
+title: Approval-note review, crash-safe signing, authority routing, and S-3 approval (PRD-08
+  slice 2 of 2)
+depends_on:
+- PACKET-18
+status: merged
+branch: codex/packet-19-approval-workflow
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/console/test_packet_19_console.test.tsx
+- tests/acceptance/test_packet_19_approval_workflow.py
+review_findings: []
+pr: https://github.com/patelaryia/pacha_insurance/pull/23
+merged_at: '2026-07-23T00:00:00Z'
+---
+
 # PACKET-19 — Approval-note review, crash-safe signing, authority routing, and S-3 approval (PRD-08 slice 2 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per

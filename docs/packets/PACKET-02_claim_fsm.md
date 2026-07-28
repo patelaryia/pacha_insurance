@@ -1,3 +1,21 @@
+---
+id: PACKET-02
+prd_ref: "docs/PRD-00_Canonical_Claim_Object_and_Event_Spine_v1.1.md \xA70.4, \xA70.7, \xA7\
+  0.8 scenario (5). Precedence as ever: Section 0 \u2192 PRD-00 \u2192 this packet."
+title: Claim lifecycle FSM (PRD-00 slice 2)
+depends_on:
+- PACKET-01
+status: merged
+branch: codex/packet-02-claim-fsm
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_02_claim_fsm.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-02 — Claim lifecycle FSM (PRD-00 slice 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

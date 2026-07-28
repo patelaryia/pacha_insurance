@@ -1,3 +1,25 @@
+---
+id: PACKET-07
+prd_ref: "docs/PRD-02_COP_Runtime_v1.1.md \xA72.4\u2013\xA72.6; PRD-00 \xA70.4 (guard wiring,\
+  \ register #24); PRD-04 \xA74.3 (closed review-item enum \u2014 consumed, not built); PRD-08\
+  \ \xA78.4 (T-01 payable-slot semantics \u2014 consumed, not built); Section 0 ED-1, ED-8,\
+  \ ED-11. Precedence: Section 0 \u2192 PRD-00 \u2192 PRD-02 \u2192 PRD-04/PRD-08 \u2192 this\
+  \ packet."
+title: 'COP consumers: template engine, routing, outcome execution, FSM guard wiring (PRD-02
+  slice 2 of 2)'
+depends_on:
+- PACKET-06
+status: merged
+branch: codex/packet-07-cop-consumers
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_07_cop_consumers.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-07 — COP consumers: template engine, routing, outcome execution, FSM guard wiring (PRD-02 slice 2 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

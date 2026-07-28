@@ -1,3 +1,24 @@
+---
+id: PACKET-08
+prd_ref: "docs/PRD-03_Eval_Harness_and_Autonomy_Controller_v1.1.md \xA73.2\u2013\xA73.4, \xA7\
+  3.6, \xA73.7 (deterministic subset); Section 0.5 AR-2 (consumed, not built); PRD-00 \xA7\
+  0.3 event catalog ( grader.* , autonomy.* ); guide \xA73.11 autonomy constitution. Precedence:\
+  \ Section 0 \u2192 Section 0.5 \u2192 PRD-03 \u2192 this packet."
+title: 'Eval harness & autonomy controller: data model, deterministic graders, promotion machinery,
+  reporting (PRD-03 slice 1 of 2)'
+depends_on:
+- PACKET-07
+status: merged
+branch: codex/packet-08-eval-autonomy
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_08_eval_autonomy.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-08 — Eval harness & autonomy controller: data model, deterministic graders, promotion machinery, reporting (PRD-03 slice 1 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

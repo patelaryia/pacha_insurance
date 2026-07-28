@@ -1,3 +1,29 @@
+---
+id: PACKET-17
+prd_ref: "docs/PRD-07_Assessment_Orchestration_Agent_v1.1.md \xA77.5\u2013\xA77.7 (\xA77.2\u2013\
+  \xA77.4 shipped in PACKET-16); PRD-01 \xA71.3 (assessor_report closed field set), \xA71.4\
+  \ (no provenance, no commit), \xA71.6 (CC-1..CC-5); PRD-02 R-05/R-07, C-02/C-03/C-05; PRD-00\
+  \ \xA70.4 (REPORT_RECEIVED/WRITE_OFF edges), \xA70.5 ( assessor_turnaround stop); PRD-04\
+  \ \xA74.3 (closed enum, PROCEED_PARTIAL, CONSISTENCY_FLAG); PRD-05 \xA75.2 (inbound matching);\
+  \ Section 0.5 AR-1/AR-2; Section 0 ED-1/ED-8/ED-9/ED-11; guide \xA73.5/\xA73.11/\xA76; registers\
+  \ #48/#49/#55/#56/#58/#59/#64/#75/#111/#159/#164/#167/#182/#184/ #187/#190/#191/#194/#199.\
+  \ Precedence: Section 0 \u2192 Section 0.5 \u2192 PRD-00/01/02/04/05/07 \u2192 PACKET-06..16\
+  \ contracts \u2192 this packet."
+title: "Assessment orchestration, slice 2: report ingestion, cascade C1\u2013C5, savings ledger\
+  \ (PRD-07 \xA77.5\u2013\xA77.7, PRD-07 complete)"
+depends_on:
+- PACKET-16
+status: merged
+branch: codex/packet-17-assessment-cascade
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_17_assessment_cascade.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-17 — Assessment orchestration, slice 2: report ingestion, cascade C1–C5, savings ledger (PRD-07 §7.5–§7.7, PRD-07 complete)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

@@ -1,3 +1,22 @@
+---
+id: TEMPORAL-T02
+prd_ref: "docs/AGENT_BUILD_GUIDE.md , docs/Section_0_Shared_Engineering_Decisions_v1.1.md\
+  \ , docs/Section_0.5_Shared_Agent_Runtime_v1.1.md , PRD-00, PRD-03, PRD-04, and docs/architecture/TEMPORAL_IMPLEMENTATION_MASTER_PLAN.md\
+  \ \xA7\xA72\u201316, \xA7\xA719, 22\u201324"
+title: Runtime projection, outbox bridge and finite system Workflows
+depends_on:
+- TEMPORAL-T01
+status: merged
+branch: claude/temporal-t02-projection-bridge-system-workflows
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/integration/test_temporal_t02.py
+review_findings: []
+pr: https://github.com/patelaryia/pacha_insurance/pull/27
+merged_at: '2026-07-27T00:00:00Z'
+---
+
 # TEMPORAL-T02 — Runtime projection, outbox bridge and finite system Workflows
 
 > **Status:** issued for implementation

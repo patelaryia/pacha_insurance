@@ -1,0 +1,68 @@
+# Blast radius — paths where a wrong merge is expensive or irreversible.
+#
+# A packet whose declared or actual diff touches any of these is
+# `blast_radius: true`. Such a packet NEVER auto-merges and NEVER lands
+# unattended: whatever the reviewer says, it ends at `status: escalated` and
+# the repo owner merges it by hand.
+#
+# Seeded by the repo owner (2026-07-28). Adding a path here is cheap and
+# reversible; removing one is not. Agents MUST NOT edit this file — a packet
+# that wants a path removed escalates with a written argument instead.
+#
+# Patterns are gitignore-style globs matched against repo-relative paths.
+
+version: 1
+
+paths:
+  # --- Settlement and amounts payable (PRD-08 §8.x, PRD-12, ED-8) ----------
+  # Every path that computes, rounds, bands or renders an amount a human or
+  # an insurer acts on. `packs/*/calcs.py` is the 100%-coverage tier for a
+  # reason.
+  - platform/cop_runtime/money.py
+  - platform/cop_runtime/calcs.py
+  - platform/cop_runtime/routing.py
+  - packs/**/calcs/**
+  - packs/**/calcs.py
+  - packs/**/routing/**
+  - agents/approval_pack_agent/**
+
+  # --- Authentication and authorisation (PRD-04 §4.5, PRD-11) -------------
+  - platform/review_queue/auth.py
+  - platform/review_queue/rbac.py
+  - console/src/auth/**
+
+  # --- External data egress (AR-2, PRD-11 lot_public whitelist) -----------
+  # The single choke point for side effects, plus every transport that can
+  # put bytes outside the trust boundary.
+  - platform/agent_runtime/gate.py
+  - platform/agent_runtime/comms.py
+  - platform/notify/transports.py
+  - platform/claim_core/outbox.py
+  - platform/orchestration/codec.py
+
+  # --- ICON integration boundaries (PRD-09) ------------------------------
+  - agents/projection_agent/**
+  - platform/agent_runtime/projection.py
+  - platform/review_queue/projection.py
+  - packs/**/projection/**
+
+  # --- Database migrations (ED-1; schemas are DDL-level spec) -------------
+  - platform/claim_core/alembic/**
+
+  # --- Claimant PII (ED-6a encryption, AR-1 history minimisation) --------
+  - platform/claim_core/crypto.py
+  - platform/doc_intel/**
+
+  # --- The loop's own governance surface ---------------------------------
+  # A packet that edits the definition of done, the guards, or the loop is
+  # by definition not a routine packet.
+  - tests/acceptance/**
+  - tools/ci/**
+  - .github/**
+  - loop/**
+  - .claude/skills/**
+  - AGENTS.md
+  - CLAUDE.md
+  - docs/Section_0_Shared_Engineering_Decisions_v1.1.md
+  - docs/Section_0.5_Shared_Agent_Runtime_v1.1.md
+  - docs/AGENT_BUILD_GUIDE.md

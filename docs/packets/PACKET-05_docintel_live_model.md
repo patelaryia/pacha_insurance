@@ -1,3 +1,23 @@
+---
+id: PACKET-05
+prd_ref: "docs/PRD-01_Document_Intelligence_Engine_v1.1.md \xA71.1\u2013\xA71.7; Section 0\
+  \ ED-4/ED-4a and ED-11; PRD-04 \xA74.3 closed review-item enum. Precedence: Section 0 \u2192\
+  \ PRD-01 \u2192 PRD-04 \u2192 this packet."
+title: Document Intelligence live stages, split, vision citations, Swahili, consistency (PRD-01
+  slice 2 of 2)
+depends_on:
+- PACKET-04
+status: merged
+branch: codex/packet-05-docintel-live-model
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_05_docintel_live_model.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-05 — Document Intelligence live stages, split, vision citations, Swahili, consistency (PRD-01 slice 2 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

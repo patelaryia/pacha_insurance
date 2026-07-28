@@ -1,3 +1,27 @@
+---
+id: PACKET-15
+prd_ref: "docs/PRD-06_Document_Chase_Agent_v1.1.md \xA76.1\u2013\xA76.7 (all); Section 0.5\
+  \ AR-2/AR-3/AR-3a; PRD-00 \xA70.4 (suppression set), \xA70.5 ( doc_item_age ); PRD-05 \xA7\
+  5.5 (T-06 conditional blocks), \xA75.6 ( intake.doc_request ); PRD-02 R-13/R-14; PRD-04\
+  \ \xA74.3 (closed enum); Section 0 ED-8/ED-9 (chase rows never purged)/ED-11; guide \xA7\
+  3.5/\xA73.11/\xA76; registers #29/#49/#61/#64/#75/#79/#111/#130/#145/#147/#155/#157. Precedence:\
+  \ Section 0 \u2192 Section 0.5 \u2192 PRD-00/PRD-02/PRD-04/PRD-05/PRD-06 \u2192 PACKET-06..14\
+  \ contracts \u2192 this packet."
+title: 'Document-chase agent: checklists, matching, reminders, hard gates, analytics (PRD-06
+  complete)'
+depends_on:
+- PACKET-14
+status: merged
+branch: codex/packet-15-chase-agent
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_15_chase_agent.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-15 — Document-chase agent: checklists, matching, reminders, hard gates, analytics (PRD-06 complete)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

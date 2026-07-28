@@ -1,3 +1,23 @@
+---
+id: PACKET-06
+prd_ref: "docs/PRD-02_COP_Runtime_v1.1.md \xA72.1\u2013\xA72.3 (+\xA72.6 rule/calc acceptance);\
+  \ PRD-13 \xA713.2/\xA713.3 (pack layout + pinning, consumed early per guide \xA72); Section\
+  \ 0 ED-1, ED-8, ED-11. Precedence: Section 0 \u2192 PRD-02 \u2192 PRD-13 \u2192 this packet."
+title: 'COP engines: pack loader, rule runtime, calc registry, motor rules/calcs (PRD-02 slice
+  1 of 2)'
+depends_on:
+- PACKET-05
+status: merged
+branch: codex/packet-06-cop-engines
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_06_cop_engines.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-06 — COP engines: pack loader, rule runtime, calc registry, motor rules/calcs (PRD-02 slice 1 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

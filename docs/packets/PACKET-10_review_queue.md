@@ -1,3 +1,23 @@
+---
+id: PACKET-10
+prd_ref: "docs/PRD-04_Status_Console_and_Review_Queue_v1.1.md \xA74.2 (RBAC), \xA74.3 (S-1\
+  \ enum + four-part contract + routing + resolution), \xA74.5 acceptance scenarios 4 and\
+  \ 6; PRD-03 \xA73.5; PRD-00 \xA70.2/\xA70.4; Section 0 ED-8/ED-11; Section 0.5 AR-2. Precedence:\
+  \ Section 0 \u2192 Section 0.5 \u2192 PRD-04/PRD-03/PRD-00 \u2192 this packet."
+title: Review-queue substrate & resolution engine (PRD-04 slice 1 of 3)
+depends_on:
+- PACKET-09
+status: merged
+branch: codex/packet-10-review-queue
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_10_review_queue.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-10 — Review-queue substrate & resolution engine (PRD-04 slice 1 of 3)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

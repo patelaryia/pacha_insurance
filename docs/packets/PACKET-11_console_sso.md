@@ -1,3 +1,24 @@
+---
+id: PACKET-11
+prd_ref: "docs/PRD-04_Status_Console_and_Review_Queue_v1.1.md \xA74.1, \xA74.2, \xA74.3 S-1/S-2,\
+  \ \xA74.5 scenarios 3 and 5; Section 0 ED-1/ED-2/ED-6/ED-8/ED-11; PRD-01 \xA71.4; PACKET-10\
+  \ public queue contract. Precedence: Section 0 \u2192 PRD-04/PRD-01/PRD-00 \u2192 PACKET-10\
+  \ \u2192 this packet."
+title: Review console, Claim 360, Entra SSO & citation viewer (PRD-04 slice 2 of 3)
+depends_on:
+- PACKET-10
+status: merged
+branch: codex/packet-11-console-sso
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/console/test_packet_11_console.test.tsx
+- tests/acceptance/test_packet_11_console_api.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-11 — Review console, Claim 360, Entra SSO & citation viewer (PRD-04 slice 2 of 3)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

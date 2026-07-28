@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Installed into every builder worktree by the controller.
+#
+# The builder cannot modify the definition of done. If it could rewrite the
+# tests it is judged against, the loop is theatre.
+#
+# This checks CONTENT HASHES from loop/oracle.lock, not directory names.
+# The previous version matched paths, which was wrong in both directions: it
+# told the builder that all of tests/ was forbidden — making ED-7's required
+# unit tests unsatisfiable — while actually protecting only two directories,
+# so a named acceptance test living under tests/integration/ was editable.
+#
+# This hook is fast feedback, not enforcement. `git commit --no-verify`
+# defeats it. The enforcement is the controller, which re-hashes every
+# pinned file in the worktree after the builder exits and refuses to open a
+# PR if one moved. That check runs after the builder, so it cannot be
+# bypassed from inside it.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+oracle="${LOOP_ORACLE:-$repo_root/loop/oracle.lock}"
+
+if [[ ! -f "$oracle" ]]; then
+  echo "pre-commit: $oracle is missing — refusing to guess what is frozen" >&2
+  exit 1
+fi
+
+violations="$(python3 - "$oracle" "$repo_root" <<'PY'
+import hashlib, pathlib, subprocess, sys, yaml
+
+oracle = yaml.safe_load(open(sys.argv[1]))["files"]
+root = pathlib.Path(sys.argv[2])
+staged = subprocess.run(["git", "diff", "--cached", "--name-only"],
+                        capture_output=True, text=True).stdout.split()
+
+for rel in staged:
+    if rel not in oracle:
+        continue
+    path = root / rel
+    if not path.exists():
+        print(f"{rel} (deleted)")
+    elif hashlib.sha256(path.read_bytes()).hexdigest() != oracle[rel]:
+        print(f"{rel} (modified)")
+PY
+)"
+
+if [[ -n "$violations" ]]; then
+  cat >&2 <<EOF
+
+  REFUSED: this commit changes the definition of done.
+
+$(printf '%s\n' "$violations" | sed 's/^/    /')
+
+  These files are pinned by content hash in loop/oracle.lock. You do not get
+  to edit the tests you are judged against, and the controller will re-check
+  these hashes after you exit and refuse to open a PR.
+
+  New unit and integration tests are fine — write the ones ED-7 requires.
+  Only the pinned files above are frozen.
+
+  If you believe a pinned test contradicts the spec, stop and write
+  .loop/result.json in this worktree:
+
+      {"outcome": "escalated",
+       "summary": "...",
+       "escalation": {"reason": "...",
+                      "spec_clause": "ED-/AR-/PRD- clause it contradicts",
+                      "test": "path::test_name",
+                      "should_assert": "what the spec says it should assert"}}
+
+  A human decides. You do not.
+
+EOF
+  exit 1
+fi
