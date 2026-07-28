@@ -322,6 +322,36 @@ def test_reminder_cap_boundary_is_exact(
     assert state.attempt_no == expected_attempt
 
 
+def test_future_cap_due_retains_the_exhaustion_timer(tmp_path):
+    env = P15._build(
+        tmp_path,
+        "t03-cap-future-wake",
+        model=P15._intimation_model(),
+    )
+    claim_id = P15._to_checklist(env)
+    checklist_id, _run, activities, command = _initialise(env, claim_id)
+    due_at = env.clock.now + timedelta(days=7)
+    with env.app.state.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE chase_items SET next_reminder_at = :due_at, "
+                "reminder_count = 6 WHERE checklist_id = :checklist_id"
+            ),
+            {"due_at": due_at, "checklist_id": checklist_id},
+        )
+
+    waiting = activities._load(command)  # noqa: SLF001 - timer boundary seam
+    assert waiting.step_id == "chase_wait"
+    assert waiting.wake_at_epoch_ms == int(due_at.timestamp() * 1000)
+    assert waiting.attempt_no is None
+
+    env.clock.advance_to(due_at)
+    exhausted = activities._load(command)  # noqa: SLF001 - timer boundary seam
+    assert exhausted.step_id == "chase_exhausted"
+    assert exhausted.attempt_no is None
+    assert len(P15._drafts(env.app, claim_id, "chase.reminder")) == 0
+
+
 def test_cc_insured_starts_at_reminder_two_exactly(tmp_path):
     env = P15._build(tmp_path, "t03-cc-boundary", model=P15._intimation_model())
     claim_id = P15._to_checklist(env)

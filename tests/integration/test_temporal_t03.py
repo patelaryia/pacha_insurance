@@ -166,7 +166,17 @@ def harness(tmp_path):
     temporal_now = loop.run_until_complete(temporal.get_current_time())
 
     domain = P15._build(tmp_path, "temporal-t03", model=P15._intimation_model())
-    aligned = domain.app.state.agent_runtime.comms.next_send_window(temporal_now)
+    # Keep cadence assertions independent of the test server's wall-clock
+    # weekday. Monday 09:00 EAT is an exact open send-window boundary.
+    aligned = temporal_now.astimezone(UTC).replace(
+        hour=6,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    aligned += timedelta(days=(-aligned.weekday()) % 7)
+    if aligned <= temporal_now:
+        aligned += timedelta(days=7)
     if aligned > temporal_now:
         loop.run_until_complete(temporal.sleep(aligned - temporal_now))
     domain.clock.advance_to(aligned)

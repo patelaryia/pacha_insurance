@@ -247,6 +247,10 @@ def _set_level(app, capability_id: str, level: str) -> None:
 
 
 def _drain(app, cycles: int = 96) -> None:
+    temporal = getattr(app.state, "temporal_chase_driver", None)
+    if temporal is not None:
+        temporal.drain()
+        return
     for _ in range(cycles):
         if app.state.dispatcher.dispatch_once() == 0:
             break
@@ -258,6 +262,7 @@ class Env:
         self.client = client
         self.classifier = classifier
         self.clock = clock
+        self.started_at = T0
         self.model = model
         self.processed: set[str] = set()
         self.message_seq = 0
@@ -361,7 +366,12 @@ def _advance(env: Env, cycles: int = 8) -> None:
 
 
 def _at(env: Env, days: int, hours: int = 0) -> None:
-    env.clock.advance_to(T0 + timedelta(days=days, hours=hours))
+    target = env.started_at + timedelta(days=days, hours=hours)
+    temporal = getattr(env.app.state, "temporal_chase_driver", None)
+    if temporal is None:
+        env.clock.advance_to(target)
+    else:
+        temporal.advance_to(target)
 
 
 def _resolve(env: Env, item_id: str, actor: str, *, action: str,
@@ -810,18 +820,22 @@ def test_unknown_or_inactive_vendor_422_and_reject_reissues(tmp_path):
 # --- Warn-day assessor reminder via the chase engine (§7.4) --------------------------
 
 
-def test_assessor_reminder_stages_t06r_assessor_at_warn(tmp_path):
+def test_assessor_reminder_stages_t06r_assessor_at_warn(tmp_path, temporal_chase):
     env = _build(tmp_path, "reminder", model=_model())
+    temporal_chase(env)
     claim_id, card = _to_mode_card(env)
     assert _approve_mode(env, card, mode="physical",
                          vendor_ids=["V-ALPHA"]).status_code == 200
     _drain(env.app)
     assessor_id = _parties(env, claim_id, "assessor")[0]["id"]
 
+    before_reminders = len(_drafts(env.app, claim_id, "chase.reminder"))
     _at(env, days=3, hours=1)
-    result = env.app.state.chase_agent.tick()
-    assert result["sent"] >= 1
     _drain(env.app)
+    assert (
+        len(_drafts(env.app, claim_id, "chase.reminder")) - before_reminders
+        >= 1
+    )
 
     reminders = [
         draft for draft in _drafts(env.app, claim_id, "chase.reminder")

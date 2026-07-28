@@ -475,7 +475,7 @@ class ChaseActivities:
 
         wakes: list[datetime] = []
         for item in outstanding:
-            if item.reminder_count >= cap or item.next_reminder_at is None:
+            if item.next_reminder_at is None:
                 continue
             wake = aware(item.next_reminder_at)
             if item.snooze_until is not None:
