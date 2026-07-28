@@ -36,3 +36,4 @@ files:
   tests/integration/test_temporal_orchestration.py: 62d5b2c9ec96f982b4729cbd920ff95288dd19833d71da76ce2ff8f16f00090c
   tests/integration/test_temporal_t02.py: cc7ee823927ec8cdec0af60de6dfe9b26e01431dd8a1c582c8b6515c95173096
   tests/integration/test_temporal_t03.py: 742d2a2c499c378f914f23460823fcb20412f066185c42d17ae0ca46a19b9a5d
+  tests/integration/test_temporal_t04.py: 48663d001dd4645c503135a7f18a826a36177813a6c5d47bb1dc4672eecb4cc8
