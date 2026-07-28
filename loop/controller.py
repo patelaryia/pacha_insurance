@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""The controller. One state machine, one writer, one tick.
+"""The controller. One state machine and one writer.
 
 Every status transition in the loop happens in this file. Agents return
 evidence; the controller decides what it means. Nothing an agent writes to a
 packet file has any effect.
 
-A tick, in order:
+A worker cycle, in order:
 
     1. reconcile   — expired leases, and GitHub's view of every open PR
     2. preflight   — can this machine build at all?
@@ -15,15 +15,20 @@ A tick, in order:
     5. dispatch    — queued and rework packets, up to the concurrency cap
     6. audit       — publish the ledger snapshot on a controller-only branch
 
-Order matters. Reconcile first, so a PR merged by hand between ticks stops
+Order matters. Reconcile first, so a PR merged by hand between polls stops
 blocking its dependants. Breakers before dispatch, so a tripped loop starts
 nothing — including packets that look fine on their own, which are exactly
 the expensive ones when the slice is bad.
+
+``tick`` remains as a diagnostic/backwards-compatible one-shot.  Production
+continuation is ``worker``: a persisted packet lifecycle containing many
+internal polls, retries, reviews and rework attempts.
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import pathlib
 import sys
@@ -55,7 +60,16 @@ def _pr_number(value) -> int | None:
 
 
 class Controller:
-    def __init__(self, config: dict, conn, *, dry_run: bool = False, board_dir=None):
+    def __init__(
+        self,
+        config: dict,
+        conn,
+        *,
+        dry_run: bool = False,
+        board_dir=None,
+        quiet: bool = False,
+        packet_scope: str | None = None,
+    ):
         self.config = config
         self.conn = conn
         self.dry = dry_run
@@ -63,12 +77,15 @@ class Controller:
         self.owner = store.owner_token()
         self.log: list[str] = []
         self._tick_lease_active = False
+        self.quiet = quiet
+        self.packet_scope = packet_scope
 
     # --- plumbing ------------------------------------------------------------
 
     def say(self, message: str) -> None:
         self.log.append(message)
-        print(message)
+        if not self.quiet:
+            print(message)
 
     def would(self, message: str) -> None:
         self.say(f"  WOULD: {message}")
@@ -128,6 +145,251 @@ class Controller:
                     reason=packet.meta.get("reason"),
                     declared_blast_radius=packet.meta["blast_radius"],
                 )
+
+    # --- durable lifecycle and material notifications -----------------------
+
+    def notify_material(
+        self,
+        packet_id: str,
+        kind: str,
+        fingerprint: str,
+        message: str,
+    ) -> bool:
+        """Append and emit one owner-facing update if its key is new.
+
+        Internal poll output stays in the controller log.  This outbox is the
+        intentionally small external surface: started, rework, blocked,
+        escalated and completed only.
+        """
+        lifecycle = store.active_lifecycle(self.conn, packet_id)
+        if lifecycle is None or self.dry:
+            return False
+        with store.write(self.conn):
+            inserted = store.record_notification(
+                self.conn,
+                lifecycle["id"],
+                packet_id,
+                kind,
+                fingerprint,
+                message,
+            )
+        if inserted:
+            print(f"{packet_id}: {message}")
+        return inserted
+
+    def start_lifecycle(self, packet_id: str):
+        """Idempotently activate one long-lived lifecycle for ``packet_id``."""
+        with self.controller_lease() as acquired:
+            if not acquired:
+                raise RuntimeError("another controller is starting or advancing work")
+            self.sync_board()
+            row = store.get(self.conn, packet_id)
+            if row is None:
+                raise P.SpecError(f"{packet_id} is not on the packet board")
+            if row["status"] in store.TERMINAL or row["status"] == "merge_ready":
+                raise RuntimeError(
+                    f"{packet_id} is {row['status']}; resolve that outcome before "
+                    "starting another lifecycle"
+                )
+            with store.write(self.conn):
+                existing = store.active_lifecycle(self.conn, packet_id)
+                active = store.active_lifecycles(self.conn)
+                if existing is None and len(active) >= self.config["max_concurrent_packets"]:
+                    names = ", ".join(item["packet_id"] for item in active)
+                    raise RuntimeError(
+                        "active lifecycle concurrency limit reached"
+                        + (f": {names}" if names else "")
+                    )
+                lifecycle, created = store.start_lifecycle(self.conn, packet_id)
+        self.packet_scope = packet_id
+        if created:
+            self.notify_material(
+                packet_id,
+                "started",
+                "started",
+                "started — durable worker lifecycle is active",
+            )
+        return store.active_lifecycle(self.conn, packet_id)
+
+    def stop_lifecycle(self, packet_id: str, reason: str) -> bool:
+        """Stop only because the owner explicitly asked to stop."""
+        with self.controller_lease() as acquired:
+            if not acquired:
+                raise RuntimeError("another controller is advancing this lifecycle")
+            lifecycle = store.active_lifecycle(self.conn, packet_id)
+            if lifecycle is None:
+                return False
+            return self.finish_lifecycle(
+                packet_id,
+                "blocked_owner",
+                f"owner stopped the lifecycle: {reason}",
+            )
+
+    def finish_lifecycle(self, packet_id: str, outcome: str, reason: str) -> bool:
+        lifecycle = store.active_lifecycle(self.conn, packet_id)
+        if lifecycle is None:
+            return False
+        kind = {
+            "completed": "completed",
+            "blocked_owner": "blocked",
+            "escalated": "escalated",
+            "failed_safety_limit": "blocked",
+        }[outcome]
+        message = {
+            "completed": f"completed — {reason}",
+            "blocked_owner": f"blocked for owner — {reason}",
+            "escalated": f"escalated — {reason}",
+            "failed_safety_limit": f"failed safety limit — {reason}",
+        }[outcome]
+        fingerprint = f"terminal:{outcome}"
+        with store.write(self.conn):
+            changed = store.finish_lifecycle(
+                self.conn,
+                lifecycle["id"],
+                outcome,
+                reason=reason,
+            )
+            inserted = False
+            if changed:
+                inserted = store.record_notification(
+                    self.conn,
+                    lifecycle["id"],
+                    packet_id,
+                    kind,
+                    fingerprint,
+                    message,
+                )
+        if inserted:
+            print(f"{packet_id}: {message}")
+        return changed
+
+    def finalise_lifecycle_from_packet(self, packet_id: str) -> bool:
+        """Map the packet state machine onto the lifecycle's four outcomes."""
+        row = store.get(self.conn, packet_id)
+        if row is None:
+            return False
+        if row["status"] == "merged":
+            reason = (
+                f"PR #{row['pr_number']} passed required CI, reviewer approval "
+                "and the merge/completion gate"
+            )
+            return self.finish_lifecycle(packet_id, "completed", reason)
+        if row["status"] == "blocked":
+            return self.finish_lifecycle(
+                packet_id,
+                "failed_safety_limit",
+                row["reason"] or "the configured safety breaker stopped work",
+            )
+        if row["status"] == "merge_ready":
+            self.notify_material(
+                packet_id,
+                "blocked",
+                f"owner-merge:{row['pr_number']}",
+                f"PR #{row['pr_number']} is green and reviewer-approved; "
+                "the configured owner merge gate remains",
+            )
+            return False
+        if row["status"] != "escalated":
+            return False
+        event = self.conn.execute(
+            "SELECT kind FROM events WHERE packet_id=? AND to_status='escalated'"
+            " ORDER BY seq DESC LIMIT 1",
+            (packet_id,),
+        ).fetchone()
+        if event and event["kind"] == "blast_radius":
+            self.notify_material(
+                packet_id,
+                "blocked",
+                f"owner-blast-radius:{row['pr_number']}",
+                row["reason"] or "blast-radius work requires the owner",
+            )
+            return False
+        return self.finish_lifecycle(
+            packet_id,
+            "escalated",
+            row["reason"] or "the controller requires an owner decision",
+        )
+
+    def _definition_blockers(self) -> list[str]:
+        try:
+            board = P.load_board(self.board_dir)
+            locked = P.load_oracle()
+            differences = P.oracle_differences(board, REPO, locked)
+            if differences:
+                return [
+                    "acceptance oracle does not exactly match the board: "
+                    + "; ".join(differences[:10])
+                ]
+        except P.SpecError as exc:
+            return [str(exc)]
+        return []
+
+    def _set_preflight_blocked(self, packet_id: str, problems: list[str]) -> bool:
+        """Record one notification for a whole unhealthy episode."""
+        lifecycle = store.active_lifecycle(self.conn, packet_id)
+        if lifecycle is None:
+            return False
+        detail = "; ".join(problems)
+        digest = hashlib.sha256(detail.encode()).hexdigest()
+        with store.write(self.conn):
+            fresh = store.active_lifecycle(self.conn, packet_id)
+            already_blocked = bool(fresh["health_fingerprint"])
+            store.set_lifecycle_health(
+                self.conn,
+                fresh["id"],
+                fingerprint=digest,
+                reason=detail,
+            )
+            inserted = False
+            if not already_blocked:
+                episode = self.conn.execute(
+                    "SELECT COUNT(*) FROM notifications"
+                    " WHERE lifecycle_id=? AND fingerprint LIKE 'preflight:%'",
+                    (fresh["id"],),
+                ).fetchone()[0] + 1
+                inserted = store.record_notification(
+                    self.conn,
+                    fresh["id"],
+                    packet_id,
+                    "blocked",
+                    f"preflight:{episode}",
+                    f"blocked on preflight — {detail}",
+                )
+        if inserted:
+            print(f"{packet_id}: blocked on preflight — {detail}")
+        return inserted
+
+    def _clear_preflight_blocked(self, packet_id: str) -> bool:
+        lifecycle = store.active_lifecycle(self.conn, packet_id)
+        if lifecycle is None or not lifecycle["health_fingerprint"]:
+            return False
+        with store.write(self.conn):
+            fresh = store.active_lifecycle(self.conn, packet_id)
+            episode = self.conn.execute(
+                "SELECT COUNT(*) FROM notifications"
+                " WHERE lifecycle_id=? AND fingerprint LIKE 'preflight:%'",
+                (fresh["id"],),
+            ).fetchone()[0]
+            store.set_lifecycle_health(
+                self.conn,
+                fresh["id"],
+                fingerprint=None,
+                reason=None,
+            )
+            inserted = store.record_notification(
+                self.conn,
+                fresh["id"],
+                packet_id,
+                "started",
+                f"preflight-recovered:{episode}",
+                "started — preflight recovered; resuming the same lifecycle",
+            )
+        if inserted:
+            print(
+                f"{packet_id}: started — preflight recovered; "
+                "resuming the same lifecycle"
+            )
+        return inserted
 
     @contextlib.contextmanager
     def controller_lease(self):
@@ -232,7 +494,14 @@ class Controller:
                     )
 
         for row in store.all_packets(self.conn):
-            if row["status"] not in store.OPEN_ON_GITHUB or not row["pr_number"]:
+            # `escalated` can still have a live PR: blast-radius approval and
+            # owner intervention intentionally stop there until the owner
+            # merges by hand.  GitHub's merged state is authoritative even
+            # when the local reason that caused the escalation is stale.
+            if (
+                row["status"] not in store.OPEN_ON_GITHUB
+                and row["status"] != "escalated"
+            ) or not row["pr_number"]:
                 continue
             try:
                 state = forge.pr_state(REPO, row["pr_number"],
@@ -337,10 +606,9 @@ class Controller:
 
         One pass is not enough: CI going green moves a packet to `review`,
         and the reviewer's verdict can move it to `merge_ready`, and an
-        auto-merge can move it to `merged`. A single pass would take three
-        ticks to do what one tick can, which on an hourly schedule is three
-        hours of nothing happening. Bounded so a transition that oscillates
-        cannot spin.
+        auto-merge can move it to `merged`. A single pass would require three
+        worker polls to do what one cycle can. Bounded so a transition that
+        oscillates cannot spin.
         """
         for _ in range(max_passes):
             before = {r["id"]: r["status"] for r in store.all_packets(self.conn)}
@@ -629,6 +897,7 @@ class Controller:
         if self.dry:
             self.would(f"{packet_id} -> rework (cycle {cycles}, from {source})")
             return
+        sent_to_rework = False
         with store.write(self.conn):
             fresh = store.get(self.conn, packet_id)
             if (
@@ -652,6 +921,14 @@ class Controller:
                                         f"Last source: {source}.")
             else:
                 store.set_status(self.conn, packet_id, "rework", kind=f"rework_{source}")
+                sent_to_rework = True
+        if sent_to_rework:
+            self.notify_material(
+                packet_id,
+                "rework_needed",
+                f"rework:{cycles}:{source}",
+                f"rework needed — {source}, cycle {cycles}",
+            )
 
     # --- 5. dispatch ---------------------------------------------------------
 
@@ -665,6 +942,8 @@ class Controller:
             return []
         ready = []
         for packet in P.load_board(self.board_dir):
+            if self.packet_scope and packet.id != self.packet_scope:
+                continue
             row = rows.get(packet.id)
             if row is None or row["status"] not in store.DISPATCHABLE:
                 continue
@@ -1089,13 +1368,190 @@ class Controller:
                 token_env=self._token("builder"),
             )
         except (forge.ForgeError, OSError, ValueError) as exc:
-            # The local ledger remains authoritative and the next tick retries
+            # The local ledger remains authoritative and the next cycle retries
             # publication. Never turn an audit transport failure into a false
             # packet transition.
             self.say(f"audit publication failed: {exc}")
             return
         if head:
             self.say(f"audit snapshot published at {head[:12]}")
+
+    # --- long-lived worker --------------------------------------------------
+
+    def _ledger_counts(self) -> tuple[int, int]:
+        event_seq = self.conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM events"
+        ).fetchone()[0]
+        notification_seq = self.conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM notifications"
+        ).fetchone()[0]
+        return event_seq, notification_seq
+
+    def _publish_material_audit(self, before: tuple[int, int]) -> None:
+        if self._ledger_counts() == before:
+            return
+        self.publish_audit(self.digest())
+
+    def _next_poll_delay(self, lifecycle, wait_kind: str) -> float:
+        cfg = self.config["worker"]
+        initial_key = {
+            "ci": "poll_initial_seconds",
+            "retry": "retry_initial_seconds",
+            "preflight": "preflight_initial_seconds",
+        }.get(wait_kind, "poll_initial_seconds")
+        initial = float(cfg[initial_key])
+        if lifecycle["wait_kind"] == wait_kind:
+            prior = float(lifecycle["poll_delay_seconds"] or initial)
+            delay = max(initial, prior * float(cfg["backoff_multiplier"]))
+        else:
+            delay = initial
+        return min(delay, float(cfg["poll_max_seconds"]))
+
+    def _schedule_worker_poll(self, packet_id: str, wait_kind: str) -> float:
+        lifecycle = store.active_lifecycle(self.conn, packet_id)
+        if lifecycle is None:
+            return 0
+        delay = self._next_poll_delay(lifecycle, wait_kind)
+        with store.write(self.conn):
+            store.schedule_lifecycle_poll(
+                self.conn,
+                lifecycle["id"],
+                wait_kind=wait_kind,
+                delay_seconds=delay,
+            )
+        return delay
+
+    def worker_cycle(self, packet_id: str) -> str:
+        """Advance one internally scheduled cycle of an active lifecycle."""
+        self.packet_scope = packet_id
+        before = self._ledger_counts()
+        with self.controller_lease() as acquired:
+            if not acquired:
+                return "controller_busy"
+            lifecycle = store.active_lifecycle(self.conn, packet_id)
+            if lifecycle is None:
+                latest = store.latest_lifecycle(self.conn, packet_id)
+                return latest["state"] if latest else "not_started"
+            if lifecycle["next_poll_at"] and lifecycle["next_poll_at"] > time.time():
+                return lifecycle["wait_kind"] or "waiting"
+
+            self.sync_board()
+            self.reconcile()
+            if self.finalise_lifecycle_from_packet(packet_id):
+                self._publish_material_audit(before)
+                return store.latest_lifecycle(self.conn, packet_id)["state"]
+
+            if PAUSE_FILE.exists():
+                pause_reason = PAUSE_FILE.read_text().strip() or "loop/PAUSED exists"
+                self.finish_lifecycle(packet_id, "blocked_owner", pause_reason)
+                self._publish_material_audit(before)
+                return "blocked_owner"
+
+            definition = self._definition_blockers()
+            if definition:
+                self.finish_lifecycle(
+                    packet_id,
+                    "escalated",
+                    "; ".join(definition),
+                )
+                self._publish_material_audit(before)
+                return "escalated"
+
+            safety = self.breakers()
+            if safety:
+                self.finish_lifecycle(
+                    packet_id,
+                    "failed_safety_limit",
+                    "; ".join(safety),
+                )
+                self._publish_material_audit(before)
+                return "failed_safety_limit"
+
+            preflight = gates.preflight(self.config)
+            if preflight:
+                self._set_preflight_blocked(packet_id, preflight)
+                self._schedule_worker_poll(packet_id, "preflight")
+                self._publish_material_audit(before)
+                return "preflight"
+
+            self._clear_preflight_blocked(packet_id)
+            self.advance()
+            for packet, row in self.selectable():
+                self.dispatch(packet, row)
+
+            if self.finalise_lifecycle_from_packet(packet_id):
+                self._publish_material_audit(before)
+                return store.latest_lifecycle(self.conn, packet_id)["state"]
+
+            row = store.get(self.conn, packet_id)
+            wait_kind = (
+                "ci"
+                if row["status"] == "awaiting_ci"
+                else (
+                    "retry"
+                    if row["status"] in store.DISPATCHABLE
+                    else (
+                        "owner"
+                        if row["status"] in {"merge_ready", "escalated"}
+                        else "poll"
+                    )
+                )
+            )
+            self._schedule_worker_poll(packet_id, wait_kind)
+            self._publish_material_audit(before)
+            return wait_kind
+
+    def run_worker(
+        self,
+        packet_id: str,
+        *,
+        sleeper=time.sleep,
+        max_cycles: int | None = None,
+    ) -> str:
+        """Resume ``packet_id`` until its lifecycle reaches a terminal outcome.
+
+        ``max_cycles`` is a deterministic test seam, not the production
+        lifecycle model.
+        """
+        self.packet_scope = packet_id
+        cycles = 0
+        while True:
+            lifecycle = store.active_lifecycle(self.conn, packet_id)
+            if lifecycle is None:
+                latest = store.latest_lifecycle(self.conn, packet_id)
+                return latest["state"] if latest else "not_started"
+            if max_cycles is not None and cycles >= max_cycles:
+                return "active"
+            if lifecycle["next_poll_at"]:
+                wait = max(0.0, lifecycle["next_poll_at"] - time.time())
+                if wait:
+                    sleeper(wait)
+            try:
+                result = self.worker_cycle(packet_id)
+            except forge.ForgeError as exc:
+                # Uncertain external writes are caught and escalated at their
+                # call sites. An uncaught ForgeError here is therefore a safe
+                # read/preflight transport failure and may be retried.
+                with self.controller_lease() as acquired:
+                    if acquired and store.active_lifecycle(self.conn, packet_id):
+                        self._set_preflight_blocked(
+                            packet_id,
+                            [f"transient GitHub/network read failed: {exc}"],
+                        )
+                        self._schedule_worker_poll(packet_id, "preflight")
+                        self.publish_audit(self.digest())
+                result = "preflight"
+            except P.SpecError as exc:
+                with self.controller_lease() as acquired:
+                    if acquired and store.active_lifecycle(self.conn, packet_id):
+                        self.finish_lifecycle(packet_id, "escalated", str(exc))
+                        self.publish_audit(self.digest())
+                result = "escalated"
+            cycles += 1
+            if result in store.LIFECYCLE_TERMINAL:
+                return result
+            if result == "controller_busy":
+                sleeper(float(self.config["worker"]["poll_initial_seconds"]))
 
     # --- the tick ------------------------------------------------------------
 
@@ -1183,11 +1639,30 @@ def _ledger(dry_run: bool):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="the loop controller")
-    parser.add_argument("command", choices=["tick", "status", "reconcile", "preflight",
-                                            "oracle", "recover"])
+    parser.add_argument(
+        "command",
+        choices=[
+            "start",
+            "worker",
+            "stop",
+            "notifications",
+            "tick",
+            "status",
+            "reconcile",
+            "preflight",
+            "oracle",
+            "recover",
+        ],
+    )
+    parser.add_argument("packet", nargs="?")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--board", default=None)
     parser.add_argument("--update", action="store_true", help="oracle: rewrite the lock file")
+    parser.add_argument(
+        "--reason",
+        default="owner requested stop",
+        help="stop: owner reason recorded in the terminal outcome",
+    )
     args = parser.parse_args(argv)
 
     config = P.load_config()
@@ -1197,8 +1672,49 @@ def main(argv=None) -> int:
     # true or it is not worth printing.
     with _ledger(args.dry_run) as conn:
         store.init(conn)
-        controller = Controller(config, conn, dry_run=args.dry_run, board_dir=args.board)
+        controller = Controller(
+            config,
+            conn,
+            dry_run=args.dry_run,
+            board_dir=args.board,
+            quiet=args.command == "worker",
+            packet_scope=args.packet,
+        )
 
+        if args.command in {"start", "worker", "stop", "notifications"} and not args.packet:
+            parser.error(f"{args.command} requires a packet id")
+        if args.command == "start":
+            controller.start_lifecycle(args.packet)
+            return 0
+        if args.command == "worker":
+            if store.active_lifecycle(conn, args.packet) is None:
+                print(
+                    f"{args.packet}: no active lifecycle; run "
+                    f"`loop/controller.py start {args.packet}` first",
+                    file=sys.stderr,
+                )
+                return 1
+            try:
+                outcome = controller.run_worker(args.packet)
+            except KeyboardInterrupt:
+                print(
+                    f"{args.packet}: worker stopped; lifecycle remains active "
+                    "and will resume on restart",
+                    file=sys.stderr,
+                )
+                return 130
+            return 0 if outcome in store.LIFECYCLE_TERMINAL else 1
+        if args.command == "stop":
+            stopped = controller.stop_lifecycle(args.packet, args.reason)
+            return 0 if stopped else 1
+        if args.command == "notifications":
+            for row in store.notifications(conn, args.packet):
+                stamp = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(row["at"]),
+                )
+                print(f"{stamp} {row['packet_id']} {row['kind']}: {row['message']}")
+            return 0
         if args.command == "tick":
             return controller.tick()
         if args.command == "reconcile":
@@ -1242,8 +1758,13 @@ def main(argv=None) -> int:
             for row in store.all_packets(conn):
                 lease = " [leased]" if row["lease_owner"] else ""
                 pr = f" PR#{row['pr_number']}" if row["pr_number"] else ""
+                lifecycle = store.latest_lifecycle(conn, row["id"])
+                lifecycle_text = (
+                    f" lifecycle={lifecycle['state']}" if lifecycle else ""
+                )
                 print(f"  {row['id']:<16} {row['status']:<12} "
-                      f"attempts={row['attempts']} rework={row['rework_cycles']}{pr}{lease}")
+                      f"attempts={row['attempts']} rework={row['rework_cycles']}"
+                      f"{pr}{lease}{lifecycle_text}")
             return 0
         if args.command == "recover":
             if not store.all_packets(conn):

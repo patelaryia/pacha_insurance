@@ -35,8 +35,15 @@ and how completion will be judged.
 
 ### 2. Let the loop run
 
-Once a packet is queued, no further prompt is needed. The scheduled controller
-will:
+Activate the reviewed packet once, then leave its long-running worker in
+charge:
+
+```bash
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py start TEMPORAL-T04
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py worker TEMPORAL-T04
+```
+
+The worker will:
 
 - give it to Codex;
 - check Codex's result and local tests;
@@ -45,6 +52,10 @@ will:
 - ask Claude for an independent review;
 - send blocking findings back to Codex; and
 - merge eligible routine work when the two-identity merge lane is enabled.
+
+CI polls, retries and review cycles happen inside that one lifecycle. They do
+not create separate Codex tasks. If the worker process restarts, run the same
+`worker` command and it resumes the active lifecycle.
 
 ### 3. Check progress
 
@@ -84,6 +95,10 @@ A recoverable copy of the same state is also kept on the
 | `blocked` | The retry or safety limit was reached | Read the reason and decide whether to re-slice |
 | `escalated` | A human judgement is required | Read the reason and make the product decision |
 
+The lifecycle outcome shown by `status` is one of `completed`,
+`blocked_owner`, `escalated`, or `failed_safety_limit`. Only `completed` means
+the required CI, reviewer and merge/completion gates all passed.
+
 ## When the loop asks for you
 
 The loop interrupts you deliberately in these cases:
@@ -110,10 +125,10 @@ policy:
 echo "why I am pausing" > loop/PAUSED
 ```
 
-The controller will continue reporting status but will dispatch no new work.
+The worker records one `blocked_owner` outcome and stops that lifecycle.
 
 When the change is reviewed, committed, and the acceptance oracle is current,
-remove `loop/PAUSED`. The next scheduled tick resumes normally.
+remove `loop/PAUSED`, start the packet again, and restart its worker.
 
 Before resuming, run:
 

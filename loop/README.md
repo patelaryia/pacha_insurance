@@ -1,7 +1,9 @@
 # The autonomous build loop
 
 Claude slices PRDs into packets and reviews finished work. Codex builds
-packets. A **controller** owns every state transition. The owner merges, or
+packets. A **controller** owns every state transition and one long-running
+worker resumes the same packet lifecycle until it reaches a defined outcome.
+The owner merges, or
 — once two GitHub identities exist — approves the design that lets the loop
 merge routine work itself.
 
@@ -48,9 +50,26 @@ reviewer's blocking findings — or the failing CI log — passed verbatim into
 the next builder prompt. `merged` is only ever set by reconciling GitHub,
 never asserted locally.
 
-`advance` runs to a fixed point within one tick, so CI going green can carry
-a packet through review and into rework and back to the builder in a single
-run rather than three scheduled hours.
+`advance` runs to a fixed point within each internal worker cycle, so CI going
+green can carry a packet through review and into rework and back to the builder
+without creating another Codex task.
+
+The packet state machine remains detailed because it is evidence. Around it is
+one durable lifecycle row per active packet:
+
+```
+active
+  ├── merged after CI + reviewer + merge gate ──▶ completed
+  ├── explicit owner stop / pause ──────────────▶ blocked_owner
+  ├── specification or safety judgement needed ─▶ escalated
+  └── attempt/rework/budget breaker reached ─────▶ failed_safety_limit
+```
+
+Preflight, authentication and network failures do not end the lifecycle. They
+set one deduplicated health blocker, back off, and automatically resume the
+same lifecycle when preflight is healthy. A manual merge or blast-radius gate
+also emits one owner blocker, but the worker keeps polling that exact PR so the
+same lifecycle becomes `completed` after the owner merges it.
 
 ---
 
@@ -84,11 +103,12 @@ not in the builder worktree or the primary checkout containing `loop/runs/`.
 ```
 loop/
   README.md            this file
+  WORKER_RUNBOOK.md    start, monitor, restart and stop commands
   config.yml           every policy knob; a missing value is an error, not a default
   blast-radius.yml     owner-edited only
   oracle.lock          the definition of done, pinned by content hash
   controller.py        THE STATE MACHINE. Every transition is here
-  store.py             SQLite ledger: leases, events, attempts, budget fold
+  store.py             SQLite ledger: lifecycle, leases, events, attempts, notifications
   packets.py           packet spec, bootstrap state, oracle, blast radius
   forge.py             git + GitHub, every result verified rather than assumed
   gates.py             preflight and the fast local pre-filter
@@ -110,27 +130,28 @@ docs/packets/          THE BOARD — immutable spec + one-time bootstrap state
 
 ---
 
-## Install the schedule
+## Run the worker, not a scheduled Codex task
 
-```cron
-REPO=/Users/aryiapatel/Documents/Research/Insurance\ TPA/pacha_insurance
-PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/aryiapatel/.local/bin
-LOOP_PYTHON=/path/to/venv/bin/python
+The former 15-minute Codex cron was the source of the repeated
+“Pacha autonomous build loop” tasks: every cron occurrence is a new standalone
+Codex task, and its prompt explicitly ran exactly one `tick`. It is retired.
 
-# One tick does everything: reconcile, advance, dispatch. Ticking often is
-# cheap when there is nothing to do and is what makes CI polling work.
-*/15 * * * *  cd "$REPO" && ./loop/controller.py tick >> loop/runs/tick.log 2>&1
+Activate exactly one reviewed packet, then run its worker:
 
-# Architecture drift. Report only; never opens a PR.
-0 7 * * 1     cd "$REPO" && ./loop/drift.sh >> loop/runs/drift.log 2>&1
+```bash
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py start TEMPORAL-T04
+LOOP_PYTHON=.venv/bin/python .venv/bin/python loop/controller.py worker TEMPORAL-T04
 ```
 
-There is one scheduled job now, not three. A renewable global lease owns the
-whole tick — including reviewer invocation, approval, merge and audit
-publication — so an overlapping run skips before any external action.
+Run the second command under the machine's normal service supervisor if it
+must survive logout or reboot. Restarting the same command resumes the
+persisted lifecycle and its backoff; it does not create a new lifecycle,
+builder task, or notification. A renewable controller lease owns every cycle,
+and the packet lease owns builder execution, so an overlapping worker cannot
+duplicate a reviewer, merge, or builder.
 
-macOS sleeps and cron does not catch up. A missed tick is harmless — the
-next one reconciles.
+`tick` remains available for diagnostics and backwards compatibility. It is
+not the lifecycle or the polling mechanism.
 
 ---
 
@@ -167,6 +188,7 @@ python3 loop/controller.py oracle --update
 ```bash
 python3 loop/controller.py preflight        # can this machine build at all?
 python3 loop/controller.py status           # every packet, status, lease, PR
+python3 loop/controller.py notifications TEMPORAL-T04
 python3 loop/controller.py oracle           # has the definition of done drifted?
 python3 loop/controller.py tick --dry-run   # print every action, write nothing
 python3 loop/controller.py reconcile        # GitHub truth -> ledger
@@ -179,6 +201,10 @@ Pause everything:
 ```bash
 echo "re-slicing PRD-10" > loop/PAUSED
 ```
+
+This is an explicit owner stop: the worker records `blocked_owner` once and
+ends the active lifecycle. After the change is reviewed, remove `loop/PAUSED`
+and use `start` again for the packet.
 
 ---
 
