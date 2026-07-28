@@ -1,3 +1,20 @@
+---
+id: PACKET-21
+prd_ref: docs/AGENT_BUILD_GUIDE.md
+title: Frozen; reissue required
+depends_on:
+- PACKET-20
+status: blocked
+branch: codex/packet-21-frozen-reissue-required
+attempts: 0
+blast_radius: true
+acceptance_tests: []
+review_findings: []
+escalation_reason: Frozen 2026-07-24 before issue under ADR-003. The custom Playwright runner
+  scope is superseded and must not be built. Not sliceable until the vendor RFI/control assessment
+  decides the executor. No acceptance tests exist because there is no agreed contract to test.
+---
+
 # PACKET-21 — Frozen; reissue required
 
 **Status:** frozen before issue or implementation; **not complete**

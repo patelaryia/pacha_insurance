@@ -1,3 +1,24 @@
+---
+id: PACKET-09
+prd_ref: "docs/PRD-03_Eval_Harness_and_Autonomy_Controller_v1.1.md \xA73.3 ( G-CITE , G-NOTE\
+  \ ), \xA73.5, \xA73.7 (corpus batch); PRD-01 \xA71.7; Section 0 ED-3/ED-4/ED-4a/ED-6/ED-11;\
+  \ Section 0.5 AR-4/AR-4a. Precedence: Section 0 \u2192 Section 0.5 \u2192 PRD-03/PRD-01\
+  \ \u2192 this packet."
+title: Model graders, correction corpus, batch evaluation & anonymisation (PRD-03 slice 2
+  of 2)
+depends_on:
+- PACKET-08
+status: merged
+branch: codex/packet-09-eval-corpus
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_09_eval_corpus.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-09 — Model graders, correction corpus, batch evaluation & anonymisation (PRD-03 slice 2 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

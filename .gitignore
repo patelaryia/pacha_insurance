@@ -26,3 +26,16 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+.claude/worktrees/
+
+# Loop builder output: raw transcripts and events. Deliberately not tracked —
+# the record of why something merged is the packet file, not a transcript.
+loop/runs/
+loop/drift/
+
+# The local ledger. Runtime state is published on the controller-only
+# automation/loop-state branch; it is never committed onto a development
+# branch. Rebuildable with `loop/controller.py recover`.
+loop/state.db
+loop/state.db-wal
+loop/state.db-shm

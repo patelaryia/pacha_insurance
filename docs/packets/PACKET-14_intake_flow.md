@@ -1,3 +1,28 @@
+---
+id: PACKET-14
+prd_ref: "docs/PRD-05_Intake_and_Triage_Agent_v1.1.md \xA75.3 (S1\u2013S8), \xA75.4 (Mode\
+  \ A coverage/premium/excess triage, decline path), \xA75.5 (T-06/T-06a/ T-07 ownership),\
+  \ \xA75.7 scenarios 1/3/4/6 + KPI, \xA75.2 terminal-inbound money-relevant arm; Section\
+  \ 0.5 AR-1/AR-1a/AR-2/AR-3; PRD-00 \xA70.4 (FSM, decline action), \xA70.5 (acknowledge clock);\
+  \ PRD-02 C-01/R-02/R-03/R-10; PRD-03 \xA73.3; PRD-04 \xA74.3 (closed enum, resolution schemas);\
+  \ Section 0 ED-8/ED-11; guide \xA73.5/\xA73.11/\xA76; registers #29/#43/#50/#56/#63/#97/#103/\
+  \ #107/#121/#122/#126/#130/#132. Precedence: Section 0 \u2192 Section 0.5 \u2192 PRD-00/PRD-02/PRD-03/PRD-04/PRD-05\
+  \ \u2192 PACKET-06..13 contracts \u2192 this packet."
+title: "Intake flow S1\u2013S8 as a durable COP run, Mode A triage, decline path, KPI wire\
+  \ (PRD-05 slice 2 of 2)"
+depends_on:
+- PACKET-13
+status: merged
+branch: codex/packet-14-intake-flow
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_14_intake_flow.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-14 — Intake flow S1–S8 as a durable COP run, Mode A triage, decline path, KPI wire (PRD-05 slice 2 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

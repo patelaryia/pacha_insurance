@@ -1,3 +1,24 @@
+---
+id: PACKET-03
+prd_ref: "docs/PRD-00_Canonical_Claim_Object_and_Event_Spine_v1.1.md \xA70.3 (dispatch/replay),\
+  \ \xA70.5, \xA70.6, \xA70.7 (remaining routes), \xA70.8 scenarios (3), (4), (6); Section\
+  \ 0 ED-6a (PII mechanics), ED-9 (retention notes). Precedence: Section 0 \u2192 PRD-00 \u2192\
+  \ this packet."
+title: 'PRD-00 completion: event dispatch, audit ledger, SLA engine, PII encryption, remaining
+  API'
+depends_on:
+- PACKET-02
+status: merged
+branch: codex/packet-03-prd00-completion
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_03_prd00_completion.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-03 — PRD-00 completion: event dispatch, audit ledger, SLA engine, PII encryption, remaining API
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

@@ -1,0 +1,37 @@
+# The definition of done, pinned by content hash.
+#
+# Every file here is frozen. The controller verifies these hashes in the
+# builder's worktree after every attempt and refuses to open a PR if one
+# moved. Files NOT listed here — new unit and integration tests, which
+# ED-7 requires the builder to write — are free.
+#
+# Regenerate with `loop/controller.py oracle --update`. Changing a hash changes
+# the definition of done and needs the owner's review, which CODEOWNERS
+# already enforces on tests/acceptance/.
+files:
+  tests/acceptance/console/test_packet_11_console.test.tsx: 7f615cc033871e25de7711923afea6528b415f6d1fccee0d7d873caa7fdfb086
+  tests/acceptance/console/test_packet_12_console.test.tsx: 1ebd6efeac774119c84b6cfc2f364f01f6727b0b58b3f56751eeb76ab1ea769a
+  tests/acceptance/console/test_packet_19_console.test.tsx: 370bca0cc35b673fdac54ca5654893667f961b3e782d8a865ed21312836f5636
+  tests/acceptance/console/test_packet_20_console.test.tsx: 3adabed2ee1b95adec62e44703ae8fe194d71c1a70c80800673a12f0d315a15e
+  tests/acceptance/test_packet_01_claim_substrate.py: cfd98d37d66f273d2252dc239e305b322ae9535257bc6e94c73ccef4ef54c3fd
+  tests/acceptance/test_packet_02_claim_fsm.py: 54d3d4193cadc39febfd3d59e359e17a8c71ba8ccf89fe6b788d9aef102ae2a5
+  tests/acceptance/test_packet_03_prd00_completion.py: 3342f8d5822365d62a9ab07562ba5da8d0a486d488ceb18dd22d610d197845f3
+  tests/acceptance/test_packet_04_docintel_substrate.py: 857ab77ff9383f69386640f9b2a41571f99ed50a0210c657ace3994fc1c23c45
+  tests/acceptance/test_packet_05_docintel_live_model.py: cdda57a53c6f2f6cb9d1f89475412868cf29b3c534ad059f9d6c79947359c468
+  tests/acceptance/test_packet_06_cop_engines.py: acba73a46d5461de24689e93368f0e09215d68ee9e2d26906147b32ecf78c045
+  tests/acceptance/test_packet_07_cop_consumers.py: 4b1702ba328204912221d7d9617177f8bcc8b4e025e768097bbebc499a158203
+  tests/acceptance/test_packet_08_eval_autonomy.py: 08f9d8e5450f9e87bda3fc769559eaa6646ee664e728ed7483aeedf0db5c1313
+  tests/acceptance/test_packet_09_eval_corpus.py: f026fa3736e5dd80788dc8dfa7cd385f6323988980d4061ad67f4e353930a852
+  tests/acceptance/test_packet_10_review_queue.py: ac1891b3911a1ed282226afac7f72d622d4609a0cf09ae91db8b6b76a12cf8e0
+  tests/acceptance/test_packet_11_console_api.py: 75f2365110279799bbdfb7a9d02084f725829faec03d23fde24dcd439894ff50
+  tests/acceptance/test_packet_12_notify_ops.py: 1fbd76f142c2c28c82c50624dd55d6a44294f0fb8e886d0f753579eabe9bcb1e
+  tests/acceptance/test_packet_13_agent_runtime.py: 4de45078e4d42c9d8204836a691471175d2ee6f135b6b701d2a9184e0ca2c445
+  tests/acceptance/test_packet_14_intake_flow.py: 20bdb4b791623bae8404ca2d3c9a9c6c7fcb3df2eb561cb19711b1f150ab5fd8
+  tests/acceptance/test_packet_15_chase_agent.py: 3392d48321fc55f5ac061f226f6f1427843b8f270a288d70cce6b1af5c6fa867
+  tests/acceptance/test_packet_16_assessment_dispatch.py: 5afc9207685df2c05b4ee124798a41d0e6f1471f98179cc886d54554ddb6cd5c
+  tests/acceptance/test_packet_17_assessment_cascade.py: 2d49d8c26918fcf30223dbdeb29bdb8e4051f5c6c2852e8fb9531196a51d690a
+  tests/acceptance/test_packet_18_approval_pack_backend.py: 782199f26a2d7ce4fb87297716de541805dbf28464f40827f87d8c748c9a00d0
+  tests/acceptance/test_packet_19_approval_workflow.py: 081d423c78bf739621a19563ed58af9ecf542ecb01910e087eb1b9fb55635d19
+  tests/acceptance/test_packet_20_projection_paste_assist.py: af37acd93aa817c0f3dc88efd6d9be03c1e0ff2c3f63ad04e207036d889f9ec2
+  tests/integration/test_temporal_orchestration.py: 62d5b2c9ec96f982b4729cbd920ff95288dd19833d71da76ce2ff8f16f00090c
+  tests/integration/test_temporal_t02.py: 283bf87e25459796ad026a91b4497868fa3640d208999822dd16e7f470ad96e4

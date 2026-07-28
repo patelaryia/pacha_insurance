@@ -1,3 +1,26 @@
+---
+id: PACKET-20
+prd_ref: "docs/PRD-09_System_Projection_and_Reconciliation_v1.1.md \xA79.1\u2013\xA79.3, paste-assist\
+  \ portion of \xA79.6, and acceptance scenario 1 in \xA79.7; PRD-00 \xA70.2/\xA70.3/\xA7\
+  0.4; PRD-03 \xA73.4; PRD-04 \xA74.2\u2013\xA74.5; PRD-07 \xA77.5; PRD-08 \xA78.3; Section\
+  \ 0.5 AR-1/AR-2; Section 0 ED-1/ED-6/ED-6a/ED-7/ED-8/ED-9/ED-10/ED-11; guide \xA73/\xA7\
+  4/\xA76; registers #1\u2013#3/#17/#26/#30/#71/#78/#101/#117/#208/#217/#224/#252/#261\u2013\
+  #273."
+title: Projection substrate and permanent paste-assist mode (PRD-09 slice 1 of 3)
+depends_on:
+- PACKET-19
+status: merged
+branch: codex/packet-20-projection-paste-assist
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/console/test_packet_20_console.test.tsx
+- tests/acceptance/test_packet_20_projection_paste_assist.py
+review_findings: []
+pr: https://github.com/patelaryia/pacha_insurance/pull/24
+merged_at: '2026-07-23T00:00:00Z'
+---
+
 # PACKET-20 — Projection substrate and permanent paste-assist mode (PRD-09 slice 1 of 3)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per

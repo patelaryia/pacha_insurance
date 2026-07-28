@@ -1,3 +1,26 @@
+---
+id: PACKET-13
+prd_ref: "docs/Section_0.5_Shared_Agent_Runtime_v1.1.md AR-1/AR-1a/ AR-2/AR-3/AR-3a/AR-4;\
+  \ docs/PRD-05_Intake_and_Triage_Agent_v1.1.md \xA75.2 (email router, final classifier contract),\
+  \ \xA75.6 (capabilities), \xA75.7 scenarios 2 and 5, \xA75.8 (assignment); PRD-03 \xA73.3\
+  \ (gating); PRD-04 \xA74.3 (closed enum, REOPEN_PROMPT); Section 0 ED-8/ED-11; guide \xA7\
+  3.11 ceilings; registers #24/#50/#61/#67/#68/#71/#78. Precedence: Section 0 \u2192 Section\
+  \ 0.5 \u2192 PRD-05/PRD-03/PRD-04/PRD-00 \u2192 PACKET-06..12 contracts \u2192 this packet."
+title: Agent runtime (AR-1/AR-2/AR-3) & intake router/assigner (Phase-2 kickoff; PRD-05 slice
+  1 of 2)
+depends_on:
+- PACKET-12
+status: merged
+branch: codex/packet-13-agent-runtime
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_13_agent_runtime.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-13 — Agent runtime (AR-1/AR-2/AR-3) & intake router/assigner (Phase-2 kickoff; PRD-05 slice 1 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

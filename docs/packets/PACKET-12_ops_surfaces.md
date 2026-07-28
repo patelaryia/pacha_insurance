@@ -1,3 +1,25 @@
+---
+id: PACKET-12
+prd_ref: "docs/PRD-04_Status_Console_and_Review_Queue_v1.1.md \xA74.2, \xA74.3 S-3/S-4/S-5/S-6,\
+  \ \xA74.4 notifications, \xA74.5 scenario 2; Section 0.5 AR-5 (and AR-2 whitelist); Section\
+  \ 0 ED-2/ED-7/ED-8/ED-11; PRD-03 \xA73.4/\xA73.6; PRD-00 SLA semantics; registers #13/#69/#78/#79/#86/\
+  \ #99\u2013#107. Precedence: Section 0 \u2192 Section 0.5 \u2192 PRD-04/PRD-03/PRD-00 \u2192\
+  \ PACKET-10/11 contracts \u2192 this packet."
+title: "Notify module, S-3\u2013S-6 operational surfaces & SLA board (PRD-04 slice 3 of 3)"
+depends_on:
+- PACKET-11
+status: merged
+branch: codex/packet-12-ops-surfaces
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/console/test_packet_12_console.test.tsx
+- tests/acceptance/test_packet_12_notify_ops.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-12 — Notify module, S-3–S-6 operational surfaces & SLA board (PRD-04 slice 3 of 3)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

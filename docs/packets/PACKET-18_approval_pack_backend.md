@@ -1,3 +1,29 @@
+---
+id: PACKET-18
+prd_ref: "docs/PRD-08_Approval_Pack_Generator_v1.1.md \xA78.1\u2013\xA78.4, \xA78.5 persistence\
+  \ only, \xA78.6 ( pack.merge , pack.note_draft ), \xA78.7 (1)\u2013(3); PRD-00 \xA70.4 (\
+  \ RESERVED\u2192PACK_READY ); PRD-01 \xA71.4; PRD-02 \xA72.3\u2013\xA72.5 (StrictUndefined,\
+  \ T-01, C-08, authority data); PRD-03 \xA73.3 (G-NOTE/G-TPL, autonomy); PRD-04 \xA74.3 (\
+  \ NOTE_REVIEW , closed enum); PRD-07 \xA77.6 ( savings_ledger ); PRD-13 \xA713.2/\xA713.4;\
+  \ Section 0.5 AR-1\u2013AR-5; Section 0 ED-1/ED-6a/ED-8/ED-9/ED-11; guide \xA73/\xA74/\xA7\
+  6; registers #5/#6/#30/#49/#61/#62/#67/#75/#81/#116/#130/#157/#200/#208/#218. Precedence:\
+  \ Section 0 \u2192 Section 0.5 \u2192 PRD-00/01/02/03/04/07/08/13 \u2192 PACKET-01..17 contracts\
+  \ \u2192 this packet."
+title: 'Approval-pack backend: readiness, immutable merge, cited T-01 draft, integrity graders
+  (PRD-08 slice 1 of 2)'
+depends_on:
+- PACKET-17
+status: merged
+branch: codex/packet-18-approval-pack-backend
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_18_approval_pack_backend.py
+review_findings: []
+pr: https://github.com/patelaryia/pacha_insurance/pull/16
+merged_at: '2026-07-22T00:00:00Z'
+---
+
 # PACKET-18 — Approval-pack backend: readiness, immutable merge, cited T-01 draft, integrity graders (PRD-08 slice 1 of 2)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per

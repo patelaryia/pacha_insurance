@@ -1,3 +1,20 @@
+---
+id: PACKET-01
+prd_ref: docs/PRD-00_Canonical_Claim_Object_and_Event_Spine_v1.1.md . On any conflict, PRD-00
+  wins over this packet; Section 0 wins over PRD-00 (ED precedence).
+title: 'Claim substrate: data model, field store, hydration (PRD-00 slice 1)'
+depends_on: []
+status: merged
+branch: codex/packet-01-claim-substrate
+attempts: 0
+blast_radius: true
+acceptance_tests:
+- tests/acceptance/test_packet_01_claim_substrate.py
+review_findings: []
+merged_at: '2026-07-22T00:00:00Z'
+pr: (pre-loop; see git log)
+---
+
 # PACKET-01 — Claim substrate: data model, field store, hydration (PRD-00 slice 1)
 
 > **Status:** issued · **Builder:** Codex per `AGENTS.md` · **Reviewer:** CTO per `CLAUDE.md`

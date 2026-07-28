@@ -1,0 +1,124 @@
+# Loop configuration. The controller reads this and nothing else.
+#
+# Every knob here is a policy decision the owner owns. A missing value is an
+# error, not a default: a silently-defaulted budget is not a budget.
+
+version: 2
+
+board_dir: docs/packets
+
+# --- Concurrency ---------------------------------------------------------
+# 1 is not a warm-up value. TEMPORAL_IMPLEMENTATION_MASTER_PLAN.md §2 makes
+# T01..T08 a strict serial chain ("each packet ... must be green before the
+# next begins") and AGENTS.md §2 forbids jumping phase order. Raising this
+# has no effect until the board contains genuinely independent packets;
+# `depends_on` is what makes concurrency safe, not this number.
+max_concurrent_packets: 1
+
+# --- Circuit breakers ----------------------------------------------------
+breakers:
+  max_attempts: 3
+  max_rework_cycles: 3
+
+  # One renewable lease owns the whole reconcile/advance/dispatch/audit tick.
+  # Packet leases still record which build is active; this lease prevents
+  # duplicate reviewers and duplicate merges when cron invocations overlap.
+  controller_lease_seconds: 300
+
+  # A lease is how the loop survives a crash. If a controller dies mid-build
+  # the packet is stuck until this expires, then the next tick reclaims it
+  # and records the lost attempt. Must exceed per_attempt_wall_seconds, or a
+  # healthy build would have its own lease stolen mid-flight.
+  lease_seconds: 7200                   # 2 hours
+  per_attempt_wall_seconds: 5400        # 90 minutes
+  review_wall_seconds: 1800             # 30 minutes
+  fast_gate_seconds: 1800               # 30 minutes
+
+  daily_builder_minutes: 480
+  daily_attempts: 12
+
+  # Bad-slice detector. Only failures against a packet's own acceptance
+  # tests count. Environment failures get their own, looser threshold —
+  # this repo's dependencies are unpinned and main has gone red with no
+  # commit to blame (PR #28), and letting that trip the slice breaker would
+  # make the one alarm that matters cry wolf.
+  blocked_ratio_window: 10
+  blocked_ratio_threshold: 0.30
+  infra_blocked_ratio_threshold: 0.50
+  blocked_ratio_min_sample: 4
+
+# --- GitHub --------------------------------------------------------------
+github:
+  repository: patelaryia/pacha_insurance
+  # The real definition of green. Names must match the check contexts in
+  # .github/workflows/ci.yml exactly; an unreported required context is
+  # pending, never green.
+  required_checks:
+    - lint and invariant guards
+    - tests (SQLite default)
+    - tests (PostgreSQL required)
+    - ocr smoke (real Tesseract adapter)
+    - console
+    - autonomous loop controller
+
+  # Two identities. Environment variable NAMES, never tokens.
+  #
+  # `main protection` requires an approving review and a code-owner review.
+  # One identity cannot approve its own PR, so with a single identity the
+  # loop can never legitimately merge — it stops at merge_ready and the
+  # owner merges. Install a GitHub App for the builder, export its
+  # installation token, and set auto_merge: true to close that gap.
+  #
+  # The loop never passes --admin. If the ruleset refuses a merge, that
+  # refusal is information and the packet escalates.
+  builder_token_env: ''                 # e.g. PACHA_BUILDER_TOKEN
+  reviewer_token_env: ''                # e.g. PACHA_REVIEWER_TOKEN
+  auto_merge: false
+
+merge:
+  # Printed in the digest for a merge_ready packet. Never executed by the
+  # loop; --admin appears here only because a human running it by hand is
+  # making that choice consciously.
+  merge_command: 'gh pr merge {pr} --squash --admin --delete-branch'
+
+# --- Agents --------------------------------------------------------------
+# Verified against `codex exec --help` and `claude --help`, 2026-07-28.
+builder:
+  command: codex
+  sandbox: workspace-write
+  model: ''                             # '' = whatever ~/.codex/config.toml says
+  # pyproject.toml requires >=3.12. Preflight refuses to run below it — a
+  # gate that passes under the wrong interpreter is not a gate.
+  # Override with LOOP_PYTHON.
+  python: python3
+
+reviewer:
+  command: claude
+  # The reviewer returns JSON on stdout and receives only read-only tools.
+  permission_mode: dontAsk
+  model: ''
+
+# These paths are governance, not implementation scope. A builder touching
+# one is escalated before any push even if the packet itself is blast-radius.
+controller_protected_paths:
+  - loop/**
+  - .github/**
+  - .claude/skills/**
+  - .codex/skills/**
+  - tools/ci/**
+  - tests/acceptance/**
+  - AGENTS.md
+  - CLAUDE.md
+  - docs/AGENT_BUILD_GUIDE.md
+  - docs/Section_0_Shared_Engineering_Decisions_v1.1.md
+  - docs/Section_0.5_Shared_Agent_Runtime_v1.1.md
+  - docs/PRD-*.md
+  - docs/Full-System_Acceptance_Trial_v1.1.md
+  - docs/architecture/TEMPORAL_IMPLEMENTATION_MASTER_PLAN.md
+  - docs/packets/**
+
+# Runtime state is never committed onto local main. A complete snapshot,
+# event ledger and digest are committed and pushed to this dedicated branch.
+audit:
+  enabled: true
+  branch: automation/loop-state
