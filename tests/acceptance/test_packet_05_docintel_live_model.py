@@ -244,17 +244,29 @@ def test_duplicate_attachment_is_rejected_and_received_event_emits_once(tmp_path
     assert [event["payload"]["document_id"] for event in received] == [first]
 
 
-def test_every_pipeline_stage_has_one_named_celery_task():
-    from doc_intel.tasks import PIPELINE_TASKS
+def test_every_pipeline_stage_has_one_named_temporal_activity():
+    from doc_intel.activities import DocumentIntelligenceActivities
 
-    expected = {
-        "NORMALIZE", "CLASSIFY", "SPLIT", "EXTRACT", "CITE", "VALIDATE",
-        "COMMIT", "CONSISTENCY",
-    }
-    assert set(PIPELINE_TASKS) == expected
-    assert {task.name for task in PIPELINE_TASKS.values()} == {
-        f"doc_intel.{stage.casefold()}" for stage in expected
-    }
+    method_names = (
+        "normalize",
+        "classify",
+        "split",
+        "extract",
+        "cite",
+        "validate",
+        "commit",
+        "consistency",
+    )
+    definitions = [
+        getattr(
+            getattr(DocumentIntelligenceActivities, method_name),
+            "__temporal_activity_definition",
+        )
+        for method_name in method_names
+    ]
+    assert [definition.name for definition in definitions] == [
+        f"docintel_{method_name}" for method_name in method_names
+    ]
 
 
 # --- split detector and human boundaries ------------------------------------------

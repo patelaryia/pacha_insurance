@@ -13,6 +13,8 @@ blast_radius: true
 acceptance_tests:
 - tests/acceptance/test_packet_04_docintel_substrate.py
 - tests/acceptance/test_packet_05_docintel_live_model.py
+- tests/integration/test_temporal_t02.py
+- tests/integration/test_temporal_t03.py
 - tests/integration/test_temporal_t04.py
 review_findings: []
 pr: null
