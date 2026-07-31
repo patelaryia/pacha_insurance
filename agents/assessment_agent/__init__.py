@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import yaml
-
-from assessment_agent.cascade import AssessmentCascade
-from assessment_agent.dispatch import AssessmentDispatch
-from assessment_agent.models import SavingsLedger
-from assessment_agent.report import AssessmentReport
-from assessment_agent.selection import AssessmentSelection
-from assessment_agent.trigger import AssessmentTrigger
-from assessment_agent.vendors import Vendor, VendorRegistry, build_router, validate_vendors
-from claim_core import Base
+if TYPE_CHECKING:
+    from assessment_agent.cascade import AssessmentCascade
+    from assessment_agent.dispatch import AssessmentDispatch
+    from assessment_agent.report import AssessmentReport
+    from assessment_agent.selection import AssessmentSelection
+    from assessment_agent.trigger import AssessmentTrigger
+    from assessment_agent.vendors import VendorRegistry
 
 
 def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
+    import yaml
+
+    from assessment_agent.vendors import validate_vendors
+
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as error:
@@ -86,6 +87,8 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
 def savings_tables() -> tuple[Any, ...]:
     """Expose the PRD-07 savings ledger to packages that read it."""
 
+    from assessment_agent.models import SavingsLedger
+
     return (SavingsLedger.__table__,)
 
 
@@ -121,6 +124,14 @@ def build_assessment_agent(
         raise RuntimeError("build_assessment_agent requires build_chase_agent")
     if model_client is None or not callable(getattr(model_client, "structured_call", None)):
         raise ValueError("assessment agent requires a structured model client")
+    from assessment_agent.cascade import AssessmentCascade
+    from assessment_agent.dispatch import AssessmentDispatch
+    from assessment_agent.report import AssessmentReport
+    from assessment_agent.selection import AssessmentSelection
+    from assessment_agent.trigger import AssessmentTrigger
+    from assessment_agent.vendors import Vendor, VendorRegistry, build_router
+    from claim_core import Base
+
     repo = Path(__file__).resolve().parents[2]
     configured = _load_config(repo / "packs/motor/vendors/vendors.yaml", config)
     Base.metadata.create_all(app.state.engine, tables=[Vendor.__table__])
@@ -148,4 +159,23 @@ def build_assessment_agent(
     return agent
 
 
-__all__ = ["AssessmentAgent", "build_assessment_agent", "savings_tables"]
+__all__ = [
+    "AssessmentActivities",
+    "AssessmentAgent",
+    "assessment_control_activity_registrations",
+    "assessment_effect_activity_registrations",
+    "build_assessment_agent",
+    "savings_tables",
+]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "AssessmentActivities",
+        "assessment_control_activity_registrations",
+        "assessment_effect_activity_registrations",
+    }:
+        from assessment_agent import activities
+
+        return getattr(activities, name)
+    raise AttributeError(name)

@@ -41,7 +41,13 @@ from orchestration.contracts import (
     validate_control_field,
 )
 from orchestration.errors import ControlContractError
-from orchestration.ids import WorkflowRef, chase_workflow_ref, docintel_workflow_ref
+from orchestration.ids import (
+    WorkflowRef,
+    assessment_workflow_ref,
+    chase_workflow_ref,
+    docintel_workflow_ref,
+    intake_workflow_ref,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime claim_core import
     from claim_core.models import Event
@@ -211,6 +217,52 @@ def _docintel_workflow_id(event: Event) -> WorkflowRef:
     return docintel_workflow_ref(document_ref)
 
 
+def _intake_start_workflow_id(event: Event) -> WorkflowRef:
+    """Key duplicate intake deliveries on the already-committed trigger event."""
+
+    return intake_workflow_ref(event.id)
+
+
+def _intake_signal_workflow_id(event: Event) -> WorkflowRef:
+    payload = event.payload
+    trigger_event_ref = (
+        payload.get("trigger_event_id") if isinstance(payload, dict) else None
+    )
+    if not isinstance(trigger_event_ref, str):
+        raise ControlContractError(
+            "trigger_event_ref", "an intake control event requires trigger_event_id"
+        )
+    return intake_workflow_ref(trigger_event_ref)
+
+
+def _assessment_workflow_id(event: Event) -> WorkflowRef:
+    payload = event.payload
+    run_ref = payload.get("run_id") if isinstance(payload, dict) else None
+    if not isinstance(run_ref, str):
+        raise ControlContractError(
+            "run_ref", "an assessment control event requires run_id"
+        )
+    return assessment_workflow_ref(run_ref)
+
+
+def _business_mapping(
+    event_type: str,
+    *,
+    workflow_type: str,
+    workflow_id_builder: Callable[[Event], WorkflowRef | None],
+    action: Literal["start", "signal"],
+    signal_name: str | None = None,
+) -> TemporalIntentMapping:
+    return TemporalIntentMapping(
+        event_type=event_type,
+        workflow_type=workflow_type,
+        workflow_id_builder=workflow_id_builder,
+        action=action,
+        signal_name=signal_name,
+        control_contract_type=ControlCommand if action == "start" else ControlSignal,
+    )
+
+
 def _chase_mapping(
     event_type: str,
     *,
@@ -254,6 +306,60 @@ TEMPORAL_INTENT_MAPPINGS: tuple[TemporalIntentMapping, ...] = (
         action="signal",
         signal_name="review_resolved",
         control_contract_type=ControlSignal,
+    ),
+    _business_mapping(
+        "intake.requested",
+        workflow_type="IntakeWorkflow",
+        workflow_id_builder=_intake_start_workflow_id,
+        action="start",
+    ),
+    _business_mapping(
+        "intake.document_ready",
+        workflow_type="IntakeWorkflow",
+        workflow_id_builder=_intake_signal_workflow_id,
+        action="signal",
+        signal_name="document_received",
+    ),
+    _business_mapping(
+        "intake.review_resolved",
+        workflow_type="IntakeWorkflow",
+        workflow_id_builder=_intake_signal_workflow_id,
+        action="signal",
+        signal_name="review_resolved",
+    ),
+    _business_mapping(
+        "intake.claim_terminal",
+        workflow_type="IntakeWorkflow",
+        workflow_id_builder=_intake_signal_workflow_id,
+        action="signal",
+        signal_name="claim_terminal",
+    ),
+    _business_mapping(
+        "assessment.workflow_requested",
+        workflow_type="AssessmentWorkflow",
+        workflow_id_builder=_assessment_workflow_id,
+        action="start",
+    ),
+    _business_mapping(
+        "assessment.review_resolved",
+        workflow_type="AssessmentWorkflow",
+        workflow_id_builder=_assessment_workflow_id,
+        action="signal",
+        signal_name="review_resolved",
+    ),
+    _business_mapping(
+        "assessment.report_ready",
+        workflow_type="AssessmentWorkflow",
+        workflow_id_builder=_assessment_workflow_id,
+        action="signal",
+        signal_name="document_received",
+    ),
+    _business_mapping(
+        "assessment.claim_terminal",
+        workflow_type="AssessmentWorkflow",
+        workflow_id_builder=_assessment_workflow_id,
+        action="signal",
+        signal_name="claim_terminal",
     ),
     _chase_mapping("chase.workflow_requested", action="start"),
     _chase_mapping("chase.item_requested", action="signal", signal_name="pacha_event"),

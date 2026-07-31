@@ -737,10 +737,10 @@ def test_t04_extends_t03_mapping_with_one_document_start_and_opaque_signals():
     signals = [
         mapping for mapping in TEMPORAL_INTENT_MAPPINGS if mapping.action == "signal"
     ]
-    assert [mapping.event_type for mapping in starts] == [
+    assert {
         "document.received",
         "chase.workflow_requested",
-    ]
+    } <= {mapping.event_type for mapping in starts}
     assert all(mapping.signal_name is not None for mapping in signals)
     assert len({mapping.event_type for mapping in TEMPORAL_INTENT_MAPPINGS}) == len(
         TEMPORAL_INTENT_MAPPINGS

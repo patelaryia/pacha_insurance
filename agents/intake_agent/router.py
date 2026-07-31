@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from claim_core import ClaimCoreError, new_ulid
 from doc_intel.validators import kenya_reg
 from intake_agent.classifier import CLASSES
+from orchestration.ids import intake_workflow_ref
 
 TERMINAL_INBOUND_STATES = frozenset(
     {"DECLINED", "WITHDRAWN", "VOID", "SETTLED", "CLOSED"}
@@ -316,12 +317,38 @@ class EmailRouter:
             "confidence": confidence,
         }
         if class_name == "new_intimation" and confidence >= thresholds["new_intimation"]:
-            self._emit(
-                event_type="intake.requested",
-                payload={**classification, "message": message},
-                claim_id=None,
-                correlation_id=graph_message_id,
-            )
+            run_ref = new_ulid()
+            with self.sessions.begin() as session:
+                event = self.app.state.record_event(
+                    session,
+                    claim_id=None,
+                    event_type="intake.requested",
+                    payload={**classification, "message": message},
+                    actor="agent:intake",
+                    correlation_id=run_ref,
+                )
+                self.app.state.agent_runtime.projection.prepare(
+                    session,
+                    run_ref=run_ref,
+                    agent="intake",
+                    capability_id="intake.claim_creation",
+                    autonomy_level=self.app.state.agent_runtime.runner.level(
+                        "intake.claim_creation"
+                    ),
+                    workflow_ref=intake_workflow_ref(event.id),
+                    workflow_type="IntakeWorkflow",
+                    trigger_event_ref=event.id,
+                    step_ids=(
+                        "create_claim",
+                        "ingest",
+                        "populate",
+                        "dupe_check",
+                        "late_check",
+                        "acknowledge",
+                        "checklist",
+                        "triage",
+                    ),
+                )
             return
         if class_name == "multi_intimation":
             self._review(

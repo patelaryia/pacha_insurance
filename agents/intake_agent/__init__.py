@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import yaml
-
-from intake_agent.assigner import ClaimAssigner
-from intake_agent.classifier import MailboxClassifier
-from intake_agent.flow import IntakeFlow, TerminalMoneyConsumer
-from intake_agent.router import EmailRouter
-from intake_agent.triage import ModeATriage
+if TYPE_CHECKING:
+    from intake_agent.assigner import ClaimAssigner
+    from intake_agent.flow import IntakeFlow, TerminalMoneyConsumer
+    from intake_agent.router import EmailRouter
 
 
 class IntakeAgent:
@@ -31,6 +28,8 @@ class IntakeAgent:
 
 
 def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
+    import yaml
+
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as error:
@@ -65,6 +64,8 @@ def _load_config(path: Path, override: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _load_checklist_registry(path: Path, base_items: list[str]) -> dict[str, dict[str, Any]]:
+    import yaml
+
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as error:
@@ -95,6 +96,12 @@ def build_intake_agent(
 
     if not hasattr(app.state, "agent_runtime"):
         raise RuntimeError("build_intake_agent requires build_agent_runtime")
+    from intake_agent.assigner import ClaimAssigner
+    from intake_agent.classifier import MailboxClassifier
+    from intake_agent.flow import IntakeFlow, TerminalMoneyConsumer
+    from intake_agent.router import EmailRouter
+    from intake_agent.triage import ModeATriage
+
     repo = Path(__file__).resolve().parents[2]
     configured = _load_config(repo / "packs" / "motor" / "intake" / "intake.yaml", config)
     configured["checklist_registry"] = _load_checklist_registry(
@@ -125,4 +132,24 @@ def build_intake_agent(
     return handle
 
 
-__all__ = ["IntakeAgent", "build_intake_agent"]
+__all__ = [
+    "IntakeActivities",
+    "IntakeAgent",
+    "build_intake_agent",
+    "intake_activity_registrations",
+    "intake_control_activity_registrations",
+    "intake_effect_activity_registrations",
+]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "IntakeActivities",
+        "intake_activity_registrations",
+        "intake_control_activity_registrations",
+        "intake_effect_activity_registrations",
+    }:
+        from intake_agent import activities
+
+        return getattr(activities, name)
+    raise AttributeError(name)

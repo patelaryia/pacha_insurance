@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from agent_runtime import Action
 from claim_core import STATE_METADATA, ClaimState, new_ulid
 from doc_intel.llm import ModelBudgetExceeded, ModelWrapper
+from orchestration.ids import assessment_workflow_ref
 
 ACTOR = "agent:assessment"
 COMMITTED_STATES = frozenset({"extracted", "human_verified", "system_confirmed"})
@@ -377,13 +378,29 @@ class AssessmentTrigger:
         return {"status": "completed", "log_payload": log_payload}
 
     def _start_shadow(self, claim_id: str, trigger_event: str) -> None:
-        run_id = self.app.state.agent_runtime.start_run(
-            agent="assessment",
-            capability_id="assessment.mode_shadow",
-            claim_id=claim_id,
-            trigger_event=trigger_event,
-        )
-        self.app.state.agent_runtime.run(run_id)
+        run_id = new_ulid()
+        with self.sessions.begin() as session:
+            self.app.state.record_event(
+                session,
+                claim_id=claim_id,
+                event_type="assessment.workflow_requested",
+                payload={"run_id": run_id, "source_event_id": trigger_event},
+                actor=ACTOR,
+                correlation_id=run_id,
+            )
+            self.app.state.agent_runtime.projection.prepare(
+                session,
+                run_ref=run_id,
+                agent="assessment",
+                capability_id="assessment.mode_shadow",
+                autonomy_level="L0",
+                workflow_ref=assessment_workflow_ref(run_id),
+                workflow_type="AssessmentWorkflow",
+                claim_ref=claim_id,
+                trigger_event_ref=trigger_event,
+                step_ids=("call_model",),
+            )
+        self.app.state.agent_runtime.resume_cop_projection(run_id)
 
     def issue_from_payload(
         self,

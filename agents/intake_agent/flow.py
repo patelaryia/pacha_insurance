@@ -145,13 +145,7 @@ class IntakeFlow:
                 {"event_id": event.id, "capability_id": CAPABILITY},
             ).scalar()
         if isinstance(existing, str):
-            return
-        run_id = self.app.state.agent_runtime.start_run(
-            agent="intake",
-            capability_id=CAPABILITY,
-            trigger_event=event.id,
-        )
-        self.app.state.agent_runtime.run(run_id)
+            self.app.state.agent_runtime.resume_cop_projection(existing)
 
     def _create_claim(self, action: Action) -> str:
         run_id = action.payload.get("workflow_run_id")
@@ -170,7 +164,7 @@ class IntakeFlow:
         self.app.state.claim_service.link_inbound_communication(
             str(action.payload["graph_message_id"]), claim.id
         )
-        self.app.state.agent_runtime.runner.set_claim_id(run_id, claim.id)
+        self.app.state.agent_runtime.attach_claim_projection(run_id, claim.id)
         return claim.id
 
     def create_claim(self, context: Any) -> dict[str, Any]:
