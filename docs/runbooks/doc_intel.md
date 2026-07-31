@@ -23,19 +23,28 @@ models and list-price metering are configured. Keep tests on injected fakes.
 
 ## Worker startup and stage recovery
 
-Start workers with `DATABASE_URL`, `PACHA_BLOB_ROOT`, and
-`DOC_INTEL_ALERT_SINK_FACTORY=module:factory`, plus
-`PACHA_WORKER_RUNTIME_FACTORY=doc_intel.runtime:build_worker_runtime`. Each worker
-constructs its own app services, Anthropic adapter, scheduler, and engine; it does not depend on an API
-process global. Missing alert configuration fails startup. The Celery queue comes
-from `packs/motor/doc_intel.yaml`.
+Start the control Worker with `DocumentIntelligenceWorkflow` explicitly
+registered and the docintel Worker with
+`docintel_activity_registrations(DocumentIntelligenceActivities(...))`. The
+docintel process builds its domain dependencies with `DATABASE_URL`,
+`PACHA_BLOB_ROOT`, and
+`DOC_INTEL_ALERT_SINK_FACTORY=module:factory`; it does not depend on an API
+process global. Missing alert configuration fails startup. Queue selection
+comes from the shared Temporal environment contract and Worker role.
 
-`document.received` schedules NORMALIZE. Each successful or skipped task queues the
-next named stage; failed or paused tasks queue nothing. Acquisition is an atomic
-`pending -> running` transition. A crash deliberately leaves `running`; after
-confirming the prior worker cannot still commit, an operator must call
-`recover_stage(..., actor="system"|"user:<ULID>")`. No lease expiry or blind retry is
-performed for uncertain work.
+The transactional-outbox bridge maps `document.received` to
+`pacha.docintel.{document_ulid}`. The finite Workflow invokes NORMALIZE through
+CONSISTENCY in the PRD order on the docintel Task Queue. Acquisition remains an
+atomic `pending -> running` transition and terminal database stage rows are
+observed rather than repeated.
+
+A crash deliberately leaves `running`; a failed or paused stage never advances.
+After confirming the prior worker cannot still commit, an operator must call
+`recover_stage(..., actor="system"|"user:<ULID>")` and wake the Workflow through
+an authorised committed Pacha event. The opaque event Signal only wakes the
+execution: the Activity still observes the durable stage row, so a Signal
+cannot recover work by itself. No lease expiry or blind retry is performed for
+uncertain work.
 
 ## DOC_SPLIT backlog
 

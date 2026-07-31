@@ -131,19 +131,26 @@ def test_consistency_missing_triggers_and_unknown_expression_fail_closed():
         )
 
 
-def test_named_stage_task_builds_worker_runtime_without_api_global(monkeypatch):
-    from doc_intel import tasks
+def test_named_stage_activities_are_registered_in_prd_order():
+    from doc_intel.activities import (
+        DocumentIntelligenceActivities,
+        docintel_activity_registrations,
+    )
 
-    class Engine:
-        def process_stage(self, document_id, stage, *, schedule_next):
-            assert schedule_next is True
-            return {"document_id": document_id, "stage": stage}
-
-    monkeypatch.setattr(tasks, "get_worker_runtime", lambda: SimpleNamespace(engine=Engine()))
-    assert tasks.PIPELINE_TASKS["CITE"].run("doc-1") == {
-        "document_id": "doc-1",
-        "stage": "CITE",
-    }
+    activities = object.__new__(DocumentIntelligenceActivities)
+    registrations = docintel_activity_registrations(activities)
+    assert [
+        method.__temporal_activity_definition.name for method in registrations
+    ] == [
+        "docintel_normalize",
+        "docintel_classify",
+        "docintel_split",
+        "docintel_extract",
+        "docintel_cite",
+        "docintel_validate",
+        "docintel_commit",
+        "docintel_consistency",
+    ]
 
 
 def test_shared_gate_accepts_only_verified_vision_citation(tmp_path):

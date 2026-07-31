@@ -33,5 +33,3 @@ audit_redacted_keys:
   - gloss
   - photo_descriptions
   - rationale
-worker:
-  queue: doc_intel

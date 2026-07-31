@@ -729,13 +729,16 @@ def test_fetched_histories_carry_no_seeded_sentinel_and_only_control_fields(
     assert present <= set(CONTROL_FIELDS)
 
 
-def test_the_production_intent_mapping_registry_is_the_t03_chase_surface():
-    """T03 adds only its start and opaque wake events to T02's bridge."""
+def test_the_production_intent_mapping_registry_includes_t03_and_t04():
+    """T04 adds document start and recovery intents to T03's chase surface."""
 
     assert {
         (mapping.event_type, mapping.action, mapping.signal_name)
         for mapping in TEMPORAL_INTENT_MAPPINGS
     } == {
+        ("document.received", "start", None),
+        ("document.stage_recovered", "signal", "pacha_event"),
+        ("document.split_resolved", "signal", "review_resolved"),
         ("chase.workflow_requested", "start", None),
         ("chase.item_requested", "signal", "pacha_event"),
         ("chase.item_received", "signal", "document_received"),

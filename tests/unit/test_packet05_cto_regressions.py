@@ -188,7 +188,7 @@ def test_stage_acquisition_is_atomic_and_crash_recovery_is_explicit(tmp_path, mo
         [{"data": {"ok": True}, "cost_usd": 0.0, "model_id": "fake"}]
     )
     engine = build_doc_intel_engine(app, model_client=model, ocr_engine=DeterministicOcrEngine())
-    _claim, document = _claim_and_document(app)
+    claim, document = _claim_and_document(app)
     engine._ensure_stages(document.id)
     calls = []
 
@@ -207,6 +207,16 @@ def test_stage_acquisition_is_atomic_and_crash_recovery_is_explicit(tmp_path, mo
     engine._finish_stage(document.id, "CLASSIFY", StageResult(status="running"))
     assert engine.recover_stage(document.id, "CLASSIFY", actor="system") is True
     assert engine._stage_rows(document.id)["CLASSIFY"].status == "pending"
+    recovery = [
+        event
+        for event in app.state.claim_service.timeline(claim.id)
+        if event.type == "document.stage_recovered"
+    ]
+    assert len(recovery) == 1
+    assert recovery[0].payload == {
+        "document_id": document.id,
+        "stage": "CLASSIFY",
+    }
     monkeypatch.setattr(
         engine, "_run_stage", lambda _document, _stage: StageResult(status="succeeded")
     )
@@ -396,7 +406,7 @@ def test_exact_vision_eligibility_boundary_and_canonical_split_actor(tmp_path):
     engine = build_doc_intel_engine(
         app, model_client=FakeModelClient([]), ocr_engine=DeterministicOcrEngine(words=[])
     )
-    _claim, parent = _claim_and_document(app, content)
+    claim, parent = _claim_and_document(app, content)
     app.state.claim_service.set_document_status(parent.id, page_count=2)
     boundaries = [
         {"start_page": 1, "end_page": 1},
@@ -411,6 +421,17 @@ def test_exact_vision_eligibility_boundary_and_canonical_split_actor(tmp_path):
     first = engine.apply_human_boundaries(parent.id, boundaries=boundaries, actor=actor)
     second = engine.apply_human_boundaries(parent.id, boundaries=boundaries, actor=actor)
     assert second == first
+    resolved = [
+        event
+        for event in app.state.claim_service.timeline(claim.id)
+        if event.type == "document.split_resolved"
+    ]
+    assert len(resolved) == 1
+    assert resolved[0].actor == actor
+    assert resolved[0].payload == {
+        "document_id": parent.id,
+        "child_document_ids": first,
+    }
 
 
 def test_native_text_coverage_is_only_word_bbox_area_divided_by_page_area():
@@ -433,7 +454,9 @@ def test_native_text_coverage_is_only_word_bbox_area_divided_by_page_area():
     assert all(set(word) == {"text", "bbox"} for word in words)
 
 
-def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, monkeypatch):
+def test_operational_runtime_requires_alerts_and_temporal_owns_stage_order(
+    tmp_path, monkeypatch
+):
     from claim_core.app import create_app
     from doc_intel.llm import FakeModelClient, ModelUnavailable
     from doc_intel.stages import StageResult
@@ -447,31 +470,23 @@ def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, m
             runtime_mode="worker",
         )
 
-    class Scheduler:
-        def __init__(self):
-            self.calls = []
-
-        def schedule(self, document_id, stage):
-            self.calls.append((document_id, stage))
-
-    scheduler = Scheduler()
     engine = build_doc_intel_engine(
         app,
         model_client=FakeModelClient([]),
         ocr_engine=DeterministicOcrEngine(),
         runtime_mode="worker",
-        stage_scheduler=scheduler,
         alert_sink=_AlertSink(),
     )
     _claim, document = _claim_and_document(app)
-    engine.consume(SimpleNamespace(type="document.received", payload={"document_id": document.id}))
-    assert scheduler.calls == [(document.id, "NORMALIZE")]
+    assert "doc_intel" not in app.state.dispatcher.consumer_names
 
     monkeypatch.setattr(
         engine, "_run_stage", lambda _document, _stage: StageResult(status="succeeded")
     )
-    engine.process_stage(document.id, "NORMALIZE", schedule_next=True)
-    assert scheduler.calls[-1] == (document.id, "CLASSIFY")
+    engine.process_stage(document.id, "NORMALIZE")
+    rows = engine._stage_rows(document.id)
+    assert rows["NORMALIZE"].status == "succeeded"
+    assert rows["CLASSIFY"].status == "pending"
 
     second = _claim_and_document(app, b"second")[1]
 
@@ -483,10 +498,9 @@ def test_operational_runtime_requires_alerts_and_chains_only_success(tmp_path, m
         raise ModelUnavailable("paused")
 
     monkeypatch.setattr(engine, "_run_stage", fail)
-    assert engine.process_stage(second.id, "NORMALIZE", schedule_next=True)["status"] == "paused"
-    assert engine.process_stage(second.id, "NORMALIZE", schedule_next=True)["status"] == "paused"
+    assert engine.process_stage(second.id, "NORMALIZE")["status"] == "paused"
+    assert engine.process_stage(second.id, "NORMALIZE")["status"] == "paused"
     assert fail_calls == 1
-    assert scheduler.calls[-1] != (second.id, "CLASSIFY")
     assert engine.recover_stage(second.id, "NORMALIZE", actor="system") is True
     monkeypatch.setattr(
         engine, "_run_stage", lambda _document, _stage: StageResult(status="succeeded")
@@ -569,14 +583,17 @@ def test_fresh_worker_runtime_constructs_from_environment_with_injected_sdk(
     runtime = build_worker_runtime(sdk_client=sdk, alert_sink=_AlertSink())
     assert runtime.engine.runtime_mode == "worker"
     assert runtime.engine.model_client.sdk_client is sdk
-    assert runtime.engine.stage_scheduler.queue == "doc_intel"
+    assert "doc_intel" not in runtime.app.state.dispatcher.consumer_names
 
 
-def test_worker_bootstrap_fail_loud_paths_and_configured_scheduler(
+def test_worker_bootstrap_fail_loud_paths_and_temporal_activity_factory(
     tmp_path, monkeypatch
 ):
     from doc_intel import runtime as runtime_module
-    from doc_intel import tasks
+    from doc_intel.activities import (
+        DocumentIntelligenceActivities,
+        docintel_activity_registrations,
+    )
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("PACHA_BLOB_ROOT", raising=False)
@@ -586,18 +603,6 @@ def test_worker_bootstrap_fail_loud_paths_and_configured_scheduler(
         )
     with pytest.raises(RuntimeError, match="module:attribute"):
         runtime_module._load_factory("invalid")
-    with pytest.raises(RuntimeError, match="queue"):
-        runtime_module.CeleryStageScheduler("")
-
-    scheduled = []
-
-    class Task:
-        def apply_async(self, *, args, queue):
-            scheduled.append((args, queue))
-
-    monkeypatch.setitem(tasks.PIPELINE_TASKS, "NORMALIZE", Task())
-    runtime_module.CeleryStageScheduler("configured-q").schedule("doc-1", "NORMALIZE")
-    assert scheduled == [(["doc-1"], "configured-q")]
 
     sdk = SimpleNamespace(messages=SimpleNamespace(create=lambda **_kwargs: None))
     monkeypatch.setenv("DATABASE_URL", _database_url(tmp_path, "factory-worker"))
@@ -606,6 +611,11 @@ def test_worker_bootstrap_fail_loud_paths_and_configured_scheduler(
     monkeypatch.setattr(runtime_module, "build_anthropic_sdk_client", lambda: sdk)
     built = runtime_module.build_worker_runtime()
     assert isinstance(built.engine.sentinel.alert_sink, _AlertSink)
+    activities = DocumentIntelligenceActivities(
+        built.engine,
+        worker_build_id="a" * 40,
+    )
+    assert len(docintel_activity_registrations(activities)) == 8
 
 
 def test_slo_samples_append_and_only_individual_breaches_alert():

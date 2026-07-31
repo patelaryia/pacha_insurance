@@ -21,6 +21,7 @@ from claim_core import (
     BlobStore,
     ClaimCoreError,
     ClaimService,
+    Document,
     HumanOverrideProtected,
     field_dictionary,
     new_ulid,
@@ -95,7 +96,6 @@ class DocIntelEngine:
         model_config: Mapping[str, Any] | None = None,
         alert_sink: Any | None = None,
         runtime_mode: str = "test",
-        stage_scheduler: Any | None = None,
     ) -> None:
         self.app = app
         self.engine: Engine = app.state.engine
@@ -105,7 +105,6 @@ class DocIntelEngine:
         self.ocr_engine = ocr_engine or TesseractOcrEngine()
         self.model_client = model_client
         self.runtime_mode = runtime_mode
-        self.stage_scheduler = stage_scheduler
         root = Path(__file__).resolve().parents[2]
         pack_config = yaml.safe_load(
             (root / "packs" / "motor" / "doc_intel.yaml").read_text(encoding="utf-8")
@@ -132,18 +131,13 @@ class DocIntelEngine:
         )
 
     def consume(self, event: Any) -> None:
-        """Transactional-outbox consumer entry; unrelated event types are no-ops."""
+        """Synchronous acceptance driver; production routing belongs to Temporal."""
 
-        if event.type != "document.received":
+        if self.runtime_mode != "test" or event.type != "document.received":
             return
         document_id = event.payload.get("document_id")
         if isinstance(document_id, str):
-            if self.runtime_mode == "test":
-                self.process_document(document_id)
-            else:
-                if self.stage_scheduler is None:
-                    raise RuntimeError("operational doc-intel requires a stage scheduler")
-                self.stage_scheduler.schedule(document_id, "NORMALIZE")
+            self.process_document(document_id)
 
     def _document(self, document_id: str) -> dict[str, Any]:
         row = self.claim_service.get_document(document_id)
@@ -224,6 +218,11 @@ class DocIntelEngine:
                 422, "VALUE_TYPE_MISMATCH", "Recovery requires system or user ULID"
             )
         with Session(self.engine) as session, session.begin():
+            document = session.get(Document, document_id)
+            if document is None:
+                raise ClaimCoreError(
+                    404, "DOCUMENT_NOT_FOUND", "Document was not found"
+                )
             result = session.execute(
                 update(DocumentStage)
                 .where(
@@ -237,6 +236,15 @@ class DocIntelEngine:
                     updated_at=self.clock(),
                 )
             )
+            if result.rowcount == 1:
+                self.app.state.record_event(
+                    session,
+                    claim_id=document.claim_id,
+                    event_type="document.stage_recovered",
+                    payload={"document_id": document_id, "stage": stage},
+                    actor=actor,
+                    correlation_id=new_ulid(),
+                )
             return result.rowcount == 1
 
     def _pause_stage(self, document_id: str, stage: str, error: Exception) -> None:
@@ -875,9 +883,13 @@ class DocIntelEngine:
         return handlers[stage](document)
 
     def process_stage(
-        self, document_id: str, stage: str, *, schedule_next: bool = False
+        self,
+        document_id: str,
+        stage: str,
+        *,
+        record_terminal_sample: bool = False,
     ) -> dict[str, Any]:
-        """Run exactly one idempotent stage for Celery and synchronous callers."""
+        """Run exactly one idempotent stage for Temporal and synchronous callers."""
 
         if stage not in STAGES:
             raise ValueError(f"unknown pipeline stage {stage!r}")
@@ -885,12 +897,6 @@ class DocIntelEngine:
         self._ensure_stages(document_id)
         row = self._stage_rows(document_id)[stage]
         if row.status in TERMINAL_STAGE_STATUSES:
-            if schedule_next:
-                index = STAGES.index(stage)
-                if index + 1 < len(STAGES):
-                    if self.stage_scheduler is None:
-                        raise RuntimeError("stage chaining requires a scheduler")
-                    self.stage_scheduler.schedule(document_id, STAGES[index + 1])
             return {"stage": stage, "status": row.status, "output_ref": row.output_ref}
         if not self._begin_stage(document_id, stage):
             row = self._stage_rows(document_id)[stage]
@@ -927,19 +933,13 @@ class DocIntelEngine:
             result = StageResult(status="failed", last_error=str(error))
         except Exception as error:
             self._fail_stage(document_id, stage, error)
-            if schedule_next:
+            if record_terminal_sample:
                 rows = self._stage_rows(document_id)
                 self._record_sample(document_id, rows["NORMALIZE"].created_at)
             raise
         else:
             self._finish_stage(document_id, stage, result)
-            if schedule_next and result.status in TERMINAL_STAGE_STATUSES:
-                index = STAGES.index(stage)
-                if index + 1 < len(STAGES):
-                    if self.stage_scheduler is None:
-                        raise RuntimeError("stage chaining requires a scheduler")
-                    self.stage_scheduler.schedule(document_id, STAGES[index + 1])
-        if schedule_next and (
+        if record_terminal_sample and (
             result.status in {"failed", "paused"}
             or (stage == STAGES[-1] and result.status in TERMINAL_STAGE_STATUSES)
         ):
@@ -994,10 +994,6 @@ class DocIntelEngine:
             if normalise_row.status != "succeeded":
                 result = self._normalise(self._document(child.id))
                 self._finish_stage(child.id, "NORMALIZE", result)
-            if self.runtime_mode != "test":
-                if self.stage_scheduler is None:
-                    raise RuntimeError("operational split resolution requires a scheduler")
-                self.stage_scheduler.schedule(child.id, "CLASSIFY")
         resolution = {
             "boundaries": [
                 {"start_page": start_page, "end_page": end_page}
@@ -1021,6 +1017,23 @@ class DocIntelEngine:
                 stage,
                 StageResult(status="skipped", last_error="split parent; process children"),
             )
+        if not self._event_exists(
+            parent["claim_id"],
+            "document.split_resolved",
+            {"document_id": parent_document_id},
+        ):
+            with Session(self.engine) as session, session.begin():
+                self.app.state.record_event(
+                    session,
+                    claim_id=parent["claim_id"],
+                    event_type="document.split_resolved",
+                    payload={
+                        "document_id": parent_document_id,
+                        "child_document_ids": child_ids,
+                    },
+                    actor=actor,
+                    correlation_id=new_ulid(),
+                )
         return child_ids
 
     def process_document(self, document_id: str) -> PipelineOutcome:
@@ -1064,9 +1077,8 @@ def build_engine(
     model_config: Mapping[str, Any] | None = None,
     alert_sink: Any | None = None,
     runtime_mode: str = "test",
-    stage_scheduler: Any | None = None,
 ) -> DocIntelEngine:
-    """Build, expose, and register the doc-intel event consumer."""
+    """Build and expose the doc-intel domain service used by Temporal Activities."""
 
     engine = DocIntelEngine(
         app,
@@ -1076,8 +1088,10 @@ def build_engine(
         model_config=model_config,
         alert_sink=alert_sink,
         runtime_mode=runtime_mode,
-        stage_scheduler=stage_scheduler,
     )
     app.state.doc_intel = engine
-    app.state.dispatcher.register_consumer("doc_intel", engine.consume)
+    if runtime_mode == "test":
+        # Existing PRD-01 acceptance uses the synchronous domain driver. This
+        # branch is never installed by the operational worker runtime.
+        app.state.dispatcher.register_consumer("doc_intel", engine.consume)
     return engine

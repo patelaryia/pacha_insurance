@@ -18,6 +18,11 @@ from temporalio.worker import Replayer
 
 from chase_agent import chase_activity_registrations
 from claim_core.service import new_ulid
+from doc_intel.activities import (
+    DocumentIntelligenceActivities,
+    docintel_activity_registrations,
+)
+from doc_intel.workflows import DocumentIntelligenceWorkflow
 from orchestration.activities import SystemActivities
 from orchestration.chase_workflow import DocumentChaseWorkflow
 from orchestration.contracts import (
@@ -227,26 +232,43 @@ def harness(tmp_path):
     chase = domain.app.state.chase_agent.temporal_activities(
         worker_build_id=config.build_id
     )
+    docintel = DocumentIntelligenceActivities(
+        domain.app.state.doc_intel,
+        worker_build_id=config.build_id,
+    )
 
-    async def _worker():
-        return build_worker(
+    async def _workers():
+        control_worker = build_worker(
             temporal.client,
             config,
             role="control",
-            workflows=[OutboxDrainWorkflow, DocumentChaseWorkflow],
+            workflows=[
+                OutboxDrainWorkflow,
+                DocumentChaseWorkflow,
+                DocumentIntelligenceWorkflow,
+            ],
             activities=[
                 system.dispatch_nonledger_events,
                 *chase_activity_registrations(chase),
             ],
         )
+        docintel_worker = build_worker(
+            temporal.client,
+            config,
+            role="docintel",
+            activities=docintel_activity_registrations(docintel),
+        )
+        return control_worker, docintel_worker
 
-    worker = loop.run_until_complete(_worker())
+    worker, docintel_worker = loop.run_until_complete(_workers())
     loop.run_until_complete(worker.__aenter__())
+    loop.run_until_complete(docintel_worker.__aenter__())
     running = _Harness(loop, temporal, config, domain)
     running.claim_id = claim_id
     try:
         yield running
     finally:
+        loop.run_until_complete(docintel_worker.__aexit__(None, None, None))
         loop.run_until_complete(worker.__aexit__(None, None, None))
         loop.run_until_complete(temporal.__aexit__(None, None, None))
         asyncio.set_event_loop(None)

@@ -41,7 +41,7 @@ from orchestration.contracts import (
     validate_control_field,
 )
 from orchestration.errors import ControlContractError
-from orchestration.ids import WorkflowRef, chase_workflow_ref
+from orchestration.ids import WorkflowRef, chase_workflow_ref, docintel_workflow_ref
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime claim_core import
     from claim_core.models import Event
@@ -199,6 +199,18 @@ def _chase_workflow_id(event: Event) -> WorkflowRef:
     return chase_workflow_ref(checklist_ref)
 
 
+def _docintel_workflow_id(event: Event) -> WorkflowRef:
+    """Resolve the document ULID committed in a docintel control event."""
+
+    payload = event.payload
+    document_ref = payload.get("document_id") if isinstance(payload, dict) else None
+    if not isinstance(document_ref, str):
+        raise ControlContractError(
+            "document_ref", "a document orchestration event requires document_id"
+        )
+    return docintel_workflow_ref(document_ref)
+
+
 def _chase_mapping(
     event_type: str,
     *,
@@ -219,6 +231,30 @@ def _chase_mapping(
 #: detail only in PostgreSQL; the bridge forwards either the generic
 #: `ControlCommand` or one opaque event ULID.
 TEMPORAL_INTENT_MAPPINGS: tuple[TemporalIntentMapping, ...] = (
+    TemporalIntentMapping(
+        event_type="document.received",
+        workflow_type="DocumentIntelligenceWorkflow",
+        workflow_id_builder=_docintel_workflow_id,
+        action="start",
+        signal_name=None,
+        control_contract_type=ControlCommand,
+    ),
+    TemporalIntentMapping(
+        event_type="document.stage_recovered",
+        workflow_type="DocumentIntelligenceWorkflow",
+        workflow_id_builder=_docintel_workflow_id,
+        action="signal",
+        signal_name="pacha_event",
+        control_contract_type=ControlSignal,
+    ),
+    TemporalIntentMapping(
+        event_type="document.split_resolved",
+        workflow_type="DocumentIntelligenceWorkflow",
+        workflow_id_builder=_docintel_workflow_id,
+        action="signal",
+        signal_name="review_resolved",
+        control_contract_type=ControlSignal,
+    ),
     _chase_mapping("chase.workflow_requested", action="start"),
     _chase_mapping("chase.item_requested", action="signal", signal_name="pacha_event"),
     _chase_mapping(

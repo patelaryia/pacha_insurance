@@ -17,6 +17,11 @@ from temporalio.testing import WorkflowEnvironment
 
 from chase_agent import chase_activity_registrations
 from claim_core.service import new_ulid
+from doc_intel.activities import (
+    DocumentIntelligenceActivities,
+    docintel_activity_registrations,
+)
+from doc_intel.workflows import DocumentIntelligenceWorkflow
 from orchestration.activities import SystemActivities
 from orchestration.chase_workflow import DocumentChaseWorkflow
 from orchestration.contracts import ControlPayloadInterceptor, ControlResult
@@ -43,6 +48,7 @@ class ChaseTemporalDriver:
         self.loop = asyncio.new_event_loop()
         self.temporal: WorkflowEnvironment | None = None
         self.worker = None
+        self.docintel_worker = None
 
     def run(self, awaitable):  # noqa: ANN001, ANN201 - synchronous test bridge
         return self.loop.run_until_complete(awaitable)
@@ -79,21 +85,37 @@ class ChaseTemporalDriver:
         chase = self.domain.app.state.chase_agent.temporal_activities(
             worker_build_id=self.config.build_id
         )
+        docintel = DocumentIntelligenceActivities(
+            self.domain.app.state.doc_intel,
+            worker_build_id=self.config.build_id,
+        )
 
-        async def _worker():
-            return build_worker(
+        async def _workers():
+            control_worker = build_worker(
                 self.temporal.client,
                 self.config,
                 role="control",
-                workflows=[OutboxDrainWorkflow, DocumentChaseWorkflow],
+                workflows=[
+                    OutboxDrainWorkflow,
+                    DocumentChaseWorkflow,
+                    DocumentIntelligenceWorkflow,
+                ],
                 activities=[
                     system.dispatch_nonledger_events,
                     *chase_activity_registrations(chase),
                 ],
             )
+            docintel_worker = build_worker(
+                self.temporal.client,
+                self.config,
+                role="docintel",
+                activities=docintel_activity_registrations(docintel),
+            )
+            return control_worker, docintel_worker
 
-        self.worker = self.run(_worker())
+        self.worker, self.docintel_worker = self.run(_workers())
         self.run(self.worker.__aenter__())
+        self.run(self.docintel_worker.__aenter__())
         self.domain.app.state.temporal_chase_driver = self
         return self
 
@@ -158,6 +180,8 @@ class ChaseTemporalDriver:
         if self.temporal is None:
             return
         try:
+            if self.docintel_worker is not None:
+                self.run(self.docintel_worker.__aexit__(None, None, None))
             if self.worker is not None:
                 self.run(self.worker.__aexit__(None, None, None))
             self.run(self.temporal.__aexit__(None, None, None))
