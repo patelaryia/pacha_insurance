@@ -16,6 +16,12 @@ from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer
 
+from assessment_agent import (
+    AssessmentActivities,
+    assessment_control_activity_registrations,
+    assessment_effect_activity_registrations,
+)
+from assessment_agent.workflows import AssessmentWorkflow
 from chase_agent import chase_activity_registrations
 from claim_core.service import new_ulid
 from doc_intel.activities import (
@@ -23,6 +29,12 @@ from doc_intel.activities import (
     docintel_activity_registrations,
 )
 from doc_intel.workflows import DocumentIntelligenceWorkflow
+from intake_agent import (
+    IntakeActivities,
+    intake_control_activity_registrations,
+    intake_effect_activity_registrations,
+)
+from intake_agent.workflows import IntakeWorkflow
 from orchestration.activities import SystemActivities
 from orchestration.chase_workflow import DocumentChaseWorkflow
 from orchestration.contracts import (
@@ -236,6 +248,8 @@ def harness(tmp_path):
         domain.app.state.doc_intel,
         worker_build_id=config.build_id,
     )
+    intake = IntakeActivities(domain.app)
+    assessment = AssessmentActivities(domain.app)
 
     async def _workers():
         control_worker = build_worker(
@@ -246,10 +260,14 @@ def harness(tmp_path):
                 OutboxDrainWorkflow,
                 DocumentChaseWorkflow,
                 DocumentIntelligenceWorkflow,
+                IntakeWorkflow,
+                AssessmentWorkflow,
             ],
             activities=[
                 system.dispatch_nonledger_events,
                 *chase_activity_registrations(chase),
+                *intake_control_activity_registrations(intake),
+                *assessment_control_activity_registrations(assessment),
             ],
         )
         docintel_worker = build_worker(
@@ -258,16 +276,27 @@ def harness(tmp_path):
             role="docintel",
             activities=docintel_activity_registrations(docintel),
         )
-        return control_worker, docintel_worker
+        effects_worker = build_worker(
+            temporal.client,
+            config,
+            role="effects",
+            activities=[
+                *intake_effect_activity_registrations(intake),
+                *assessment_effect_activity_registrations(assessment),
+            ],
+        )
+        return control_worker, docintel_worker, effects_worker
 
-    worker, docintel_worker = loop.run_until_complete(_workers())
+    worker, docintel_worker, effects_worker = loop.run_until_complete(_workers())
     loop.run_until_complete(worker.__aenter__())
     loop.run_until_complete(docintel_worker.__aenter__())
+    loop.run_until_complete(effects_worker.__aenter__())
     running = _Harness(loop, temporal, config, domain)
     running.claim_id = claim_id
     try:
         yield running
     finally:
+        loop.run_until_complete(effects_worker.__aexit__(None, None, None))
         loop.run_until_complete(docintel_worker.__aexit__(None, None, None))
         loop.run_until_complete(worker.__aexit__(None, None, None))
         loop.run_until_complete(temporal.__aexit__(None, None, None))

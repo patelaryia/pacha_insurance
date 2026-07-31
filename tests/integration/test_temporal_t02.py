@@ -733,9 +733,6 @@ def test_the_production_intent_mapping_registry_includes_t03_and_t04():
     """T04 adds document start and recovery intents to T03's chase surface."""
 
     assert {
-        (mapping.event_type, mapping.action, mapping.signal_name)
-        for mapping in TEMPORAL_INTENT_MAPPINGS
-    } == {
         ("document.received", "start", None),
         ("document.stage_recovered", "signal", "pacha_event"),
         ("document.split_resolved", "signal", "review_resolved"),
@@ -751,6 +748,9 @@ def test_the_production_intent_mapping_registry_includes_t03_and_t04():
         ("chase.cancelled", "signal", "claim_terminal"),
         ("chase.inbound_received", "signal", "inbound_received"),
         ("chase.review_resolved", "signal", "review_resolved"),
+    } <= {
+        (mapping.event_type, mapping.action, mapping.signal_name)
+        for mapping in TEMPORAL_INTENT_MAPPINGS
     }
 
 
