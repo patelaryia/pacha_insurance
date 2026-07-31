@@ -280,8 +280,10 @@ class AgentRunner:
                 return index, dict(step)
         return None
 
-    def run(self, run_id: str) -> dict[str, Any]:
-        """Resume from the first incomplete persisted step and end on review."""
+    def run(
+        self, run_id: str, *, stop_after_step: str | None = None
+    ) -> dict[str, Any]:
+        """Resume persisted steps, optionally yielding after one named boundary."""
 
         while True:
             with self.sessions() as session:
@@ -386,6 +388,8 @@ class AgentRunner:
                     current.status = "awaiting_review"
             if awaits_review:
                 return {"run_id": run_id, "status": "awaiting_review", "review_id": review_id}
+            if stop_after_step == step_id:
+                return {"run_id": run_id, "status": "running"}
 
     def _block_missing_step(
         self, run: AgentRun, index: int, step_id: str

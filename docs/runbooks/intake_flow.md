@@ -2,10 +2,13 @@
 
 ## Durable run states
 
-One `intake.requested` event owns one `agent_runs` row for the S1–S8 sequence.
-`awaiting_review` means the open review item is the recovery surface; resolving it
-emits `review.resolved` and resumes the run. Do not edit `agent_runs.steps` or replay
-the original email event by hand.
+One `intake.requested` event owns `pacha.intake.{trigger_event_ulid}` and one
+`agent_runs` projection for the S1–S8 sequence. The control Worker registers
+`IntakeWorkflow`; `intake_acknowledge` runs on the effects Worker with one
+Temporal attempt. `awaiting_review` means the open review item is the recovery
+surface; its committed `intake.review_resolved` control event carries only opaque
+references and Signals the same Workflow. Do not edit `agent_runs.steps`, start a
+second Workflow, or replay the original email event by hand.
 
 A creation confirm rejected before S1 commits is a terminal, successful no-op. The
 run is `completed`, the creation-step outcome records `resolution: rejected` and
@@ -25,12 +28,12 @@ after three polls. The source of truth is the document's `document_stages` rows:
 2. If the stage is `paused`, `failed`, or left `running` by a worker crash, first
    establish that the prior worker cannot still commit. Then call
    `DocIntelEngine.recover_stage(document_id, stage, actor="system"|"user:<ULID>")`.
-3. Enqueue the matching `doc_intel.<stage-lowercase>` task on the configured
-   document-intelligence queue (or invoke `process_stage(..., schedule_next=True)`
-   from the controlled worker recovery path). Never blind-retry an uncertain write.
-4. When extraction commits, `document.extracted` resumes S3 idempotently. Confirm
-   the run advances from `populate`; do not manufacture that event or decrement the
-   stored attempt count.
+3. Let the committed `document.stage_recovered` event Signal the existing
+   `DocumentIntelligenceWorkflow`; never invoke an Activity directly or start a
+   second execution.
+4. When extraction commits, `intake.document_ready` Signals the existing intake
+   Workflow and S3 reloads PostgreSQL idempotently. Confirm the projection advances
+   from `populate`; do not manufacture either event or decrement an attempt count.
 
 The provider, budget, split, and stage-level recovery rules remain authoritative in
 `docs/runbooks/doc_intel.md`.

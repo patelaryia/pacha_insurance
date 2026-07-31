@@ -8,6 +8,13 @@ shadow comparison, and stages one T-11 dispatch per officer-selected assessor. T
 assessor reminder template remain `pending_capture`; a staged draft is the expected launch
 outcome and no `email.sent` event should exist.
 
+T05 projects the run before committing `assessment.workflow_requested` and starts
+`pacha.assessment.{agent_run_ulid}`. The control Worker registers the pinned
+`AssessmentWorkflow`; `assessment_dispatch` is isolated on the effects queue with
+one Temporal attempt. Review, report and terminal wake-ups are committed opaque
+control events. Workflow history never contains the estimate, mode-card content,
+vendor details, attachments or money.
+
 ## Mode-card triage
 
 The officer must choose `desk` or `physical` and one or more active assessor vendors. R-06

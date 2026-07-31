@@ -87,6 +87,33 @@ class AgentRuntime:
     def run(self, run_id: str) -> dict[str, Any]:
         return self.runner.run(run_id)
 
+    def resume_cop_projection(self, run_id: str) -> dict[str, Any]:
+        """Drive an already-prepared projection for pre-T08 acceptance fixtures."""
+
+        with self.app.state.engine.begin() as connection:
+            connection.execute(
+                AgentRun.__table__.update()
+                .where(AgentRun.id == run_id, AgentRun.status == "pending")
+                .values(status="running")
+            )
+        return self.runner.run(run_id)
+
+    def attach_claim_projection(self, run_id: str, claim_id: str) -> None:
+        """Attach S1's committed claim to its pre-existing run projection."""
+
+        self.runner.set_claim_id(run_id, claim_id)
+
+    def run_cop_activity(self, run_id: str, step_id: str) -> dict[str, Any]:
+        """Execute no more than one named idempotent COP step."""
+
+        with self.app.state.engine.begin() as connection:
+            connection.execute(
+                AgentRun.__table__.update()
+                .where(AgentRun.id == run_id, AgentRun.status == "pending")
+                .values(status="running")
+            )
+        return self.runner.run(run_id, stop_after_step=step_id)
+
     def reap(self) -> int:
         return self.runner.reap()
 
