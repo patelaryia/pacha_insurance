@@ -38,3 +38,4 @@ files:
   tests/integration/test_temporal_t03.py: 3ddec3342cb5f61180272bf223c27285aac64ee539410b0da6695da47239ce28
   tests/integration/test_temporal_t04.py: 48663d001dd4645c503135a7f18a826a36177813a6c5d47bb1dc4672eecb4cc8
   tests/integration/test_temporal_t05.py: 5938f034846ea0e131cff401ec52d7e107ff7cb9b711cc8fd54182fbc3567b20
+  tests/integration/test_temporal_t06.py: 604d48dc1f9935ebaf6128cb92ffb95ea2b22b77a6fc1a3e1e210447390f872e
