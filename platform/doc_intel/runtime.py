@@ -21,18 +21,6 @@ class WorkerRuntime:
     engine: DocIntelEngine
 
 
-class CeleryStageScheduler:
-    def __init__(self, queue: str) -> None:
-        if not queue:
-            raise RuntimeError("doc-intel worker queue is not configured")
-        self.queue = queue
-
-    def schedule(self, document_id: str, stage: str) -> None:
-        from doc_intel.tasks import PIPELINE_TASKS
-
-        PIPELINE_TASKS[stage].apply_async(args=[document_id], queue=self.queue)
-
-
 def _load_factory(reference: str) -> Any:
     module_name, separator, attribute = reference.partition(":")
     if not separator:
@@ -60,13 +48,11 @@ def build_worker_runtime(
     config = yaml.safe_load((root / "packs" / "motor" / "doc_intel.yaml").read_text())
     app = create_app(database_url, blob_store=LocalBlobStore(blob_root))
     model = AnthropicModelClient(sdk_client, config=config, ledger=app.state.claim_service)
-    scheduler = CeleryStageScheduler(str(config["worker"]["queue"]))
     engine = build_engine(
         app,
         model_client=model,
         model_config=config,
         alert_sink=alert_sink,
         runtime_mode="worker",
-        stage_scheduler=scheduler,
     )
     return WorkerRuntime(app=app, engine=engine)

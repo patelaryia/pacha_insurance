@@ -28,6 +28,8 @@ ACTION_MAP = {
     "claim.created": "claim.created",
     "claim.assigned": "claim.assigned",
     "document.received": "document.received",
+    "document.stage_recovered": "document.stage_recovered",
+    "document.split_resolved": "document.split_resolved",
     "document.extracted": "document.extracted",
     "document.rejected": "document.rejected",
     "model.called": "model.structured_call",

@@ -732,12 +732,15 @@ def test_t03_worker_registries_are_explicit_and_pinned(tmp_path):
     assert set(definition.queries) == {"state"}
 
 
-def test_t03_mapping_has_one_start_and_only_opaque_signals():
+def test_t04_extends_t03_mapping_with_one_document_start_and_opaque_signals():
     starts = [mapping for mapping in TEMPORAL_INTENT_MAPPINGS if mapping.action == "start"]
     signals = [
         mapping for mapping in TEMPORAL_INTENT_MAPPINGS if mapping.action == "signal"
     ]
-    assert [mapping.event_type for mapping in starts] == ["chase.workflow_requested"]
+    assert [mapping.event_type for mapping in starts] == [
+        "document.received",
+        "chase.workflow_requested",
+    ]
     assert all(mapping.signal_name is not None for mapping in signals)
     assert len({mapping.event_type for mapping in TEMPORAL_INTENT_MAPPINGS}) == len(
         TEMPORAL_INTENT_MAPPINGS
@@ -745,11 +748,15 @@ def test_t03_mapping_has_one_start_and_only_opaque_signals():
     assert {
         event_type: ACTION_MAP[event_type]
         for event_type in (
+            "document.stage_recovered",
+            "document.split_resolved",
             "chase.workflow_requested",
             "chase.inbound_received",
             "chase.review_resolved",
         )
     } == {
+        "document.stage_recovered": "document.stage_recovered",
+        "document.split_resolved": "document.split_resolved",
         "chase.workflow_requested": "chase.workflow_requested",
         "chase.inbound_received": "chase.inbound_received",
         "chase.review_resolved": "chase.review_resolved",

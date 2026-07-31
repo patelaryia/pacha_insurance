@@ -5,10 +5,13 @@ from typing import Any
 __all__ = [
     "AnthropicModelClient",
     "DocIntelEngine",
+    "DocumentIntelligenceActivities",
+    "DocumentIntelligenceWorkflow",
     "PipelineOutcome",
     "StageResult",
     "build_engine",
     "build_worker_runtime",
+    "docintel_activity_registrations",
     "registered_doc_types",
 ]
 
@@ -52,4 +55,18 @@ def __getattr__(name: str) -> Any:
         from doc_intel.runtime import build_worker_runtime
 
         return build_worker_runtime
+    if name in {"DocumentIntelligenceActivities", "docintel_activity_registrations"}:
+        from doc_intel.activities import (
+            DocumentIntelligenceActivities,
+            docintel_activity_registrations,
+        )
+
+        return {
+            "DocumentIntelligenceActivities": DocumentIntelligenceActivities,
+            "docintel_activity_registrations": docintel_activity_registrations,
+        }[name]
+    if name == "DocumentIntelligenceWorkflow":
+        from doc_intel.workflows import DocumentIntelligenceWorkflow
+
+        return DocumentIntelligenceWorkflow
     raise AttributeError(name)
