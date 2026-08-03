@@ -70,6 +70,8 @@ def create_app(
 ) -> FastAPI:
     """Create the complete, synchronous-drivable PRD-00 application."""
 
+    from graph_integration import graph_tables  # noqa: F401 - register PACKET-23 DDL
+
     effective_clock = clock or utc_now
     effective_keys = key_provider or LocalKeyProvider.from_environment()
     effective_blobs = blob_store or LocalBlobStore(tempfile.mkdtemp(prefix="pacha-blobs-"))
