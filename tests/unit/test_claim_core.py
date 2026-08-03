@@ -91,6 +91,8 @@ def test_schema_contains_every_binding_table_and_openapi_renders(client: TestCli
         "grader_runs",
         "graph_bindings",
         "graph_inbound_receipts",
+        "graph_outbound_releases",
+        "graph_outbound_rate_buckets",
         "notifications",
         "platform_state",
         "rule_runs",
