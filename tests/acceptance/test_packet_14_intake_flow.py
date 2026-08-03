@@ -217,6 +217,10 @@ def _set_level(app, capability_id: str, level: str) -> None:
 
 
 def _drain(app, cycles: int = 64) -> None:
+    temporal = getattr(app.state, "temporal_chase_driver", None)
+    if temporal is not None:
+        temporal.drain()
+        return
     for _ in range(cycles):
         if app.state.dispatcher.dispatch_once() == 0:
             break
@@ -415,8 +419,9 @@ def _clean_model(*, extra_classify: tuple = (), extra_extract: tuple = ()) -> Ta
 # --- AR-1 durable run --------------------------------------------------------------
 
 
-def test_intake_requested_starts_durable_run_with_verbatim_steps(tmp_path):
+def test_intake_requested_starts_durable_run_with_verbatim_steps(tmp_path, temporal_chase):
     env = _build(tmp_path, "run-record", model=_clean_model())
+    temporal_chase(env)
     _set_level(env.app, "intake.claim_creation", "L3")
     _start_clean_intimation(env)
 
@@ -440,8 +445,11 @@ def test_intake_requested_starts_durable_run_with_verbatim_steps(tmp_path):
 # --- Scenario 1 --------------------------------------------------------------------
 
 
-def test_scenario_1_intimation_to_ack_draft_checklist_and_citations(tmp_path):
+def test_scenario_1_intimation_to_ack_draft_checklist_and_citations(
+    tmp_path, temporal_chase
+):
     env = _build(tmp_path, "scenario-1", model=_clean_model())
+    temporal_chase(env)
     _set_level(env.app, "intake.claim_creation", "L3")
     _start_clean_intimation(env)
 
@@ -515,7 +523,9 @@ def test_scenario_1_intimation_to_ack_draft_checklist_and_citations(tmp_path):
     assert _runs(env.app)[0]["status"] == "awaiting_review"
 
 
-def test_photos_only_missing_narrative_adds_incident_description_item(tmp_path):
+def test_photos_only_missing_narrative_adds_incident_description_item(
+    tmp_path, temporal_chase
+):
     from PIL import Image
 
     image = io.BytesIO()
@@ -534,6 +544,7 @@ def test_photos_only_missing_narrative_adds_incident_description_item(tmp_path):
         ],
     })
     env = _build(tmp_path, "photos-only", model=model)
+    temporal_chase(env)
     _set_level(env.app, "intake.claim_creation", "L3")
     env.classifier.script.append({"class": "new_intimation", "confidence": 0.9})
     _emit_email(
@@ -554,12 +565,15 @@ def test_photos_only_missing_narrative_adds_incident_description_item(tmp_path):
     assert ids == [*BASE_CHECKLIST_IDS, "incident_description"]
 
 
-def test_no_estimate_claim_completes_triage_with_visible_blocked_r02(tmp_path):
+def test_no_estimate_claim_completes_triage_with_visible_blocked_r02(
+    tmp_path, temporal_chase
+):
     """Register #149: the ordinary intake holds no estimate at S8. R-02 stays a
     visible blocked_on_inputs rule run; triage still completes INTIMATED→TRIAGED
     with no invented exception — the estimate arrives later via PRD-06 chase."""
 
     env = _build(tmp_path, "no-estimate-triage", model=_clean_model())
+    temporal_chase(env)
     _set_level(env.app, "intake.claim_creation", "L3")
     _start_clean_intimation(env)
     claim_id = _claims(env.app)[0]["id"]
@@ -585,8 +599,11 @@ def test_no_estimate_claim_completes_triage_with_visible_blocked_r02(tmp_path):
 # --- Launch-level governance (S1) ---------------------------------------------------
 
 
-def test_launch_l2_claim_creation_fails_closed_to_staged_confirm(tmp_path):
+def test_launch_l2_claim_creation_fails_closed_to_staged_confirm(
+    tmp_path, temporal_chase
+):
     env = _build(tmp_path, "launch-l2", model=_clean_model())
+    temporal_chase(env)
     # §5.6 launch level is the registered initial level: L2. gate.yaml maps no
     # confirm type for intake.claim_creation → DRAFT_RELEASE path (#126/#135).
     _start_clean_intimation(env)
@@ -614,12 +631,15 @@ def test_launch_l2_claim_creation_fails_closed_to_staged_confirm(tmp_path):
 # --- Scenario 4 + fraud arm ---------------------------------------------------------
 
 
-def test_scenario_4_duplicate_reg_and_date_pauses_with_exception(tmp_path):
+def test_scenario_4_duplicate_reg_and_date_pauses_with_exception(
+    tmp_path, temporal_chase
+):
     model = _clean_model(
         extra_classify=({"doc_type": "intimation_email", "confidence": 0.99},),
         extra_extract=(INTIMATION_FIELDS_DUPE,),
     )
     env = _build(tmp_path, "scenario-4", model=model)
+    temporal_chase(env)
     _set_level(env.app, "intake.claim_creation", "L3")
     _start_clean_intimation(env, "msg-dupe-a")
     claim_a = _claims(env.app)[0]["id"]
@@ -655,12 +675,15 @@ def test_scenario_4_duplicate_reg_and_date_pauses_with_exception(tmp_path):
     assert _open_item(env, claim_b, type_="DRAFT_RELEASE", template_id="T-06a")
 
 
-def test_closed_claim_duplicate_raises_fraud_signal_and_never_pauses(tmp_path):
+def test_closed_claim_duplicate_raises_fraud_signal_and_never_pauses(
+    tmp_path, temporal_chase
+):
     model = _clean_model(
         extra_classify=({"doc_type": "intimation_email", "confidence": 0.99},),
         extra_extract=(INTIMATION_FIELDS_DUPE,),
     )
     env = _build(tmp_path, "fraud-signal", model=model)
+    temporal_chase(env)
     _set_level(env.app, "intake.claim_creation", "L3")
     _start_clean_intimation(env, "msg-fraud-a")
     claim_a = _claims(env.app)[0]["id"]
@@ -726,8 +749,11 @@ def _triage_model() -> TaskModel:
     })
 
 
-def test_scenario_3_below_excess_boundary_decline_draft_and_ex_gratia(tmp_path):
+def test_scenario_3_below_excess_boundary_decline_draft_and_ex_gratia(
+    tmp_path, temporal_chase
+):
     env = _build(tmp_path, "scenario-3", model=_triage_model())
+    temporal_chase(env)
     claim_id = _drive_to_coverage_card(env)
 
     # Estimate already held → the checklist marks it received (§5.5 re-send rule).
@@ -772,8 +798,9 @@ def test_scenario_3_below_excess_boundary_decline_draft_and_ex_gratia(tmp_path):
     assert still_open["id"] == decline["id"]
 
 
-def test_out_of_cover_is_an_exception_never_a_silent_pick(tmp_path):
+def test_out_of_cover_is_an_exception_never_a_silent_pick(tmp_path, temporal_chase):
     env = _build(tmp_path, "out-of-cover", model=_triage_model())
+    temporal_chase(env)
     claim_id = _drive_to_coverage_card(env)
     _resolve_coverage(env, claim_id, period=("2025-01-01", "2025-12-31"))
 
@@ -784,8 +811,9 @@ def test_out_of_cover_is_an_exception_never_a_silent_pick(tmp_path):
         "status"] == "INTIMATED", "the officer, not the agent, decides out-of-cover"
 
 
-def test_premium_unpaid_is_an_officer_decision_exception(tmp_path):
+def test_premium_unpaid_is_an_officer_decision_exception(tmp_path, temporal_chase):
     env = _build(tmp_path, "premium-unpaid", model=_triage_model())
+    temporal_chase(env)
     claim_id = _drive_to_coverage_card(env)
     _resolve_coverage(env, claim_id, premium_paid=False)
 
@@ -799,8 +827,11 @@ def test_premium_unpaid_is_an_officer_decision_exception(tmp_path):
 # --- Scenario 6 ---------------------------------------------------------------------
 
 
-def test_scenario_6_l3_ack_runs_zero_touch_to_the_visible_blocked_send(tmp_path):
+def test_scenario_6_l3_ack_runs_zero_touch_to_the_visible_blocked_send(
+    tmp_path, temporal_chase
+):
     env = _build(tmp_path, "scenario-6", model=_clean_model())
+    temporal_chase(env)
     _set_level(env.app, "intake.claim_creation", "L3")
     _set_level(env.app, "intake.acknowledge", "L3")
     _start_clean_intimation(env, "msg-l3-ack")

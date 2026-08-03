@@ -27,7 +27,6 @@ from projection_agent.config import (
 from projection_agent.models import Projection
 from projection_agent.paste import PasteEngine, encode_copy_value
 from projection_agent.service import ProjectionResult, ProjectionService, ProjectionView
-from projection_agent.tasks import configure_weekly_task
 
 ProjectionAgent = ProjectionService
 
@@ -219,7 +218,6 @@ def build_projection_agent(
     _register_readback_validators(app, registry)
     app.state.dispatcher.register_consumer("projection_agent", service.consume)
     app.include_router(build_router(service))
-    configure_weekly_task(service)
     app.state.projection_agent = service
     service.backfill(actor="system")
     return service

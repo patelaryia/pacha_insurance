@@ -697,14 +697,18 @@ def test_batch_counts_blocked_case_without_calling_executor(harness):
     assert executor.calls == []
 
 
-def test_weekly_task_is_pack_configured_and_sync_drivable(harness):
-    from claim_core import celery_app
+def test_weekly_schedule_is_temporal_owned_and_sync_drivable(harness):
+    from orchestration.schedules import schedule_definitions
 
     _, _, evals, _, _ = harness
-    schedules = list(celery_app.conf.beat_schedule.values())
-    weekly = [row for row in schedules if row.get("task") == "eval_harness.run_weekly_corpus"]
-    assert len(weekly) == 1
-    assert weekly[0]["schedule"] == 604_800
+    weekly = next(
+        item
+        for item in schedule_definitions(env="test", weekly_time="pack weekly")
+        if item.workflow_name == "WeeklyEvaluationWorkflow"
+    )
+    assert weekly.timing == "pack weekly"
+    assert weekly.overlap_policy.name == "BUFFER_ONE"
+    assert weekly.catchup_window == "7d"
     result = evals.corpus.run_weekly(actor=ACTOR)
     assert result.corpus == "motor_v1"
     assert result.total_cases == 0

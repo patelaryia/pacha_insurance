@@ -52,6 +52,46 @@ from support.tiers import requires_postgres
 _UNPATCHED_CREATE_ALL = MetaData.create_all
 
 
+@pytest.fixture(autouse=True)
+def temporal_for_imported_acceptance_builders(request, monkeypatch):
+    """Run unit-test acceptance preconditions through the intake Workflow.
+
+    Several focused unit suites import protected acceptance builders to create
+    claims and checklists before exercising a narrower service. Once T08 removes
+    the synchronous runner consumer, those preconditions need the real intake
+    Workers too. Chase itself stays unregistered here so the focused test owns
+    every chase transition it is asserting.
+    """
+
+    if "/tests/unit/" not in request.path.as_posix():
+        yield
+        return
+
+    from support.chase_temporal import ChaseTemporalDriver
+
+    drivers = []
+    patched = set()
+    for name in ("packet", "P14", "P15", "P16", "P17"):
+        helpers = getattr(request.module, name, None)
+        original = getattr(helpers, "_build", None)
+        if not callable(original) or id(helpers) in patched:
+            continue
+        patched.add(id(helpers))
+
+        def build(*args, _original=original, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            domain = _original(*args, **kwargs)
+            driver = ChaseTemporalDriver(domain, include_chase=False).start()
+            drivers.append(driver)
+            return domain
+
+        monkeypatch.setattr(helpers, "_build", build)
+    try:
+        yield
+    finally:
+        for driver in reversed(drivers):
+            driver.close()
+
+
 @pytest.fixture
 def temporal_chase():
     """Attach the real time-skipping chase Worker to a protected test app."""

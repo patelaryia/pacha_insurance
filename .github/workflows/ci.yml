@@ -97,13 +97,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U pacha -d pacha_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
-      # D-10: the suite expects Redis to be reachable on the PostgreSQL tier.
-      redis:
-        image: redis:7
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 5s
-          --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -124,7 +117,6 @@ jobs:
       - name: Tests
         env:
           DATABASE_URL: postgresql+psycopg://pacha:pacha@localhost:5432/pacha_test
-          REDIS_URL: redis://localhost:6379/0
         run: >-
           pytest -q -n 2 --dist=load --durations=30
           -m "postgres_required and not real_ocr"

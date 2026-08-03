@@ -188,8 +188,8 @@ A completed `icon.claim_register` owns exactly one hop:
 
 ## 10. Weekly sampled readback review
 
-A Celery Beat task (`projection_agent.sample_paste_readbacks`) runs on the
-pack-configured schedule — Monday 08:00 EAT at launch, in
+The `pacha-{env}-paste-readback-v1` Temporal Schedule runs on the
+pack-configured cadence — Monday 08:00 EAT at launch, in
 `packs/motor/projection/operations.yaml`. Changing the day, time, or rate is a
 pack change, never a code change.
 

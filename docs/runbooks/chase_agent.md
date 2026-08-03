@@ -4,8 +4,8 @@ The PRD-06 chase agent is installed after the intake agent with
 `build_chase_agent(app)`. It consumes `chase.init`, claim-state changes, and
 document classification/extraction events. Each checklist transaction prepares
 one `agent_runs` row and `chase.workflow_requested` outbox intent; the
-`DocumentChaseWorkflow` identity is `pacha.chase.{checklist_ulid}`. There is no
-Beat/tick chase path.
+`DocumentChaseWorkflow` identity is `pacha.chase.{checklist_ulid}`. No parallel
+polling scheduler exists.
 
 The control Worker registers `CHASE_WORKFLOWS` plus the six callables returned
 by `chase_activity_registrations(app.state.chase_agent.temporal_activities(

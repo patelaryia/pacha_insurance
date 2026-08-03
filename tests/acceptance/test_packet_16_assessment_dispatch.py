@@ -588,8 +588,11 @@ def test_vendor_read_route_filters_kind_and_active(tmp_path):
 # --- Estimate trigger, FSM advance, Path A card (§7.3) -------------------------------
 
 
-def test_estimate_commit_advances_fsm_and_opens_undetermined_mode_card(tmp_path):
+def test_estimate_commit_advances_fsm_and_opens_undetermined_mode_card(
+    tmp_path, temporal_chase
+):
     env = _build(tmp_path, "trigger", model=_model())
+    temporal_chase(env)
     claim_id, card = _to_mode_card(env)
 
     # Stepwise hops, event per hop (#182): TRIAGED → AWAITING_DOCS → IN_ASSESSMENT.
@@ -619,7 +622,7 @@ def test_estimate_commit_advances_fsm_and_opens_undetermined_mode_card(tmp_path)
     assert len(_open_items(env.app, claim_id, "MODE_CONFIRM")) == 1
 
 
-def test_second_estimate_while_card_open_is_noop(tmp_path):
+def test_second_estimate_while_card_open_is_noop(tmp_path, temporal_chase):
     model = _model()
     model.responses["document_classify"].append(
         {"doc_type": "repair_estimate", "confidence": 0.99})
@@ -630,6 +633,7 @@ def test_second_estimate_while_card_open_is_noop(tmp_path):
         ]
     })
     env = _build(tmp_path, "dupe-estimate", model=model)
+    temporal_chase(env)
     claim_id, _card = _to_mode_card(env)
 
     _emit_email(env, conversation_id="conv-assess-1", body="Revised estimate",
@@ -646,8 +650,9 @@ def test_second_estimate_while_card_open_is_noop(tmp_path):
 # --- Path B shadow (§7.3, PRD-07 acceptance 4) ---------------------------------------
 
 
-def test_shadow_runs_at_l0_and_never_surfaces(tmp_path):
+def test_shadow_runs_at_l0_and_never_surfaces(tmp_path, temporal_chase):
     env = _build(tmp_path, "shadow", model=_model())
+    temporal_chase(env)
     claim_id, card = _to_mode_card(env)
 
     shadow_calls = [call for call in env.model.calls
@@ -680,8 +685,11 @@ def test_shadow_runs_at_l0_and_never_surfaces(tmp_path):
 # --- Mode resolution → multi-assessor dispatch (§7.2/§7.4) ---------------------------
 
 
-def test_physical_multi_assessor_dispatch_stages_t11_per_firm(tmp_path):
+def test_physical_multi_assessor_dispatch_stages_t11_per_firm(
+    tmp_path, temporal_chase
+):
     env = _build(tmp_path, "dispatch", model=_model())
+    temporal_chase(env)
     claim_id, card = _to_mode_card(env)
 
     response = _approve_mode(env, card, mode="physical",
@@ -772,8 +780,9 @@ def test_physical_multi_assessor_dispatch_stages_t11_per_firm(tmp_path):
     assert len(_drafts(env.app, claim_id, "assessment.dispatch")) == 2
 
 
-def test_desk_single_vendor_sets_no_multi_flag(tmp_path):
+def test_desk_single_vendor_sets_no_multi_flag(tmp_path, temporal_chase):
     env = _build(tmp_path, "desk", model=_model())
+    temporal_chase(env)
     claim_id, card = _to_mode_card(env)
 
     response = _approve_mode(env, card, mode="desk", vendor_ids=["V-ALPHA"])
@@ -789,8 +798,9 @@ def test_desk_single_vendor_sets_no_multi_flag(tmp_path):
 # --- Negative paths (§3.1) -----------------------------------------------------------
 
 
-def test_unknown_or_inactive_vendor_422_and_reject_reissues(tmp_path):
+def test_unknown_or_inactive_vendor_422_and_reject_reissues(tmp_path, temporal_chase):
     env = _build(tmp_path, "negative", model=_model())
+    temporal_chase(env)
     claim_id, card = _to_mode_card(env)
 
     for bad in (["V-NOPE"], ["V-DORMANT"], ["V-ALPHA", "V-NOPE"]):

@@ -299,15 +299,10 @@ def test_corpus_executor_failures_are_counted_not_passed(eval_app, empty):
     assert card["pass_percent"] == 0
 
 
-def test_named_weekly_task_uses_sync_engine_and_requires_runtime(eval_app, monkeypatch):
-    from eval_harness import tasks
-
-    _client, _app, _harness, _model = eval_app
-    result = tasks.run_weekly_corpus.run()
-    assert result["corpus"] == "motor_v1"
-    monkeypatch.setattr(tasks, "_HARNESS", None)
-    with pytest.raises(RuntimeError):
-        tasks.run_weekly_corpus.run()
+def test_weekly_domain_service_is_sync_drivable_without_task_runtime(eval_app):
+    _client, _app, harness, _model = eval_app
+    result = harness.corpus.run_weekly(actor="agent:eval")
+    assert result.corpus == "motor_v1"
 
 
 def test_corpus_grades_are_excluded_from_autonomy_evidence(eval_app):

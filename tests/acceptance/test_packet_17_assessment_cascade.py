@@ -258,6 +258,10 @@ def _set_level(app, capability_id: str, level: str) -> None:
 
 
 def _drain(app, cycles: int = 96) -> None:
+    temporal = getattr(app.state, "temporal_chase_driver", None)
+    if temporal is not None:
+        temporal.drain()
+        return
     for _ in range(cycles):
         if app.state.dispatcher.dispatch_once() == 0:
             break
@@ -370,7 +374,12 @@ def _advance(env: Env, cycles: int = 8) -> None:
 
 
 def _at(env: Env, days: int, hours: int = 0) -> None:
-    env.clock.advance_to(T0 + timedelta(days=days, hours=hours))
+    target = getattr(env, "started_at", T0) + timedelta(days=days, hours=hours)
+    temporal = getattr(env.app.state, "temporal_chase_driver", None)
+    if temporal is None:
+        env.clock.advance_to(target)
+    else:
+        temporal.advance_to(target)
 
 
 def _resolve(env: Env, item_id: str, actor: str, *, action: str,
@@ -572,10 +581,13 @@ def test_pack_pins_reserve_field_and_r07_still_blocked():
 # --- Scenario 1 + 5: single assessor, FX-1, fees keyed, MTD header-only --------------
 
 
-def test_scenario_1_fx1_report_cascade_reserve_savings_flags(tmp_path):
+def test_scenario_1_fx1_report_cascade_reserve_savings_flags(
+    tmp_path, temporal_chase
+):
     model = _base_model(estimate_kes=FX1_ESTIMATE_KES,
                         report_fields=FX1_REPORT_FIELDS)
     env = _build(tmp_path, "fx1", model=model)
+    temporal_chase(env)
     claim_id = _to_dispatched(env, vendor_ids=["V-ALPHA"],
                               estimate_kes=FX1_ESTIMATE_KES)
     parties = _assessor_party_ids(env, claim_id)
@@ -687,11 +699,12 @@ def _boundary_report(quote_kes: str, pav_kes: str) -> dict:
     ]}
 
 
-def test_scenario_2_write_off_boundary(tmp_path):
+def test_scenario_2_write_off_boundary(tmp_path, temporal_chase):
     # quote×2 == min(pav, si) exactly → NOT a write-off (R-05 strict >).
     model = _base_model(estimate_kes="200,000",
                         report_fields=_boundary_report("130,000", "260,000"))
     env = _build(tmp_path, "boundary-eq", model=model)
+    temporal_chase(env)
     claim_id = _to_dispatched(env, vendor_ids=["V-ALPHA"],
                               estimate_kes="200,000")
     _send_report(env, pdf_lines=[
@@ -702,12 +715,13 @@ def test_scenario_2_write_off_boundary(tmp_path):
     assert _field(env.client, claim_id, "assessment.write_off_indicated") is None
 
 
-def test_scenario_2_write_off_boundary_one_shilling_over(tmp_path):
+def test_scenario_2_write_off_boundary_one_shilling_over(tmp_path, temporal_chase):
     # A separate test item gives PostgreSQL a fresh database fixture. Building
     # both cases in one item shared durable stage rows across private blob stores.
     model = _base_model(estimate_kes="200,000",
                         report_fields=_boundary_report("130,001", "260,000"))
     env = _build(tmp_path, "boundary-over", model=model)
+    temporal_chase(env)
     claim_id = _to_dispatched(env, vendor_ids=["V-ALPHA"],
                               estimate_kes="200,000")
     _send_report(env, pdf_lines=[
@@ -726,10 +740,11 @@ def test_scenario_2_write_off_boundary_one_shilling_over(tmp_path):
 # --- Scenario 3: multi-assessor, one non-responder, proceed-with-received ------------
 
 
-def test_scenario_3_multi_assessor_breach_proceed_partial(tmp_path):
+def test_scenario_3_multi_assessor_breach_proceed_partial(tmp_path, temporal_chase):
     model = _base_model(estimate_kes=FX1_ESTIMATE_KES,
                         report_fields=FX1_REPORT_FIELDS)
     env = _build(tmp_path, "multi", model=model)
+    temporal_chase(env)
     claim_id = _to_dispatched(env, vendor_ids=["V-ALPHA", "V-BETA"],
                               estimate_kes=FX1_ESTIMATE_KES)
     parties = _assessor_party_ids(env, claim_id)
@@ -793,10 +808,13 @@ def test_scenario_3_multi_assessor_breach_proceed_partial(tmp_path):
 # --- Negative: unattributable report never cascades ----------------------------------
 
 
-def test_unattributed_report_raises_exception_and_no_cascade(tmp_path):
+def test_unattributed_report_raises_exception_and_no_cascade(
+    tmp_path, temporal_chase
+):
     model = _base_model(estimate_kes=FX1_ESTIMATE_KES,
                         report_fields=FX1_REPORT_FIELDS)
     env = _build(tmp_path, "unattributed", model=model)
+    temporal_chase(env)
     claim_id = _to_dispatched(env, vendor_ids=["V-ALPHA"],
                               estimate_kes=FX1_ESTIMATE_KES)
 

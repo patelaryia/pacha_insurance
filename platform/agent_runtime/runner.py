@@ -2,51 +2,31 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from agent_runtime.models import AgentRun
-from claim_core import celery_app, new_ulid
+from claim_core import new_ulid
+from claim_core.models import Event
 
-STALE_AFTER = timedelta(minutes=15)
-MAX_STEP_ATTEMPTS = 3
-_runtime: dict[str, Any] = {}
-
-#: Register #284 / master plan §13. Rows this legacy runner creates before its
-#: T03–T06 replacement still have to satisfy the now-mandatory Workflow identity
-#: columns. The prefix is deliberately *not* one of the §9 Workflow-ID kinds, so
-#: `orchestration.contracts` refuses it: this value is migration metadata and
-#: must never be handed to `TemporalStarter` or the payload converter.
-LEGACY_WORKFLOW_ID_PREFIX = "pacha.legacy.agent."
-LEGACY_WORKFLOW_TYPE = "LegacyAgentRun"
-LEGACY_WORKER_BUILD_ID = "legacy-celery"
+#: Governed actions that are not Workflows still need an operational projection
+#: row for AR-2 review and audit correlation. This prefix is deliberately not a
+#: Temporal Workflow-ID kind and must never enter Workflow history.
+DOMAIN_ACTION_ID_PREFIX = "pacha.domain.action."
+DOMAIN_ACTION_TYPE = "GovernedDomainAction"
+DOMAIN_ACTION_BUILD_ID = "domain-gate"
 
 
-def legacy_workflow_id(run_id: str) -> str:
-    """The non-Temporal identity marker for a legacy runner row."""
+def domain_action_id(run_id: str) -> str:
+    """Return the non-Workflow identity for one governed AR-2 action."""
 
-    return f"{LEGACY_WORKFLOW_ID_PREFIX}{run_id}"
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
-
-
-def _json_value(value: Any) -> Any:
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
-    return value
+    return f"{DOMAIN_ACTION_ID_PREFIX}{run_id}"
 
 
 @dataclass(frozen=True)
@@ -125,54 +105,6 @@ class AgentRunner:
             raise ValueError(f"unknown capability {capability_id!r}")
         return level
 
-    def start(
-        self,
-        *,
-        agent: str,
-        capability_id: str,
-        claim_id: str | None = None,
-        trigger_event: str | None = None,
-    ) -> str:
-        """Create a durable run from the pack sequence without executing it."""
-
-        declared = self.definitions.get(capability_id)
-        if declared is None:
-            raise ValueError(f"no COP steps declared for {capability_id!r}")
-        run_id = new_ulid()
-        now = self.app.state.clock()
-        steps = [
-            {
-                "step_id": step_id,
-                "status": "pending",
-                "attempts": 0,
-                "updated_at": now.isoformat(),
-            }
-            for step_id in declared
-        ]
-        with self.sessions.begin() as session:
-            session.add(
-                AgentRun(
-                    id=run_id,
-                    agent=agent,
-                    capability_id=capability_id,
-                    claim_id=claim_id,
-                    trigger_event=trigger_event,
-                    workflow_id=legacy_workflow_id(run_id),
-                    workflow_run_id=None,
-                    workflow_type=LEGACY_WORKFLOW_TYPE,
-                    worker_build_id=LEGACY_WORKER_BUILD_ID,
-                    status="running",
-                    steps=steps,
-                    autonomy_level=self.level(capability_id),
-                    error=None,
-                    last_workflow_event_ref=None,
-                    last_synced_at=None,
-                    started_at=now,
-                    ended_at=None,
-                )
-            )
-        return run_id
-
     def record_action_start(
         self,
         *,
@@ -194,10 +126,10 @@ class AgentRunner:
                     capability_id=capability_id,
                     claim_id=claim_id,
                     trigger_event=None,
-                    workflow_id=legacy_workflow_id(run_id),
+                    workflow_id=domain_action_id(run_id),
                     workflow_run_id=None,
-                    workflow_type=LEGACY_WORKFLOW_TYPE,
-                    worker_build_id=LEGACY_WORKER_BUILD_ID,
+                    workflow_type=DOMAIN_ACTION_TYPE,
+                    worker_build_id=DOMAIN_ACTION_BUILD_ID,
                     status="running",
                     steps=[
                         {
@@ -246,22 +178,6 @@ class AgentRunner:
             run.error = error
             run.ended_at = now if status in {"completed", "failed", "blocked"} else None
 
-    def heartbeat(self, run_id: str, step_id: str) -> None:
-        """Persist a current-step heartbeat without relying on worker memory."""
-
-        now = self.app.state.clock().isoformat()
-        with self.sessions.begin() as session:
-            run = session.get(AgentRun, run_id)
-            if run is None:
-                raise LookupError(f"agent run {run_id} was not found")
-            steps = [dict(step) for step in run.steps]
-            for step in steps:
-                if step.get("step_id") == step_id and step.get("status") == "running":
-                    step["updated_at"] = now
-                    run.steps = steps
-                    return
-            raise ValueError(f"step {step_id!r} is not running")
-
     def set_claim_id(self, run_id: str, claim_id: str) -> None:
         """Attach the claim created by a governed workflow step exactly once."""
 
@@ -273,6 +189,63 @@ class AgentRunner:
                 raise ValueError("agent run is already attached to a different claim")
             run.claim_id = claim_id
 
+    def apply_control_event(self, run_id: str, event_ref: str) -> None:
+        """Apply one Temporal-delivered opaque control event to domain step state."""
+
+        with self.sessions.begin() as session:
+            run = session.get(AgentRun, run_id)
+            event = session.get(Event, event_ref)
+            if run is None or event is None:
+                raise LookupError("run or control event was not found")
+            if event.type not in {
+                "intake.document_ready",
+                "intake.review_resolved",
+                "intake.claim_terminal",
+            }:
+                raise ValueError("event is not an intake control event")
+            if event.claim_id is not None and run.claim_id not in {None, event.claim_id}:
+                raise ValueError("control event belongs to another claim")
+            if event.type == "intake.review_resolved" and run.status == "awaiting_review":
+                if (
+                    event.payload.get("resolution") == "rejected"
+                    and event.payload.get("action_type") == "intake.create_claim"
+                ):
+                    now = self.app.state.clock()
+                    steps = [dict(step) for step in run.steps]
+                    for step in steps:
+                        if (
+                            step.get("step_id") == "create_claim"
+                            and step.get("status") == "completed"
+                        ):
+                            outcome = step.get("outcome")
+                            step["outcome"] = {
+                                **(outcome if isinstance(outcome, dict) else {}),
+                                "resolution": "rejected",
+                                "result": "no_op",
+                            }
+                        elif step.get("status") == "completed":
+                            continue
+                        else:
+                            step.update(
+                                status="completed",
+                                ended=now.isoformat(),
+                                updated_at=now.isoformat(),
+                                outcome={
+                                    "status": "skipped",
+                                    "reason": "claim_creation_rejected",
+                                },
+                            )
+                    run.steps = steps
+                    run.status = "completed"
+                    run.error = None
+                    run.ended_at = now
+                    return
+                run.status = "running"
+                run.error = None
+            elif event.type == "intake.claim_terminal":
+                run.status = "cancelled"
+                run.ended_at = self.app.state.clock()
+
     @staticmethod
     def _next_step(run: AgentRun) -> tuple[int, dict[str, Any]] | None:
         for index, step in enumerate(run.steps):
@@ -280,116 +253,135 @@ class AgentRunner:
                 return index, dict(step)
         return None
 
-    def run(
-        self, run_id: str, *, stop_after_step: str | None = None
-    ) -> dict[str, Any]:
-        """Resume persisted steps, optionally yielding after one named boundary."""
+    def execute_activity_step(self, run_id: str, step_id: str) -> dict[str, Any]:
+        """Execute exactly the persisted step requested by a Temporal Activity."""
 
-        while True:
-            with self.sessions() as session:
-                run = session.get(AgentRun, run_id)
-                if run is None:
-                    raise LookupError(f"agent run {run_id} was not found")
-                session.expunge(run)
-            if run.status != "running":
-                return {"run_id": run.id, "status": run.status}
-            pending = self._next_step(run)
-            if pending is None:
-                now = self.app.state.clock()
-                with self.sessions.begin() as session:
-                    current = session.get(AgentRun, run_id)
-                    if current is not None:
-                        current.status = "completed"
-                        current.ended_at = now
-                return {"run_id": run_id, "status": "completed"}
-            index, step = pending
-            step_id = str(step["step_id"])
-            fn = self._steps.get((run.capability_id, step_id))
-            if fn is None:
-                return self._block_missing_step(run, index, step_id)
-            now = self.app.state.clock()
-            attempts = int(step.get("attempts", 0)) + 1
-            with self.sessions.begin() as session:
-                current = session.get(AgentRun, run_id)
-                if current is None:
-                    raise LookupError(f"agent run {run_id} was not found")
-                steps = [dict(item) for item in current.steps]
-                steps[index].update(
-                    status="running",
-                    attempts=attempts,
-                    started=steps[index].get("started", now.isoformat()),
-                    updated_at=now.isoformat(),
-                )
-                current.steps = steps
-            context = StepContext(
-                run_id,
-                run.claim_id,
-                run.capability_id,
-                step_id,
-                run.trigger_event,
+        with self.sessions() as session:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                raise LookupError(f"agent run {run_id} was not found")
+            session.expunge(run)
+        if run.status != "running":
+            return {"run_id": run.id, "status": run.status}
+        pending = self._next_step(run)
+        if pending is None:
+            return self._complete_projection(run_id)
+        index, step = pending
+        if step.get("step_id") != step_id:
+            raise ValueError(f"step {step_id!r} is not the current persisted step")
+        fn = self._steps.get((run.capability_id, step_id))
+        if fn is None:
+            return self._block_missing_step(run, index, step_id)
+
+        now = self.app.state.clock()
+        attempts = int(step.get("attempts", 0)) + 1
+        with self.sessions.begin() as session:
+            current = session.get(AgentRun, run_id)
+            if current is None:
+                raise LookupError(f"agent run {run_id} was not found")
+            steps = [dict(item) for item in current.steps]
+            steps[index].update(
+                status="running",
+                attempts=attempts,
+                started=steps[index].get("started", now.isoformat()),
+                updated_at=now.isoformat(),
             )
-            try:
-                raw = fn(context)
-            except Exception as error:  # noqa: BLE001 - reaper owns bounded recovery
-                self._record_step_error(run_id, index, error)
-                return {"run_id": run_id, "status": "running", "error": type(error).__name__}
-            outcome = dict(raw) if isinstance(raw, dict) else {"result": raw}
-            if outcome.get("status") == "waiting":
-                expects_event = outcome.get("expects_event")
-                if not isinstance(expects_event, str) or not expects_event:
-                    self._record_step_error(
-                        run_id,
-                        index,
-                        ValueError("waiting outcome requires expects_event"),
-                    )
-                    return {"run_id": run_id, "status": "running", "error": "ValueError"}
-                waited_at = self.app.state.clock()
-                with self.sessions.begin() as session:
-                    current = session.get(AgentRun, run_id)
-                    if current is None:
-                        raise LookupError(f"agent run {run_id} was not found")
-                    steps = [dict(item) for item in current.steps]
-                    steps[index].update(
-                        status="waiting",
-                        attempts=max(0, attempts - 1),
-                        updated_at=waited_at.isoformat(),
-                        outcome=outcome,
-                    )
-                    current.steps = steps
-                    current.error = None
-                return {
-                    "run_id": run_id,
-                    "status": "running",
-                    "expects_event": expects_event,
-                }
-            review_id = outcome.get("review_id")
-            awaits_review = outcome.get("status") in {"staged", "awaiting_review"} or isinstance(
-                review_id, str
+            current.steps = steps
+        context = StepContext(
+            run_id,
+            run.claim_id,
+            run.capability_id,
+            step_id,
+            run.trigger_event,
+        )
+        try:
+            raw = fn(context)
+        except Exception as error:  # noqa: BLE001 - record then let Temporal retry
+            self._record_step_error(run_id, index, error)
+            raise
+        outcome = dict(raw) if isinstance(raw, dict) else {"result": raw}
+        if outcome.get("status") == "waiting":
+            return self._record_waiting(run_id, index, attempts, outcome)
+
+        review_id = outcome.get("review_id")
+        awaits_review = outcome.get("status") in {
+            "staged",
+            "awaiting_review",
+        } or isinstance(review_id, str)
+        ended = self.app.state.clock()
+        with self.sessions.begin() as session:
+            current = session.get(AgentRun, run_id)
+            if current is None:
+                raise LookupError(f"agent run {run_id} was not found")
+            steps = [dict(item) for item in current.steps]
+            steps[index].update(
+                status=(
+                    "awaiting_review"
+                    if awaits_review and outcome.get("resume_step") is True
+                    else "completed"
+                ),
+                ended=ended.isoformat(),
+                updated_at=ended.isoformat(),
+                outcome=outcome,
             )
-            ended = self.app.state.clock()
-            with self.sessions.begin() as session:
-                current = session.get(AgentRun, run_id)
-                if current is None:
-                    raise LookupError(f"agent run {run_id} was not found")
-                steps = [dict(item) for item in current.steps]
-                steps[index].update(
-                    status=(
-                        "awaiting_review"
-                        if awaits_review and outcome.get("resume_step") is True
-                        else "completed"
-                    ),
-                    ended=ended.isoformat(),
-                    updated_at=ended.isoformat(),
-                    outcome=outcome,
-                )
-                current.steps = steps
-                current.error = None
-                if awaits_review:
-                    current.status = "awaiting_review"
+            current.steps = steps
+            current.error = None
             if awaits_review:
-                return {"run_id": run_id, "status": "awaiting_review", "review_id": review_id}
-            if stop_after_step == step_id:
-                return {"run_id": run_id, "status": "running"}
+                current.status = "awaiting_review"
+            elif all(item.get("status") == "completed" for item in steps):
+                current.status = "completed"
+                current.ended_at = ended
+        if awaits_review:
+            return {
+                "run_id": run_id,
+                "status": "awaiting_review",
+                "review_id": review_id,
+            }
+        return {
+            "run_id": run_id,
+            "status": "completed" if index == len(run.steps) - 1 else "running",
+        }
+
+    def _complete_projection(self, run_id: str) -> dict[str, Any]:
+        now = self.app.state.clock()
+        with self.sessions.begin() as session:
+            current = session.get(AgentRun, run_id)
+            if current is not None:
+                current.status = "completed"
+                current.ended_at = now
+        return {"run_id": run_id, "status": "completed"}
+
+    def _record_waiting(
+        self,
+        run_id: str,
+        index: int,
+        attempts: int,
+        outcome: dict[str, Any],
+    ) -> dict[str, Any]:
+        expects_event = outcome.get("expects_event")
+        if not isinstance(expects_event, str) or not expects_event:
+            error = ValueError("waiting outcome requires expects_event")
+            self._record_step_error(run_id, index, error)
+            raise error
+        waited_at = self.app.state.clock()
+        with self.sessions.begin() as session:
+            current = session.get(AgentRun, run_id)
+            if current is None:
+                raise LookupError(f"agent run {run_id} was not found")
+            steps = [dict(item) for item in current.steps]
+            steps[index].update(
+                status="waiting",
+                attempts=max(0, attempts - 1),
+                updated_at=waited_at.isoformat(),
+                outcome=outcome,
+            )
+            current.steps = steps
+            current.error = None
+        return {
+            "run_id": run_id,
+            "status": "running",
+            "expects_event": expects_event,
+        }
 
     def _block_missing_step(
         self, run: AgentRun, index: int, step_id: str
@@ -419,175 +411,11 @@ class AgentRunner:
             run.steps = steps
             run.error = detail
 
-    def consume(self, event: Any) -> None:
-        """Resume runs after durable review resolution or a waited-for event."""
-
-        if event.type != "review.resolved":
-            self._resume_waiting(event)
-            return
-        run_id = event.payload.get("agent_run_id")
-        review_payload: dict[str, Any] | None = None
-        review_id = event.payload.get("review_id")
-        if isinstance(review_id, str):
-            with self.app.state.engine.connect() as connection:
-                raw = connection.execute(
-                    text("SELECT payload FROM review_items WHERE id = :id"),
-                    {"id": review_id},
-                ).scalar()
-            payload = _json_value(raw)
-            if isinstance(payload, dict):
-                review_payload = payload
-                if not isinstance(run_id, str):
-                    run_id = payload.get("agent_run_id")
-        if not isinstance(run_id, str):
-            return
-        action = review_payload.get("action") if review_payload is not None else None
-        if (
-            event.payload.get("resolution") == "rejected"
-            and isinstance(action, dict)
-            and action.get("type") == "intake.create_claim"
-        ):
-            now = self.app.state.clock()
-            with self.sessions.begin() as session:
-                run = session.get(AgentRun, run_id)
-                if run is None or run.status != "awaiting_review":
-                    return
-                steps = [dict(step) for step in run.steps]
-                for step in steps:
-                    if (
-                        step.get("step_id") == "create_claim"
-                        and step.get("status") == "completed"
-                    ):
-                        outcome = step.get("outcome")
-                        step["outcome"] = {
-                            **(outcome if isinstance(outcome, dict) else {}),
-                            "resolution": "rejected",
-                            "result": "no_op",
-                        }
-                    elif step.get("status") == "completed":
-                        continue
-                    else:
-                        step.update(
-                            status="completed",
-                            ended=now.isoformat(),
-                            updated_at=now.isoformat(),
-                            outcome={
-                                "status": "skipped",
-                                "reason": "claim_creation_rejected",
-                            },
-                        )
-                run.steps = steps
-                run.status = "completed"
-                run.error = None
-                run.ended_at = now
-            return
-        with self.sessions.begin() as session:
-            run = session.get(AgentRun, run_id)
-            if run is None or run.status != "awaiting_review":
-                return
-            run.status = "running"
-            run.error = None
-        self.run(run_id)
-
-    def _resume_waiting(self, event: Any) -> None:
-        """Re-invoke waiting steps whose declared event has now committed."""
-
-        with self.sessions() as session:
-            runs = list(session.scalars(select(AgentRun).where(AgentRun.status == "running")))
-            for run in runs:
-                session.expunge(run)
-        for run in runs:
-            if event.claim_id is not None and run.claim_id != event.claim_id:
-                continue
-            pending = self._next_step(run)
-            if pending is None:
-                continue
-            _index, step = pending
-            outcome = step.get("outcome")
-            if (
-                step.get("status") == "waiting"
-                and isinstance(outcome, dict)
-                and outcome.get("expects_event") == event.type
-            ):
-                self.run(run.id)
-
-    def reap(self) -> int:
-        """Resume stale running steps, failing visibly after three attempts."""
-
-        now = _aware(self.app.state.clock())
-        with self.sessions() as session:
-            runs = list(session.scalars(select(AgentRun).where(AgentRun.status == "running")))
-            for run in runs:
-                session.expunge(run)
-        reaped = 0
-        for run in runs:
-            pending = self._next_step(run)
-            if pending is None:
-                continue
-            _index, step = pending
-            raw_updated = step.get("updated_at")
-            if not isinstance(raw_updated, str):
-                continue
-            updated = _aware(datetime.fromisoformat(raw_updated))
-            if now - updated <= STALE_AFTER:
-                continue
-            reaped += 1
-            if int(step.get("attempts", 0)) >= MAX_STEP_ATTEMPTS:
-                self._fail_exhausted(run, str(step.get("step_id")))
-            else:
-                self.run(run.id)
-        return reaped
-
-    def _fail_exhausted(self, run: AgentRun, step_id: str) -> None:
-        now = self.app.state.clock()
-        error = {"code": "STEP_ATTEMPTS_EXHAUSTED", "step_id": step_id}
-        with self.sessions.begin() as session:
-            current = session.get(AgentRun, run.id)
-            if current is None or current.status != "running":
-                return
-            current.status = "failed"
-            current.error = error
-            current.ended_at = now
-            self.app.state.record_event(
-                session,
-                claim_id=current.claim_id,
-                event_type="review.created",
-                payload={
-                    "review_id": new_ulid(),
-                    "type": "EXCEPTION",
-                    "subtype": "agent_run_failed",
-                    "agent_run_id": current.id,
-                    "capability_id": current.capability_id,
-                    "step_id": step_id,
-                },
-                actor="system",
-                correlation_id=current.id,
-            )
-
-
-def configure_reaper(runner: AgentRunner) -> None:
-    _runtime["runner"] = runner
-    celery_app.conf.beat_schedule["agent-runtime-reaper"] = {
-        "task": "agent_runtime.reap_stale_runs",
-        "schedule": 300.0,
-    }
-
-
-@celery_app.task(name="agent_runtime.reap_stale_runs", acks_late=True)
-def reap_stale_runs() -> int:
-    runner = _runtime.get("runner")
-    if runner is None:
-        raise RuntimeError("agent runtime reaper is not configured")
-    return runner.reap()
-
-
 __all__ = [
-    "LEGACY_WORKER_BUILD_ID",
-    "LEGACY_WORKFLOW_ID_PREFIX",
-    "LEGACY_WORKFLOW_TYPE",
+    "DOMAIN_ACTION_BUILD_ID",
+    "DOMAIN_ACTION_ID_PREFIX",
+    "DOMAIN_ACTION_TYPE",
     "AgentRunner",
     "StepContext",
-    "configure_reaper",
-    "legacy_workflow_id",
-    "reap_stale_runs",
+    "domain_action_id",
 ]

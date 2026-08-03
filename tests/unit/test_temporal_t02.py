@@ -37,9 +37,9 @@ from agent_runtime.projection import (
     AgentRunProjection,
 )
 from agent_runtime.runner import (
-    LEGACY_WORKER_BUILD_ID,
-    LEGACY_WORKFLOW_TYPE,
-    legacy_workflow_id,
+    DOMAIN_ACTION_BUILD_ID,
+    DOMAIN_ACTION_TYPE,
+    domain_action_id,
 )
 from claim_core import Base
 from claim_core.app import create_app
@@ -252,7 +252,7 @@ def _seed_run(app, **overrides: Any) -> str:
     return values["id"]
 
 
-def test_every_legacy_runner_row_receives_the_four_legacy_metadata_values(tmp_path):
+def test_governed_non_workflow_action_receives_explicit_domain_metadata(tmp_path):
     from agent_runtime.runner import AgentRunner
     from eval_harness.models import Capability
 
@@ -268,7 +268,6 @@ def test_every_legacy_runner_row_receives_the_four_legacy_metadata_values(tmp_pa
         )
     runner = AgentRunner(app, REPO / "packs" / "motor" / "cop_steps.yaml")
 
-    workflow_run = runner.start(agent="agent:intake", capability_id="intake.claim_creation")
     action_run = runner.record_action_start(
         agent="agent:intake",
         capability_id="intake.claim_creation",
@@ -278,25 +277,23 @@ def test_every_legacy_runner_row_receives_the_four_legacy_metadata_values(tmp_pa
     )
 
     with Session(app.state.engine) as session:
-        for run_id in (workflow_run, action_run):
-            row = session.get(AgentRun, run_id)
-            assert row.workflow_id == legacy_workflow_id(run_id)
-            assert row.workflow_type == LEGACY_WORKFLOW_TYPE
-            assert row.worker_build_id == LEGACY_WORKER_BUILD_ID
-            assert row.workflow_run_id is None
-            assert row.last_workflow_event_ref is None
-            assert row.last_synced_at is None
-            # Unchanged: `pending` belongs to the business migration packets.
-            assert row.status == "running"
+        row = session.get(AgentRun, action_run)
+        assert row.workflow_id == domain_action_id(action_run)
+        assert row.workflow_type == DOMAIN_ACTION_TYPE
+        assert row.worker_build_id == DOMAIN_ACTION_BUILD_ID
+        assert row.workflow_run_id is None
+        assert row.last_workflow_event_ref is None
+        assert row.last_synced_at is None
+        assert row.status == "running"
 
 
-def test_the_legacy_workflow_id_is_refused_by_the_control_contract():
-    """It is migration metadata, so it must not be usable as a Workflow ID."""
+def test_the_domain_action_id_is_refused_by_the_control_contract():
+    """A governed non-Workflow action cannot masquerade as a Workflow ID."""
 
     from orchestration.contracts import validate_control_field
 
     with pytest.raises(ControlContractError):
-        validate_control_field("workflow_ref", legacy_workflow_id(RUN_A))
+        validate_control_field("workflow_ref", domain_action_id(RUN_A))
 
 
 # =============================================================================

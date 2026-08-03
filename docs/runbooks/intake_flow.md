@@ -13,14 +13,14 @@ second Workflow, or replay the original email event by hand.
 A creation confirm rejected before S1 commits is a terminal, successful no-op. The
 run is `completed`, the creation-step outcome records `resolution: rejected` and
 `result: no_op`, later steps record `claim_creation_rejected`, and no claim exists.
-This is not a reaper incident.
+This is a normal terminal Workflow outcome.
 
 ## Waiting on document extraction
 
 S3 records `waiting{expects_event: document.extracted}` while the synthetic
-intimation-email document has not completed extraction. Waiting re-invocations do
-not consume a run attempt, so the AR-1 reaper deliberately does not fail this run
-after three polls. The source of truth is the document's `document_stages` rows:
+intimation-email document has not completed extraction. Waiting re-invocations
+do not consume a Workflow attempt. The source of truth is the document's
+`document_stages` rows:
 
 1. Find the synthetic body document from the run's trigger message and inspect its
    first non-`succeeded`/`skipped` stage, including `status`, `attempts`,

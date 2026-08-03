@@ -56,7 +56,7 @@ class DocumentStage(Base):
 
 @dataclass(frozen=True)
 class StageResult:
-    """Result returned by a Celery-wrappable stage callable."""
+    """Result returned by an idempotent document stage callable."""
 
     status: str
     output_ref: str | None = None

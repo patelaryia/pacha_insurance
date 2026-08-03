@@ -1665,19 +1665,18 @@ def test_the_configured_rate_governs_selection_and_the_payload_is_pii_safe(
         assert INSURED_NAME not in json.dumps(payload)
 
 
-def test_the_weekly_beat_slot_is_registered_from_pack_data(env):
-    from claim_core import celery_app
-    from projection_agent.tasks import BEAT_ENTRY, TASK_NAME
+def test_the_weekly_temporal_slot_is_registered_from_pack_data(env):
+    from orchestration.schedules import schedule_definitions
 
-    entry = celery_app.conf.beat_schedule[BEAT_ENTRY]
-    assert entry["task"] == TASK_NAME
-    # Pack data stays Monday 08:00 EAT. Beat evaluates in UTC, so the installed
-    # crontab is Monday 05:00 UTC (Celery numbers Sunday as 0).
-    assert entry["schedule"].day_of_week == {1}
-    assert entry["schedule"].hour == {5}
-    assert entry["schedule"].minute == {0}
-    assert entry["schedule"].app.timezone.key == "UTC"
-    assert "options" not in entry
+    entry = next(
+        item
+        for item in schedule_definitions(env="test", weekly_time="pack weekly")
+        if item.workflow_name == "PasteReadbackSampleWorkflow"
+    )
+    assert entry.timing == "Monday 05:00 UTC"
+    assert entry.overlap_policy.name == "BUFFER_ONE"
+    assert entry.catchup_window == "24h"
+    assert entry.pause_on_failure is False
 
 
 # --- 16. events, ledger, and leak checks ---------------------------------------------

@@ -241,15 +241,16 @@ Escalate to the platform owner when any of these holds:
 
 Deliberate, and not defects to be worked around:
 
-* **No Schedules.** T07 owns schedule creation and cadence. Nothing runs these
-  Workflows automatically yet.
+* **Schedules are immutable.** T07 creates missing definitions and refuses
+  drift; it never overwrites an existing Schedule.
 * **No production business mappings.** `TEMPORAL_INTENT_MAPPINGS` is empty.
   T02 ships no production business Workflow, so there is nothing for a start or
   Signal to reach; `review.resolved` routing is proved by a test-only mapping.
   T03 adds the first production mapping alongside `DocumentChaseWorkflow`.
 * **No deployed Worker process.** T09 owns deployed Workers; T02 constructs them
   explicitly in tests.
-* **Celery and Redis remain.** T08 removes them once every replacement is green.
+* **Legacy orchestration is removed.** T08 leaves Temporal as the sole durable
+  Workflow and recurring-schedule runtime.
 
 ## 12. Prohibited operations
 

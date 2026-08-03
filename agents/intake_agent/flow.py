@@ -134,18 +134,88 @@ class IntakeFlow:
         )
 
     def consume(self, event: Any) -> None:
-        if event.type != "intake.requested":
+        if event.type == "document.extracted" and isinstance(event.claim_id, str):
+            self._emit_control_for_claim(event, "intake.document_ready")
+            return
+        if (
+            event.type == "claim.status_changed"
+            and isinstance(event.claim_id, str)
+            and event.payload.get("to_status") in {"DECLINED", "SETTLED", "CLOSED"}
+        ):
+            self._emit_control_for_claim(event, "intake.claim_terminal")
+            return
+        if event.type != "review.resolved":
+            return
+        review_id = event.payload.get("review_id")
+        if not isinstance(review_id, str):
             return
         with self.app.state.engine.connect() as connection:
-            existing = connection.execute(
+            raw_review = connection.execute(
                 text(
-                    "SELECT id FROM agent_runs WHERE trigger_event = :event_id "
-                    "AND capability_id = :capability_id ORDER BY started_at, id LIMIT 1"
+                    "SELECT payload FROM review_items WHERE id = :review_id"
                 ),
-                {"event_id": event.id, "capability_id": CAPABILITY},
+                {"review_id": review_id},
             ).scalar()
-        if isinstance(existing, str):
-            self.app.state.agent_runtime.resume_cop_projection(existing)
+            review_payload = _json_value(raw_review)
+            run_id = (
+                review_payload.get("agent_run_id")
+                if isinstance(review_payload, dict)
+                else None
+            )
+            action = (
+                review_payload.get("action")
+                if isinstance(review_payload, dict)
+                else None
+            )
+            action_type = action.get("type") if isinstance(action, dict) else None
+            if not isinstance(run_id, str):
+                return
+            run = connection.execute(
+                text(
+                    "SELECT trigger_event FROM agent_runs WHERE id = :run_id "
+                    "AND capability_id = :capability_id "
+                    "AND status = 'awaiting_review'"
+                ),
+                {"run_id": run_id, "capability_id": CAPABILITY},
+            ).first()
+        if run is None or not isinstance(run[0], str):
+            return
+        self._emit(
+            claim_id=event.claim_id,
+            event_type="intake.review_resolved",
+            payload={
+                "run_id": run_id,
+                "trigger_event_id": run[0],
+                "source_event_id": event.id,
+                "resolution": event.payload.get("resolution"),
+                "action_type": action_type,
+            },
+            correlation_id=run_id,
+        )
+
+    def _emit_control_for_claim(self, event: Any, event_type: str) -> None:
+        with self.app.state.engine.connect() as connection:
+            runs = connection.execute(
+                text(
+                    "SELECT id, trigger_event FROM agent_runs "
+                    "WHERE claim_id = :claim_id AND capability_id = :capability_id "
+                    "AND status IN ('running', 'awaiting_review')"
+                ),
+                {"claim_id": event.claim_id, "capability_id": CAPABILITY},
+            ).all()
+        for run_id, trigger_event_id in runs:
+            if not isinstance(run_id, str) or not isinstance(trigger_event_id, str):
+                continue
+            self._emit(
+                claim_id=event.claim_id,
+                event_type=event_type,
+                payload={
+                    "run_id": run_id,
+                    "trigger_event_id": trigger_event_id,
+                    "source_event_id": event.id,
+                },
+                correlation_id=run_id,
+            )
 
     def _create_claim(self, action: Action) -> str:
         run_id = action.payload.get("workflow_run_id")

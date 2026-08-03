@@ -31,8 +31,8 @@ visible through the notifications GET route even when live push is unavailable.
 
 ## Digest reruns
 
-The Beat entry `notify.daily_digest` runs at 08:00 Africa/Nairobi from
-`packs/motor/notify/notify.yaml`. A manual rerun calls
+The `pacha-{env}-notify-digest-v1` Temporal Schedule runs at 05:00 UTC
+(08:00 Africa/Nairobi). A manual rerun calls
 `app.state.notify.run_digest(now)` with an aware timestamp. The projection key is
 unique per officer, channel, and EAT date, so same-day reruns create no duplicate
 rows. Digest values are derived only from committed claims, review items, and SLA

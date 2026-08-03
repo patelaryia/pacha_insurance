@@ -68,4 +68,3 @@ def test_t08_keeps_the_temporal_replacements_and_claim_read_boundary():
     app_source = (REPO / "platform/claim_core/app.py").read_text(encoding="utf-8")
     assert "configure_runtime" not in app_source
     assert "build_temporal_client" not in app_source
-

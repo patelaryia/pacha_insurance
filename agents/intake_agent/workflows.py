@@ -77,11 +77,12 @@ class IntakeWorkflow:
         policies = load_retry_policies()
         for attempt_no, activity_name in enumerate(_ACTIVITIES, start=1):
             while True:
+                pending_event_ref = self._pending[0] if self._pending else None
                 current = ControlCommand(
                     run_ref=command.run_ref,
                     claim_ref=self._state.claim_ref or command.claim_ref,
                     trigger_event_ref=trigger_ref,
-                    event_ref=self._pending[-1] if self._pending else command.event_ref,
+                    event_ref=pending_event_ref or command.event_ref,
                     attempt_no=attempt_no,
                 )
                 policy = (
@@ -108,12 +109,13 @@ class IntakeWorkflow:
                         run_ref=command.run_ref,
                         attempt_no=attempt_no,
                     )
+                if pending_event_ref is not None and self._pending:
+                    self._pending.pop(0)
                 if self._state.status == "running":
                     break
                 if self._state.status in {"completed", "cancelled"}:
                     return self._state
                 await workflow.wait_condition(lambda: bool(self._pending))
-                self._pending.pop(0)
         return ControlResult(
             status="completed",
             run_ref=command.run_ref,

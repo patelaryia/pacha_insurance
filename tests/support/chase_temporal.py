@@ -54,8 +54,9 @@ _TASK_SETTLE_SECONDS = 0.5
 class ChaseTemporalDriver:
     """Run an acceptance-test application through the real chase Workflow."""
 
-    def __init__(self, domain: Any) -> None:
+    def __init__(self, domain: Any, *, include_chase: bool = True) -> None:
         self.domain = domain
+        self.include_chase = include_chase
         self.config = local_config()
         self.loop = asyncio.new_event_loop()
         self.temporal: WorkflowEnvironment | None = None
@@ -74,29 +75,46 @@ class ChaseTemporalDriver:
                 interceptors=[ControlPayloadInterceptor()],
             )
         )
-        temporal_now = self.run(self.temporal.get_current_time())
-        aligned = temporal_now.astimezone(UTC).replace(
-            hour=6,
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
-        aligned += timedelta(days=(-aligned.weekday()) % 7)
-        if aligned <= temporal_now:
-            aligned += timedelta(days=7)
-        if aligned > temporal_now:
-            self.run(self.temporal.sleep(aligned - temporal_now))
-        self.domain.clock.advance_to(aligned)
-        self.domain.started_at = aligned
+        if hasattr(self.domain, "clock"):
+            temporal_now = self.run(self.temporal.get_current_time())
+            aligned = temporal_now.astimezone(UTC).replace(
+                hour=6,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            aligned += timedelta(days=(-aligned.weekday()) % 7)
+            if aligned <= temporal_now:
+                aligned += timedelta(days=7)
+            if aligned > temporal_now:
+                self.run(self.temporal.sleep(aligned - temporal_now))
+            self.domain.clock.advance_to(aligned)
+            self.domain.started_at = aligned
 
         starter = TemporalStarter(self.temporal.client, self.config)
+        mappings = (
+            TEMPORAL_INTENT_MAPPINGS
+            if self.include_chase
+            else tuple(
+                mapping
+                for mapping in TEMPORAL_INTENT_MAPPINGS
+                if not mapping.event_type.startswith("chase.")
+            )
+        )
         self.domain.app.state.dispatcher.register_consumer(
             "temporal_intent",
-            TemporalIntentConsumer(starter, TEMPORAL_INTENT_MAPPINGS),
+            TemporalIntentConsumer(starter, mappings),
         )
         system = SystemActivities(self.domain.app)
-        chase = self.domain.app.state.chase_agent.temporal_activities(
-            worker_build_id=self.config.build_id
+        chase_agent = (
+            getattr(self.domain.app.state, "chase_agent", None)
+            if self.include_chase
+            else None
+        )
+        chase = (
+            chase_agent.temporal_activities(worker_build_id=self.config.build_id)
+            if chase_agent is not None
+            else None
         )
         docintel = DocumentIntelligenceActivities(
             self.domain.app.state.doc_intel,
@@ -112,14 +130,14 @@ class ChaseTemporalDriver:
                 role="control",
                 workflows=[
                     OutboxDrainWorkflow,
-                    DocumentChaseWorkflow,
                     DocumentIntelligenceWorkflow,
                     IntakeWorkflow,
                     AssessmentWorkflow,
+                    *([DocumentChaseWorkflow] if chase is not None else []),
                 ],
                 activities=[
                     system.dispatch_nonledger_events,
-                    *chase_activity_registrations(chase),
+                    *(chase_activity_registrations(chase) if chase is not None else ()),
                     *intake_control_activity_registrations(intake),
                     *assessment_control_activity_registrations(assessment),
                 ],
