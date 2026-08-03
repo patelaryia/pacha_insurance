@@ -7,44 +7,9 @@ from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from celery.schedules import crontab
 from sqlalchemy import text
 
-from claim_core import celery_app
 from notify.transports import NotificationWriter
-
-_runtime: dict[str, Any] = {}
-
-
-def _scheduler_time(digest: dict[str, Any]) -> tuple[int, int]:
-    """Convert one config-owned wall time to the existing Beat timezone.
-
-    A single daily crontab cannot represent a timezone whose offset from the
-    scheduler changes during the year. Refuse that configuration instead of
-    silently firing at the wrong local time after a DST boundary.
-    """
-
-    source_timezone = ZoneInfo(digest["timezone"])
-    scheduler_timezone = celery_app.timezone
-    hour = int(digest["hour"])
-    minute = int(digest["minute"])
-    year = datetime.now(UTC).year
-    converted = {
-        (
-            datetime(year, month, 1, hour, minute, tzinfo=source_timezone)
-            .astimezone(scheduler_timezone)
-            .hour,
-            datetime(year, month, 1, hour, minute, tzinfo=source_timezone)
-            .astimezone(scheduler_timezone)
-            .minute,
-        )
-        for month in (1, 4, 7, 10)
-    }
-    if len(converted) != 1:
-        raise ValueError(
-            "digest timezone cannot be represented by one scheduler crontab"
-        )
-    return converted.pop()
 
 
 class DigestService:
@@ -153,30 +118,4 @@ class DigestService:
         if created:
             self.app.state.dispatcher.dispatch_once(consumers=["ledger"])
         return created
-
-
-def configure_digest(service: DigestService, config: dict[str, Any]) -> None:
-    """Bind the app-owned service and add the data-defined 08:00 EAT schedule."""
-
-    _runtime["service"] = service
-    digest = config["digest"]
-    scheduler_hour, scheduler_minute = _scheduler_time(digest)
-    celery_app.conf.beat_schedule["notify-daily-digest"] = {
-        "task": "notify.daily_digest",
-        "schedule": crontab(
-            hour=scheduler_hour,
-            minute=scheduler_minute,
-            app=celery_app,
-        ),
-    }
-
-
-@celery_app.task(name="notify.daily_digest")
-def daily_digest() -> int:
-    service = _runtime.get("service")
-    if service is None:
-        raise RuntimeError("notify digest runtime is not configured")
-    return service.run(datetime.now(UTC))
-
-
-__all__ = ["DigestService", "configure_digest", "daily_digest"]
+__all__ = ["DigestService"]

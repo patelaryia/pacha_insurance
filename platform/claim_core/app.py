@@ -11,7 +11,6 @@ from typing import Annotated
 from fastapi import FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from claim_core.celery_app import configure_runtime
 from claim_core.consumers import ExternalRefsConsumer
 from claim_core.crypto import KeyProvider, LocalKeyProvider
 from claim_core.database import (
@@ -101,7 +100,6 @@ def create_app(
     dispatcher.register_consumer("ledger", ledger.consume)
     dispatcher.register_consumer("external_refs", ExternalRefsConsumer(session_factory))
     dispatcher.register_consumer("sla", sla_engine.consume)
-    configure_runtime(dispatcher=dispatcher, sla_engine=sla_engine, ledger=ledger)
     app = FastAPI(title="Pacha Claim Core", version="0.1.0")
     app.state.engine = engine
     app.state.clock = effective_clock

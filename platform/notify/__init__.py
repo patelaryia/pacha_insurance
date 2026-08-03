@@ -7,7 +7,7 @@ from typing import Any
 
 from claim_core import Base, Notification
 from notify.consumer import NotificationConsumer
-from notify.digest import DigestService, configure_digest
+from notify.digest import DigestService
 from notify.rules import AudienceResolver, load_notify_config, parse_notify_config
 from notify.transports import NotificationWriter
 from notify.ws import WebSocketHub, install_websocket
@@ -58,7 +58,6 @@ def build_notify(
     app.state.notify_roles = configured_roles
     app.state.dispatcher.register_consumer("notify", consumer.consume)
     install_websocket(app, hub)
-    configure_digest(digest, payload)
     return handle
 
 

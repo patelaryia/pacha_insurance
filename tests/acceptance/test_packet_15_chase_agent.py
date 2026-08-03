@@ -570,12 +570,15 @@ def test_scenario_1_three_docs_verified_reminder_lists_outstanding_four(
 # --- Scenario 2 ----------------------------------------------------------------------
 
 
-def test_scenario_2_illegible_logbook_rejected_with_defect_rerequest(tmp_path):
+def test_scenario_2_illegible_logbook_rejected_with_defect_rerequest(
+    tmp_path, temporal_chase
+):
     model = _intimation_model({
         "document_classify": [{"doc_type": "logbook", "confidence": 0.99}],
         "extract": [{"fields": []}],
     })
     env = _build(tmp_path, "scenario-2", model=model)
+    temporal_chase(env)
     claim_id = _to_checklist(env)
 
     _reply(env, body="Logbook attached",

@@ -400,7 +400,6 @@ class AssessmentTrigger:
                 trigger_event_ref=trigger_event,
                 step_ids=("call_model",),
             )
-        self.app.state.agent_runtime.resume_cop_projection(run_id)
 
     def issue_from_payload(
         self,

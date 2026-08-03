@@ -4,12 +4,12 @@
 
 | What | Where | Cadence |
 |---|---|---|
-| Outbox dispatch | Celery task `claim_core.dispatch_events` (all consumers except ledger) | every 2s |
-| Ledger consumer | Celery task `claim_core.dispatch_ledger`, queue `ledger`, **concurrency=1** | every 2s |
-| SLA evaluation | `claim_core.evaluate_slas` (Beat) | every 5 min |
-| Ledger verification | `claim_core.verify_ledger` (Beat) | nightly 00:30 EAT |
+| Outbox dispatch | `OutboxDrainWorkflow` on the control queue | every 30s |
+| Ledger consumer | `LedgerDrainWorkflow`, with Activities on the **concurrency=1** ledger queue | every 10s |
+| SLA evaluation | `SlaEvaluationWorkflow` | every 5 min |
+| Ledger verification | `LedgerVerificationWorkflow` | 01:00 UTC daily |
 
-All four are one-line wrappers; the logic is synchronous-drivable (`dispatch_once()`,
+All four are finite Temporal wrappers; the logic is synchronous-drivable (`dispatch_once()`,
 `evaluate()`, `run_nightly_verification()`) for local debugging.
 
 ## Dispatcher recovery

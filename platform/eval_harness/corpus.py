@@ -373,7 +373,7 @@ class CorpusService:
         )
 
     def run_weekly(self, *, actor: str) -> CorpusBatchResult:
-        """Direct operations/test seam used by the named Celery task."""
+        """Direct operations/test seam used by the scheduled evaluation Activity."""
 
         if not self.weekly_config["enabled"]:
             raise RuntimeError("weekly corpus execution is disabled by pack config")

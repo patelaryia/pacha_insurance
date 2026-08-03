@@ -13,7 +13,7 @@ from agent_runtime.projection import (
     AgentRunNotFound,
     AgentRunProjection,
 )
-from agent_runtime.runner import AgentRunner, configure_reaper
+from agent_runtime.runner import AgentRunner
 from claim_core import Base
 
 
@@ -69,39 +69,15 @@ class AgentRuntime:
     def register_step(self, capability_id: str, step_id: str, fn: Any) -> None:
         self.runner.register_step(capability_id, step_id, fn)
 
-    def start_run(
-        self,
-        *,
-        agent: str,
-        capability_id: str,
-        claim_id: str | None = None,
-        trigger_event: str | None = None,
-    ) -> str:
-        return self.runner.start(
-            agent=agent,
-            capability_id=capability_id,
-            claim_id=claim_id,
-            trigger_event=trigger_event,
-        )
-
-    def run(self, run_id: str) -> dict[str, Any]:
-        return self.runner.run(run_id)
-
-    def resume_cop_projection(self, run_id: str) -> dict[str, Any]:
-        """Drive an already-prepared projection for pre-T08 acceptance fixtures."""
-
-        with self.app.state.engine.begin() as connection:
-            connection.execute(
-                AgentRun.__table__.update()
-                .where(AgentRun.id == run_id, AgentRun.status == "pending")
-                .values(status="running")
-            )
-        return self.runner.run(run_id)
-
     def attach_claim_projection(self, run_id: str, claim_id: str) -> None:
         """Attach S1's committed claim to its pre-existing run projection."""
 
         self.runner.set_claim_id(run_id, claim_id)
+
+    def apply_control_event(self, run_id: str, event_ref: str) -> None:
+        """Apply one event reference delivered by the owning Temporal Workflow."""
+
+        self.runner.apply_control_event(run_id, event_ref)
 
     def run_cop_activity(self, run_id: str, step_id: str) -> dict[str, Any]:
         """Execute no more than one named idempotent COP step."""
@@ -112,19 +88,13 @@ class AgentRuntime:
                 .where(AgentRun.id == run_id, AgentRun.status == "pending")
                 .values(status="running")
             )
-        return self.runner.run(run_id, stop_after_step=step_id)
-
-    def reap(self) -> int:
-        return self.runner.reap()
-
+        return self.runner.execute_activity_step(run_id, step_id)
 
 def build_agent_runtime(app: Any, *, grade: Any = None) -> AgentRuntime:
     """Build and wire the durable runtime after its three Phase-1 dependencies."""
 
     runtime = AgentRuntime(app, grade=grade)
     app.state.agent_runtime = runtime
-    app.state.dispatcher.register_consumer("agent_runtime", runtime.runner.consume)
-    configure_reaper(runtime.runner)
     return runtime
 
 

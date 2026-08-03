@@ -126,14 +126,16 @@ class _Harness:
 
     def drain(self) -> ControlResult:
         async def _drain() -> ControlResult:
-            result = await self.client.execute_workflow(
-                OutboxDrainWorkflow.run,
-                id=str(agent_workflow_ref(new_ulid())),
-                task_queue=self.config.task_queue("control"),
-                id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-                id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
-            )
-            await asyncio.sleep(0.05)
+            result = ControlResult(status="completed")
+            for _ in range(3):
+                result = await self.client.execute_workflow(
+                    OutboxDrainWorkflow.run,
+                    id=str(agent_workflow_ref(new_ulid())),
+                    task_queue=self.config.task_queue("control"),
+                    id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+                    id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+                )
+                await asyncio.sleep(0.5)
             return result
 
         with self.realtime():
@@ -233,7 +235,6 @@ def harness(tmp_path):
     if aligned > temporal_now:
         loop.run_until_complete(temporal.sleep(aligned - temporal_now))
     domain.clock.advance_to(aligned)
-    claim_id = P15._to_checklist(domain)
 
     starter = TemporalStarter(temporal.client, config)
     domain.app.state.dispatcher.register_consumer(
@@ -292,10 +293,13 @@ def harness(tmp_path):
     loop.run_until_complete(docintel_worker.__aenter__())
     loop.run_until_complete(effects_worker.__aenter__())
     running = _Harness(loop, temporal, config, domain)
+    domain.app.state.temporal_chase_driver = running
+    claim_id = P15._to_checklist(domain)
     running.claim_id = claim_id
     try:
         yield running
     finally:
+        delattr(domain.app.state, "temporal_chase_driver")
         loop.run_until_complete(effects_worker.__aexit__(None, None, None))
         loop.run_until_complete(docintel_worker.__aexit__(None, None, None))
         loop.run_until_complete(worker.__aexit__(None, None, None))

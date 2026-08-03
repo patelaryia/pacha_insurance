@@ -94,9 +94,9 @@ The batch runner counts it blocked, never grades it. Recovery is upstream:
 fix the producing `review.resolved` payload; the consumer is idempotent on
 the source event id, so a corrected re-emission creates a new complete case.
 
-**Weekly batch failure:** the Beat task `eval_harness.run_weekly_corpus` calls
-the same synchronous `harness.corpus.run(...)`; reproduce locally with no
-broker. Executor exceptions score as `errors` per case (never passes); a
+**Weekly batch failure:** `WeeklyEvaluationWorkflow` calls the same synchronous
+domain service through one Activity; reproduce locally without Temporal.
+Executor exceptions score as `errors` per case (never passes); a
 disabled run raises against `weekly.enabled` in `harness.yaml`. Scorecard
 `pass_percent` uses exact arithmetic over passed/failed/errors/blocked.
 

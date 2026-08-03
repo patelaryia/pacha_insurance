@@ -59,9 +59,26 @@ class IntakeActivities:
             or step_id != _STEPS[checkpoint - 1]
         ):
             raise sanitised_application_error("domain_rejected")
+        if (
+            command.event_ref is not None
+            and command.event_ref != command.trigger_event_ref
+        ):
+            await asyncio.to_thread(
+                self._app.state.agent_runtime.apply_control_event,
+                command.run_ref,
+                command.event_ref,
+            )
         status, claim_ref, steps = await asyncio.to_thread(
             self._snapshot, command.run_ref
         )
+        if status == "completed":
+            return ControlResult(
+                status="completed",
+                run_ref=command.run_ref,
+                claim_ref=claim_ref,
+                step_id=step_id,
+                attempt_no=checkpoint,
+            )
         if status in {"blocked", "failed", "cancelled"}:
             return ControlResult(
                 status="blocked",
@@ -85,20 +102,14 @@ class IntakeActivities:
             self._snapshot, command.run_ref
         )
         current = next(step for step in steps if step.get("step_id") == step_id)
-        if current.get("status") in {"waiting", "awaiting_review"} or status == (
+        if status == "completed":
+            control_status = "completed"
+        elif current.get("status") in {"waiting", "awaiting_review"} or status == (
             "awaiting_review"
         ):
             control_status = "awaiting_review"
         elif status in {"blocked", "failed", "cancelled"}:
             control_status = "blocked"
-        elif checkpoint == len(_STEPS) and all(
-            step.get("status") == "completed" for step in steps
-        ):
-            await asyncio.to_thread(
-                self._app.state.agent_runtime.resume_cop_projection,
-                command.run_ref,
-            )
-            control_status = "completed"
         else:
             control_status = "running"
         return ControlResult(

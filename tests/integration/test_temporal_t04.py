@@ -158,4 +158,4 @@ def test_t04_removes_only_the_docintel_celery_scheduler() -> None:
     assert not (root / "platform/doc_intel/tasks.py").exists()
 
     requirements = (root / "requirements.txt").read_text().lower()
-    assert "celery" in requirements, "global Celery removal belongs to T08"
+    assert "celery" not in requirements, "T08 removes the global Celery dependency"

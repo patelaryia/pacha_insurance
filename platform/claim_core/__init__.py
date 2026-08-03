@@ -1,7 +1,6 @@
 """Curated public package boundary for the PRD-00 claim substrate."""
 
 from claim_core.app import create_app
-from claim_core.celery_app import celery_app
 from claim_core.dictionary import (
     FieldDefinition,
     field_dictionary,
@@ -32,7 +31,6 @@ __all__ = [
     "Notification",
     "STATE_METADATA",
     "create_app",
-    "celery_app",
     "field_dictionary",
     "new_ulid",
     "register_dictionary_extensions",

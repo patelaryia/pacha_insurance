@@ -18,7 +18,6 @@ from eval_harness.gating import apply_gating
 from eval_harness.graders import EvalConsumer, GraderRegistry, GraderResult
 from eval_harness.models import AutonomyChange, Capability, GraderRun, TestCase
 from eval_harness.policies import load_policies
-from eval_harness.tasks import configure_weekly_task
 
 
 class EvalHarness:
@@ -210,7 +209,6 @@ def build_eval_harness(
     app.state.dispatcher.register_consumer("eval", EvalConsumer(harness))
     app.state.dispatcher.register_consumer("autonomy", harness.autonomy.consume)
     app.state.dispatcher.register_consumer("correction_capture", harness.corpus.consume)
-    configure_weekly_task(harness)
     app.include_router(build_router(harness))
     return harness
 
