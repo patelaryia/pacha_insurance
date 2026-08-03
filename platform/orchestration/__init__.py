@@ -35,6 +35,7 @@ __all__ = [
     "TemporalConfig",
     "TemporalStarter",
     "WorkflowRef",
+    "bootstrap_schedules",
     "build_data_converter",
     "build_temporal_client",
     "build_worker",
@@ -45,6 +46,7 @@ _EXPORTS: dict[str, str] = {
     "TemporalConfig": "orchestration.config",
     "TemporalStarter": "orchestration.starter",
     "WorkflowRef": "orchestration.ids",
+    "bootstrap_schedules": "orchestration.schedules",
     "build_data_converter": "orchestration.codec",
     "build_temporal_client": "orchestration.client",
     "build_worker": "orchestration.worker",
@@ -56,6 +58,7 @@ if TYPE_CHECKING:  # pragma: no cover - import-time typing only
     from orchestration.config import TemporalConfig
     from orchestration.contracts import ControlResult
     from orchestration.ids import WorkflowRef
+    from orchestration.schedules import bootstrap_schedules
     from orchestration.starter import TemporalStarter
     from orchestration.worker import build_worker
 

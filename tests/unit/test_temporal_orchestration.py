@@ -1362,28 +1362,22 @@ def test_no_production_package_imports_from_the_isolated_spike():
 
 
 def test_the_public_interface_exposes_only_the_declared_names():
-    """The closed export set, now including T02's `TemporalStarter`.
-
-    T01 asserted six names and pinned `TemporalStarter` as absent, exactly as
-    `orchestration/__init__` documented ("T02 adds `TemporalStarter` ... Neither
-    is exported before its packet"). T02 §6 requires adding it and only it, so
-    the seventh name is asserted here rather than the assertion being dropped.
-    Everything the original checked is still checked, against the unexported
-    `bootstrap_schedules` that T07 will add.
-    """
+    """The closed export set through T07's schedule bootstrap."""
 
     import orchestration
+    from orchestration.schedules import bootstrap_schedules
 
     assert sorted(orchestration.__all__) == [
         "ControlResult",
         "TemporalConfig",
         "TemporalStarter",
         "WorkflowRef",
+        "bootstrap_schedules",
         "build_data_converter",
         "build_temporal_client",
         "build_worker",
     ]
-    assert not hasattr(orchestration, "bootstrap_schedules")
+    assert orchestration.bootstrap_schedules is bootstrap_schedules
     # T02's other new objects are wired explicitly at the Worker call site and
     # must not become package-root exports.
     for unexported in (
@@ -1398,5 +1392,3 @@ def test_the_public_interface_exposes_only_the_declared_names():
     assert orchestration.TemporalConfig is TemporalConfig
     assert orchestration.build_worker is build_worker
     assert dir(orchestration) == sorted(orchestration.__all__)
-    with pytest.raises(AttributeError, match="bootstrap_schedules"):
-        getattr(orchestration, "bootstrap_schedules")  # noqa: B009 - the lookup is the assertion
