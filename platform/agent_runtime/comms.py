@@ -31,7 +31,7 @@ def _fixed_holidays(path: Path) -> frozenset[str]:
 
 
 class CommunicationsService:
-    """Render, grade, govern, and visibly block the pending Graph transport."""
+    """Render, grade, govern, and queue the configured Graph transport."""
 
     def __init__(self, app: Any, gate: Any, pack_root: Path) -> None:
         self.app = app
@@ -41,7 +41,12 @@ class CommunicationsService:
 
     @staticmethod
     def _transport(_action: Action) -> None:
-        raise ExecutionRefused("transport_pending_capture")
+        raise ExecutionRefused("graph_service_not_installed")
+
+    def install_transport(self, executor: Any) -> None:
+        """Install the sole governed communications executor."""
+
+        self.gate.register_executor("communication.send", executor)
 
     def _definition(self, template_id: str, claim_id: str) -> Any:
         with self.app.state.engine.connect() as connection:
@@ -187,12 +192,17 @@ class CommunicationsService:
             and not self._in_window(self.app.state.clock())
         ):
             return {"status": "queued_window", "code": None, "review_id": None}
+        release_due_at = self.app.state.clock()
 
         payload: dict[str, Any] = {
             "template_id": template_id,
             "to_party_ids": recipients,
             "attachments": list(attachments),
             "template_status": definition.status,
+            "claim_id": claim_id,
+            "actor": actor,
+            "write_id": new_ulid(),
+            "release_due_at": release_due_at.isoformat(),
         }
         context = dict(action_payload or {})
         reserved = set(payload) | {
