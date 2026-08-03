@@ -256,3 +256,17 @@ travel through the closed PRD-04 `/reviews/{id}/resolve` contract.
 the pinned Chromium executable and version supplied by runtime config and refuses startup on
 a mismatch; live Chromium and S3 Object Lock certification remain explicit production
 blockers, not a completed item.
+
+## Temporal operation (T06)
+
+Approval orchestration is represented by pinned `ApprovalPackWorkflow` executions keyed as
+`pacha.approval-pack.{agent_run_id}`. Workflow history contains only opaque run, claim,
+event and review references; generated HTML/PDF and note content remain in the immutable
+store and PostgreSQL. The eight registered Activities reload those records inside the
+worker. Commentary/provider and signature boundaries have one Temporal attempt, so an
+outcome-unknown operation is blocked rather than retried.
+
+`PACK_REVIEW`, `NOTE_REVIEW` and authority waits resume only through the committed
+`approval.review_resolved` route. Inspect the corresponding `agent_runs` projection and
+outbox delivery before intervening; never send an ad-hoc Signal or copy artifact data into
+a Workflow command.

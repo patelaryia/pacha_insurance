@@ -43,10 +43,12 @@ from orchestration.contracts import (
 from orchestration.errors import ControlContractError
 from orchestration.ids import (
     WorkflowRef,
+    approval_pack_workflow_ref,
     assessment_workflow_ref,
     chase_workflow_ref,
     docintel_workflow_ref,
     intake_workflow_ref,
+    projection_workflow_ref,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime claim_core import
@@ -245,6 +247,28 @@ def _assessment_workflow_id(event: Event) -> WorkflowRef:
     return assessment_workflow_ref(run_ref)
 
 
+def _approval_workflow_id(event: Event) -> WorkflowRef:
+    payload = event.payload
+    run_ref = payload.get("run_id") if isinstance(payload, dict) else None
+    if not isinstance(run_ref, str):
+        raise ControlContractError(
+            "run_ref", "an approval control event requires run_id"
+        )
+    return approval_pack_workflow_ref(run_ref)
+
+
+def _projection_workflow_id(event: Event) -> WorkflowRef:
+    payload = event.payload
+    projection_ref = (
+        payload.get("projection_id") if isinstance(payload, dict) else None
+    )
+    if not isinstance(projection_ref, str):
+        raise ControlContractError(
+            "projection_ref", "a projection control event requires projection_id"
+        )
+    return projection_workflow_ref(projection_ref)
+
+
 def _business_mapping(
     event_type: str,
     *,
@@ -360,6 +384,32 @@ TEMPORAL_INTENT_MAPPINGS: tuple[TemporalIntentMapping, ...] = (
         workflow_id_builder=_assessment_workflow_id,
         action="signal",
         signal_name="claim_terminal",
+    ),
+    _business_mapping(
+        "approval.workflow_requested",
+        workflow_type="ApprovalPackWorkflow",
+        workflow_id_builder=_approval_workflow_id,
+        action="start",
+    ),
+    _business_mapping(
+        "approval.review_resolved",
+        workflow_type="ApprovalPackWorkflow",
+        workflow_id_builder=_approval_workflow_id,
+        action="signal",
+        signal_name="review_resolved",
+    ),
+    _business_mapping(
+        "projection.workflow_requested",
+        workflow_type="ProjectionWorkflow",
+        workflow_id_builder=_projection_workflow_id,
+        action="start",
+    ),
+    _business_mapping(
+        "projection.review_resolved",
+        workflow_type="ProjectionWorkflow",
+        workflow_id_builder=_projection_workflow_id,
+        action="signal",
+        signal_name="review_resolved",
     ),
     _chase_mapping("chase.workflow_requested", action="start"),
     _chase_mapping("chase.item_requested", action="signal", signal_name="pacha_event"),

@@ -224,3 +224,18 @@ availability is **not** adapter health and must not be reported as such.
 
 No funds-transfer operation exists in the registry. PRD-12's payment operations
 are blocked registry slots capped at L2 until that gate opens.
+
+---
+
+## 12. Temporal operation (T06)
+
+Each projection is represented by a pinned `ProjectionWorkflow` keyed as
+`pacha.projection.{projection_id}`. Commands and results contain opaque identifiers and
+statuses only. Paste-assist crosses the execute Activity without an external effect and
+waits for the officer's committed confirmation; it never acquires an executor merely by
+running on the effects worker.
+
+Any future approved API/RPA executor must pass through `execute_or_stage`, use a stable
+write ID and one Temporal attempt. Readback is a separate Activity. `uncertain_write`,
+`ui_drift` and `payload_diverged` remain visibly blocked and are never automatically retried
+or repaired. Resolve only through a committed `projection.review_resolved` event.
