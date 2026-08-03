@@ -37,9 +37,11 @@ from orchestration.errors import sanitised_application_error
 
 __all__ = [
     "AgentRunActivities",
+    "RecurringActivities",
     "SystemActivities",
     "control_activity_registrations",
     "ledger_activity_registrations",
+    "recurring_activity_registrations",
 ]
 
 LOGGER = logging.getLogger(__name__)
@@ -222,6 +224,93 @@ class AgentRunActivities:
         return result
 
 
+class RecurringActivities:
+    """Five control-only adapters over already-idempotent recurring services."""
+
+    def __init__(self, app: Any) -> None:
+        for dependency in (
+            "notify",
+            "graph_integration",
+            "eval_harness",
+            "projection_agent",
+        ):
+            if not hasattr(app.state, dependency):
+                raise RuntimeError(f"recurring service is not installed: {dependency}")
+        graph = app.state.graph_integration
+        if not all(
+            callable(value)
+            for value in (
+                getattr(graph.inbound, "delta_once", None),
+                getattr(graph.inbound, "renew_once", None),
+                getattr(graph.outbound, "release_due", None),
+            )
+        ):
+            raise RuntimeError("GRAPH_SERVICE_NOT_INSTALLED")
+        self._app = app
+
+    @activity.defn(name="notify_digest")
+    async def notify_digest(self) -> ControlResult:
+        try:
+            await asyncio.to_thread(
+                self._app.state.notify.run_digest, self._app.state.clock()
+            )
+        except Exception:
+            LOGGER.exception("notification digest failed")
+            raise sanitised_application_error("activity_internal") from None
+        return ControlResult(status="completed")
+
+    @activity.defn(name="graph_delta_and_release")
+    async def graph_delta_and_release(self) -> ControlResult:
+        graph = self._app.state.graph_integration
+        try:
+            delta = await asyncio.to_thread(graph.inbound.delta_once)
+            released = await asyncio.to_thread(
+                graph.outbound.release_due, self._app.state.clock()
+            )
+        except Exception:
+            LOGGER.exception("Graph delta or outbound release failed")
+            raise sanitised_application_error("activity_internal") from None
+        if delta.get("status") != "completed" or released.get("status") != "completed":
+            raise sanitised_application_error("domain_rejected")
+        return ControlResult(status="completed")
+
+    @activity.defn(name="graph_renewal")
+    async def graph_renewal(self) -> ControlResult:
+        try:
+            result = await asyncio.to_thread(
+                self._app.state.graph_integration.inbound.renew_once
+            )
+        except Exception:
+            LOGGER.exception("Graph subscription renewal failed")
+            raise sanitised_application_error("activity_internal") from None
+        if result.get("status") != "completed":
+            raise sanitised_application_error("domain_rejected")
+        return ControlResult(status="completed")
+
+    @activity.defn(name="weekly_evaluation")
+    async def weekly_evaluation(self) -> ControlResult:
+        try:
+            await asyncio.to_thread(
+                self._app.state.eval_harness.corpus.run_weekly,
+                actor="agent:eval",
+            )
+        except Exception:
+            LOGGER.exception("weekly evaluation corpus failed")
+            raise sanitised_application_error("activity_internal") from None
+        return ControlResult(status="completed")
+
+    @activity.defn(name="paste_readback_sample")
+    async def paste_readback_sample(self) -> ControlResult:
+        try:
+            await asyncio.to_thread(
+                self._app.state.projection_agent.sample_paste_readbacks
+            )
+        except Exception:
+            LOGGER.exception("paste readback sampling failed")
+            raise sanitised_application_error("activity_internal") from None
+        return ControlResult(status="completed")
+
+
 def control_activity_registrations(
     system: SystemActivities,
     agent_runs: AgentRunActivities,
@@ -245,3 +334,17 @@ def ledger_activity_registrations(system: SystemActivities) -> tuple[Callable[..
     """
 
     return (system.append_ledger_batch, system.verify_ledger)
+
+
+def recurring_activity_registrations(
+    recurring: RecurringActivities,
+) -> tuple[Callable[..., Any], ...]:
+    """Exactly the recurring adapters registered on the control queue."""
+
+    return (
+        recurring.notify_digest,
+        recurring.graph_delta_and_release,
+        recurring.graph_renewal,
+        recurring.weekly_evaluation,
+        recurring.paste_readback_sample,
+    )
