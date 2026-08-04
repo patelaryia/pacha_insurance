@@ -1,0 +1,36 @@
+module "temporal_workers" {
+  source = "../../modules/temporal_worker"
+
+  environment                     = "staging"
+  aws_region                      = var.aws_region
+  ecs_cluster_arn                 = var.ecs_cluster_arn
+  subnet_ids                      = var.subnet_ids
+  vpc_id                          = var.vpc_id
+  vpc_dns_resolver_cidr           = var.vpc_dns_resolver_cidr
+  temporal_cloud_cidr_blocks      = var.temporal_cloud_cidr_blocks
+  provider_https_cidr_blocks      = var.provider_https_cidr_blocks
+  aws_endpoint_security_group_ids = var.aws_endpoint_security_group_ids
+  s3_prefix_list_id               = var.s3_prefix_list_id
+  rds_security_group_id           = var.rds_security_group_id
+  image_uri                       = var.image_uri
+  otel_collector_image_uri        = var.otel_collector_image_uri
+  worker_dependencies_factory     = var.worker_dependencies_factory
+  build_id                        = var.build_id
+  temporal_address                = var.temporal_address
+  temporal_namespace              = var.temporal_namespace
+  temporal_region                 = var.temporal_region
+  temporal_tls_cert_secret_arn    = var.temporal_tls_cert_secret_arn
+  temporal_tls_key_secret_arn     = var.temporal_tls_key_secret_arn
+  temporal_kms_key_arn            = var.temporal_kms_key_arn
+  database_secret_arn             = var.database_secret_arn
+  database_secret_value_from      = var.database_secret_value_from
+  application_secret_arns         = var.application_secret_arns
+  rds_db_user_arns                = var.rds_db_user_arns
+  s3_object_arns                  = var.s3_object_arns
+  s3_bucket_arns                  = var.s3_bucket_arns
+  application_kms_key_arns        = var.application_kms_key_arns
+  task_execution_role_arn         = var.task_execution_role_arn
+  alarm_sns_topic_arns            = var.alarm_sns_topic_arns
+  log_retention_days              = var.log_retention_days
+  tags                            = var.tags
+}

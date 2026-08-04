@@ -10,6 +10,7 @@ venv/
 coverage.json
 htmlcov/
 reports/
+.terraform/
 
 # Node / frontend (console/)
 node_modules/

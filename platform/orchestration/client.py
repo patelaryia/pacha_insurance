@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from temporalio.client import Client, HeaderCodecBehavior, Interceptor, TLSConfig
+from temporalio.runtime import Runtime
 
 from orchestration.codec import DataKeyProvider, build_data_converter
 from orchestration.config import TemporalConfig
@@ -86,6 +87,7 @@ async def build_temporal_client(
     secret_provider: SecretBytesProvider | None = None,
     data_key_provider: DataKeyProvider | None = None,
     interceptors: Sequence[Interceptor] = (),
+    runtime: Runtime | None = None,
 ) -> Client:
     """Connect to Temporal with Pacha's mandatory security configuration.
 
@@ -135,4 +137,5 @@ async def build_temporal_client(
         # memo or free-text field after validation has already run.
         interceptors=[*interceptors, ControlPayloadInterceptor()],
         header_codec_behavior=HeaderCodecBehavior.CODEC,
+        runtime=runtime,
     )
